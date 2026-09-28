@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -62,6 +63,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -136,6 +138,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     agentId: string;
     contextSnapshot?: Record<string, unknown>;
     status?: "queued" | "running" | "scheduled_retry";
+    wakeupRequestId?: string | null;
     scheduledRetryReason?: string | null;
     now?: Date;
   }) {
@@ -147,6 +150,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       agentId: input.agentId,
       invocationSource: "retry",
       status: input.status ?? "queued",
+      wakeupRequestId: input.wakeupRequestId ?? null,
       contextSnapshot: input.contextSnapshot ?? {},
       scheduledRetryReason: input.scheduledRetryReason ?? null,
       scheduledRetryAt: input.status === "scheduled_retry" ? now : null,
@@ -644,6 +648,64 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         runId, companyId, expectedStatus: "queued", now: new Date(),
       });
       expect(result).toMatchObject({ outcome: "not_stale" });
+    });
+
+    it("uses the exact durable wake receipt for a Board-triggered addressee run", async () => {
+      const { companyId, agentId: assigneeId } = await seedCompanyAndAgent();
+      const addresseeId = randomUUID();
+      await seedAgent({ id: addresseeId, companyId, name: "CEO", role: "ceo" });
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: assigneeId });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId, issueId, kind: "ask_user_questions",
+        status: "pending", addresseeAgentId: addresseeId,
+        payload: { version: 1, questions: [] },
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId, companyId, agentId: addresseeId,
+        source: "on_demand", reason: "interaction_pending", status: "queued",
+        payload: { issueId, interactionId, mutation: "interaction" },
+      });
+      const runId = await seedRun({
+        companyId, agentId: addresseeId, wakeupRequestId,
+        contextSnapshot: { issueId, wakeReason: "interaction_pending" },
+      });
+
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(result).toMatchObject({ outcome: "not_stale" });
+    });
+
+    it("does not use a durable receipt targeting a different issue to bypass ownership", async () => {
+      const { companyId, agentId: assigneeId } = await seedCompanyAndAgent();
+      const addresseeId = randomUUID();
+      await seedAgent({ id: addresseeId, companyId, name: "CEO", role: "ceo" });
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: assigneeId });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId, issueId, kind: "ask_user_questions",
+        status: "pending", addresseeAgentId: addresseeId,
+        payload: { version: 1, questions: [] },
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId, companyId, agentId: addresseeId,
+        source: "on_demand", reason: "interaction_pending", status: "queued",
+        payload: { issueId: randomUUID(), interactionId, mutation: "interaction" },
+      });
+      const runId = await seedRun({
+        companyId, agentId: addresseeId, wakeupRequestId,
+        contextSnapshot: { issueId, wakeReason: "interaction_pending" },
+      });
+
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
     });
 
     it.each([

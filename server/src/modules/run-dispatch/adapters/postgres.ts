@@ -494,7 +494,30 @@ export function createPostgresRunDispatchAdapter(
     );
 
     const wakeCommentId = deriveCommentId(context);
-    const pendingInteractionId = readNonEmptyString(context.interactionId);
+    let pendingInteractionId = readNonEmptyString(context.interactionId);
+    if (context.wakeReason === "interaction_pending" && !isUuidLike(pendingInteractionId)) {
+      // Board on-demand wakes keep the card ID in the exact durable wake
+      // receipt, while interaction-creation wakes also include it in the run
+      // snapshot. Read only the receipt linked to this run, never an arbitrary
+      // pending card on the issue.
+      const [receipt] = await dbOrTx
+        .select({ payload: agentWakeupRequests.payload })
+        .from(heartbeatRuns)
+        .innerJoin(agentWakeupRequests, eq(heartbeatRuns.wakeupRequestId, agentWakeupRequests.id))
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.reason, "interaction_pending"),
+        ))
+        .limit(1);
+      const payload = parseObject(receipt?.payload);
+      if (payload.mutation === "interaction" && payload.issueId === issueId) {
+        pendingInteractionId = readNonEmptyString(payload.interactionId);
+      }
+    }
     const pendingAddresseeInteraction =
       issue &&
       context.wakeReason === "interaction_pending" &&
