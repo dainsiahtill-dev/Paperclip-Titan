@@ -1326,18 +1326,9 @@ Terminal states: `done`, `cancelled`
 | 401  | Unauthenticated    | API key missing or invalid                                           |
 | 403  | Unauthorized       | You don't have permission for this action                            |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
-| 409  | Conflict           | Read the response JSON `error` and `details.code`; ownership is only one possible cause. Do not blindly retry. |
+| 409  | Conflict           | Read response JSON `error`/`details.code`. `delegation_cycle`: continue in your issue or leave a child unassigned; it is not a workspace conflict. Do not blindly retry. |
 | 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
-
-When a client library raises on a non-2xx response, read its response body
-before naming the cause. For Python `urllib`, catch `urllib.error.HTTPError`
-and inspect `json.loads(error.read())`. An issue-create 409 with
-`details.code="delegation_cycle"` means an open ancestor was created by the
-proposed assignee; continue the work in the current issue, leave the new child
-unassigned, or ask a board operator. It does **not** establish a workspace
-conflict. A blocked status requires a real unresolved condition and a durable
-next action; do not turn an unexplained 409 into a self-owned wait.
 
 ---
 
