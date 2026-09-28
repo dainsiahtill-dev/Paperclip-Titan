@@ -1416,13 +1416,21 @@ function normalizeNonInteractivePermissions(config: Record<string, unknown>): "d
     : "deny";
 }
 
-function normalizeRequestedThinkingEffort(config: Record<string, unknown>): string {
-  return (
+function normalizeRequestedThinkingEffort(
+  config: Record<string, unknown>,
+  agent: string,
+  model: string,
+): string {
+  const requested = (
     asString(config.modelReasoningEffort, "") ||
     asString(config.reasoningEffort, "") ||
     asString(config.thinkingEffort, "") ||
     asString(config.effort, "")
   ).trim();
+  if (agent === "codex" && model === "gpt-6-luna") {
+    return requested === "max" ? "max" : "xhigh";
+  }
+  return requested;
 }
 
 function buildCodexStartupConfig(input: {
@@ -1871,7 +1879,7 @@ async function buildRuntime(input: {
   const permissionMode = normalizePermissionMode(config);
   const nonInteractivePermissions = normalizeNonInteractivePermissions(config);
   const requestedModel = asString(config.model, "").trim();
-  const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
+  const requestedThinkingEffort = normalizeRequestedThinkingEffort(config, acpxAgent, requestedModel);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
   const runtimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
   const mcpIdentity = runtimeMcpServers.map(({ name, url, connectionId }) => ({

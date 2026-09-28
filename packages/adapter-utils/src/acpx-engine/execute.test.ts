@@ -479,6 +479,18 @@ describe("shared ACPX engine runtime behavior", () => {
     );
   });
 
+  it("enforces the local Luna effort floor in the ACP startup config", async () => {
+    for (const effort of [undefined, "medium", "high", "xhigh", "max"]) {
+      const { meta } = await runExecutor({
+        agent: "codex",
+        model: "gpt-6-luna",
+        ...(effort ? { modelReasoningEffort: effort } : {}),
+      });
+      const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
+      expect(config.model_reasoning_effort).toBe(effort === "max" ? "max" : "xhigh");
+    }
+  });
+
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
     const arbitraryModel = "gpt-999-test-does-not-exist";
     const { configOptions, meta } = await runExecutor({
