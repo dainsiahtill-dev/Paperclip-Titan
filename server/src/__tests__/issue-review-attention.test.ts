@@ -135,6 +135,37 @@ describeEmbeddedPostgres("issue review attention", () => {
     });
   });
 
+  it("does not count an orphaned deferred wake as an active review path", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-ORPHAN" });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: { issueId },
+    });
+
+    let row = (await svc.list(companyId, { status: "in_review" })).find((issue) => issue.id === issueId);
+    expect(row?.reviewAttention).toMatchObject({ state: "stalled", paths: [] });
+
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    row = (await svc.list(companyId, { status: "in_review" })).find((issue) => issue.id === issueId);
+    expect(row?.reviewAttention).toMatchObject({
+      state: "covered",
+      paths: expect.arrayContaining([
+        expect.objectContaining({ kind: "active_run" }),
+        expect.objectContaining({ kind: "queued_wake" }),
+      ]),
+    });
+  });
+
   it("reports every healthy review path as covered", async () => {
     const { companyId, agentId } = await seed();
     const interactionIssueId = await insertReview({ companyId, agentId, identifier: "RVA-2" });

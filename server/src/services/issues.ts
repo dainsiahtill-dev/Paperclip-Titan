@@ -4606,6 +4606,17 @@ async function listIssueReviewAttentionMap(
     }
   }
 
+  // A deferred wake only has an execution path while another run holds the
+  // issue. An orphaned deferred receipt must not hide a stalled review.
+  const liveExecutionIssueIds = new Set(
+    activeRunRows
+      .map((run: { issueId: string | null }) => run.issueId)
+      .filter((issueId: string | null): issueId is string => typeof issueId === "string"),
+  );
+  const reviewWakeRows = wakeRows.filter(
+    (wake: { status: string; issueId: string | null }) => wake.status !== "deferred_issue_execution" ||
+      (wake.issueId !== null && liveExecutionIssueIds.has(wake.issueId)),
+  );
   const livenessInput: IssueGraphLivenessInput = {
     issues: reviewIssues.map((issue) => ({
       id: issue.id,
@@ -4631,7 +4642,7 @@ async function listIssueReviewAttentionMap(
     relations: [],
     agents: agentRows,
     activeRuns: activeRunRows,
-    queuedWakeRequests: wakeRows,
+    queuedWakeRequests: reviewWakeRows,
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     openRecoveryIssues: recoveryPaths,
@@ -4694,7 +4705,7 @@ async function listIssueReviewAttentionMap(
     ).map((row) => [row.id, row]),
   );
   const wakeReasonById = new Map(
-    (wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [
+    (reviewWakeRows as Array<{ id: string; reason: string | null }>).map((row) => [
       row.id,
       row.reason,
     ]),
