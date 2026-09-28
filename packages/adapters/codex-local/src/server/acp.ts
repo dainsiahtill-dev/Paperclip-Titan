@@ -71,21 +71,25 @@ type CodexAcpExecutorOptions = Omit<
 
 type CodexAcpExecutor = (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>;
 
-function normalizeEngine(value: unknown): CodexEngineSelection {
+function normalizeEngine(value: unknown, model: unknown): CodexEngineSelection {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (raw === "acp") return { engine: "acp", explicit: true };
   if (raw === "cli") return { engine: "cli", explicit: true };
+  const modelId = typeof model === "string" ? model.trim() : "";
+  if (modelId === "gpt-6-sol" || modelId === "gpt-6-luna") {
+    return { engine: "cli", explicit: false };
+  }
   return { engine: "acp", explicit: false };
 }
 
 export function resolveCodexExecutionEngine(config: Record<string, unknown>): CodexEngineSelection {
-  return normalizeEngine(config.engine);
+  return normalizeEngine(config.engine, config.model);
 }
 
 export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
-  const selection = normalizeEngine(input.config.engine);
+  const selection = resolveCodexExecutionEngine(input.config);
   // Engine availability must never change the agent's execution or permission contract.
   if (selection.engine === "cli") return selection;
   const unavailable = (reason: string): CodexEngineSelection => ({

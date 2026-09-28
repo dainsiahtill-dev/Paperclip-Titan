@@ -1196,6 +1196,11 @@ as execution. Codex CLI defaults permit workspace writes and network access for
 Paperclip coordination without disabling its sandbox; explicit operator
 restrictions and execution-target network denials remain effective.
 
+The Starwave maintained local Codex adapter selects CLI at configuration time
+when an omitted/`auto` engine is paired with `gpt-6-sol` or `gpt-6-luna`.
+This model-specific default addresses a verified ChatGPT-account ACP rejection;
+an explicitly selected ACP engine remains ACP and never falls back mid-run.
+
 ## 11.2 Process Adapter
 
 Config shape:

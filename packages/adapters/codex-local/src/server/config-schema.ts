@@ -16,11 +16,11 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "select",
         default: "auto",
         options: [
-          { value: "auto", label: "Default (ACP)" },
+          { value: "auto", label: "Auto (model-aware)" },
           { value: "cli", label: "Codex CLI" },
           { value: "acp", label: "ACP" },
         ],
-        hint: "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.",
+        hint: "Auto uses CLI for GPT-6 Sol/Luna and ACP for other models. Explicit ACP stays on ACP; an unavailable selected engine fails without switching mid-run.",
       },
       {
         key: "agentCommand",

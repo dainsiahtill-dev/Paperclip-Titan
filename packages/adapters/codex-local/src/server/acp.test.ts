@@ -289,6 +289,20 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("codex_local ACP lane", () => {
+  it("uses CLI by default for GPT-6 Sol and Luna while respecting explicit ACP", async () => {
+    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+      expect(resolveCodexExecutionEngine({ model })).toEqual({ engine: "cli", explicit: false });
+      await expect(resolveCodexExecutionEngineForRun({
+        config: { model, engine: "auto" },
+        executionTarget: null,
+      })).resolves.toEqual({ engine: "cli", explicit: false });
+      expect(resolveCodexExecutionEngine({ model, engine: "acp" }))
+        .toEqual({ engine: "acp", explicit: true });
+    }
+    expect(resolveCodexExecutionEngine({ model: "gpt-6-astra" }))
+      .toEqual({ engine: "acp", explicit: false });
+  });
+
   it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-default-");
     const commandPath = path.join(root, "bin", "codex-acp");

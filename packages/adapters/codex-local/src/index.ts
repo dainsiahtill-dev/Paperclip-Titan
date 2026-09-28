@@ -139,7 +139,7 @@ export const agentConfigurationDoc = `# codex_local agent configuration
 Adapter: codex_local
 
 Core fields:
-- engine (string, optional): defaults to ACP, including legacy unset/"auto" values. Missing prerequisites and execution failures fail the run without changing engines. Set "cli" to explicitly select the CLI engine.
+- engine (string, optional): auto selects CLI for GPT-6 Sol/Luna on this local deployment and ACP for other models; explicit "cli" or "acp" stays selected. Missing prerequisites and execution failures fail the run without switching engines.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id

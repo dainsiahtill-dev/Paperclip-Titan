@@ -16,7 +16,7 @@ The start script runs in the foreground. A supervisor may launch it in a detache
 
 ## Local model configuration
 
-- Codex agents use the machine's already signed-in Codex account. Leave `runtimeConfig.aiConnection` unset and do not place `OPENAI_API_KEY`, `CODEX_API_KEY`, or a custom `CODEX_HOME` in agent environment. Choose `gpt-6-sol` or `gpt-6-luna` from the built-in model picker. Luna executes with at least `xhigh` even if an older agent or issue record has a lower/empty effort.
+- Codex agents use the machine's already signed-in Codex account. Leave `runtimeConfig.aiConnection` unset and do not place `OPENAI_API_KEY`, `CODEX_API_KEY`, or a custom `CODEX_HOME` in agent environment. Choose `gpt-6-sol` or `gpt-6-luna` from the built-in model picker. Auto engine selects CLI for these two models because this host's ACP ChatGPT route rejected Sol; explicit ACP remains an opt-in and will not silently fall back. Luna executes with at least `xhigh` even if an older agent or issue record has a lower/empty effort.
 - Claude agents accept a manually entered provider model. For the local cc-switch route, use `adapterType=claude_local`, `engine=cli`, `model=MiniMax-M3.1-Flash-Preview`, `dangerouslySkipPermissions=true`, and the instance's existing `ANTHROPIC_BASE_URL`/credential binding. Keep provider URLs and tokens in Paperclip agent config or cc-switch, never in this Git repository. `model` takes precedence over `ANTHROPIC_MODEL` when both are present.
 - The Codex adapter writes managed MCP HTTP Authorization using `http_headers`, and the managed Codex home exposes only an approved set of run identity variables to its tool shell. A manually supplied external `CODEX_HOME` is not rewritten by the shell-policy step.
 
