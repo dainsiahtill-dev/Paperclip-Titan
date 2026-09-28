@@ -26,4 +26,12 @@ describe("codexReasoningEffortOptions", () => {
       "xhigh",
     ]);
   });
+
+  it("shows the enforced Luna minimum in the model picker", () => {
+    expect(codexReasoningEffortOptions("gpt-6-luna")).toEqual([
+      { value: "", label: "Default (X-High)" },
+      { value: "xhigh", label: "X-High" },
+      { value: "max", label: "Max" },
+    ]);
+  });
 });

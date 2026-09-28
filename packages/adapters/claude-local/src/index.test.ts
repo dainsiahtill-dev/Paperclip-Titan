@@ -11,6 +11,8 @@ describe("Claude model defaults", () => {
     expect(resolveClaudeModel(" claude-sonnet-4-5 ", { ANTHROPIC_MODEL: "opus" }))
       .toBe("claude-sonnet-4-5");
     expect(resolveClaudeModel("", { ANTHROPIC_MODEL: " custom-model " })).toBe("custom-model");
+    expect(resolveClaudeModel("MiniMax-M3.1-Flash-Preview", { ANTHROPIC_MODEL: "claude-opus-5" }))
+      .toBe("MiniMax-M3.1-Flash-Preview");
   });
 
   it.each([

@@ -1023,6 +1023,8 @@ describe("evaluateCodexCredentialReadiness", () => {
       const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
+      expect(alpha).toContain("http_headers = {");
+      expect(alpha).not.toContain("\nheaders = {");
       expect(alpha).toContain('Authorization = "Bearer alpha-token"');
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
@@ -1045,6 +1047,32 @@ describe("evaluateCodexCredentialReadiness", () => {
       });
 
       expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("carries only approved run identity into Codex tool shells in a managed home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-shell-policy-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      await fs.writeFile(configPath, 'model = "gpt-6-sol"\n\n[shell_environment_policy]\ninherit = "core"\n', "utf8");
+      const input = {
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+        managedShellPolicy: true,
+      } as Parameters<typeof writeManagedCodexMcpConfig>[0] & { managedShellPolicy: true };
+      await writeManagedCodexMcpConfig(input);
+      const first = await fs.readFile(configPath, "utf8");
+      expect(first).toContain('model = "gpt-6-sol"');
+      expect(first).toContain('inherit = "all"');
+      expect(first).toContain('ignore_default_excludes = true');
+      expect(first).toContain('"PAPERCLIP_API_KEY" = "include"');
+      expect(first).toContain('"PAPERCLIP_RUN_ID" = "include"');
+      expect(first).not.toContain('"OPENAI_API_KEY" = "include"');
+      await writeManagedCodexMcpConfig(input);
+      expect(await fs.readFile(configPath, "utf8")).toBe(first);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

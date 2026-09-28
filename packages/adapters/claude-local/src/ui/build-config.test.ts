@@ -77,4 +77,21 @@ describe("buildClaudeLocalConfig", () => {
       FLAG: { type: "plain", value: "on" },
     });
   });
+
+  it("preserves a local Claude CLI custom-provider model and permission mode", () => {
+    const config = buildClaudeLocalConfig(makeValues({
+      claudeEngine: "cli",
+      model: "MiniMax-M3.1-Flash-Preview",
+      dangerouslySkipPermissions: true,
+      envBindings: {
+        ANTHROPIC_BASE_URL: { type: "plain", value: "https://gateway.example" },
+      },
+    }));
+    expect(config).toMatchObject({
+      engine: "cli",
+      model: "MiniMax-M3.1-Flash-Preview",
+      dangerouslySkipPermissions: true,
+      env: { ANTHROPIC_BASE_URL: { type: "plain", value: "https://gateway.example" } },
+    });
+  });
 });

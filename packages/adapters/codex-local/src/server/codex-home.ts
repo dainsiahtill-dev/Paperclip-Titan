@@ -10,6 +10,18 @@ const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
+const MANAGED_SHELL_POLICY_HEADING = "[shell_environment_policy]";
+const MANAGED_SHELL_ENV_NAMES = [
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "LANG", "LC_ALL", "TERM",
+  "TMPDIR", "TEMP", "TMP", "CODEX_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME", "PYENV_ROOT", "PYENV_VERSION", "VIRTUAL_ENV",
+  "PAPERCLIP_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID",
+  "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_REASON", "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_APPROVAL_ID", "PAPERCLIP_APPROVAL_STATUS", "PAPERCLIP_LINKED_ISSUE_IDS",
+  "PAPERCLIP_TMPDIR", "PAPERCLIP_RUN_SCRATCH_DIR",
+  "PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT", "PAPERCLIP_WORKSPACE_REALIZATION_MODE",
+] as const;
 
 /**
  * The allowlist of managed `CODEX_HOME` entries that the codex-local adapter
@@ -285,6 +297,38 @@ function readCodexMcpServerNames(config: string): Set<string> {
   return names;
 }
 
+function withManagedCodexShellPolicy(config: string): string {
+  const filters = `filters = { ${MANAGED_SHELL_ENV_NAMES.map((name) => `${tomlString(name)} = "include"`).join(", ")} }`;
+  const desired = `inherit = "all"\nignore_default_excludes = true\n${filters}`;
+  const match = /^\[shell_environment_policy\][ \t]*$/m.exec(config);
+  if (!match) {
+    return `${config.trimEnd()}${config.trim() ? "\n\n" : ""}${MANAGED_SHELL_POLICY_HEADING}\n${desired}\n`;
+  }
+  const bodyStart = match.index + match[0].length;
+  const remainder = config.slice(bodyStart);
+  const nextHeading = /^\[[^\n]+\][ \t]*$/m.exec(remainder);
+  const bodyEnd = nextHeading ? bodyStart + nextHeading.index : config.length;
+  const body = config.slice(bodyStart, bodyEnd);
+  if (
+    body.includes(filters) &&
+    /^[ \t]*inherit[ \t]*=[ \t]*"all"[ \t]*$/m.test(body) &&
+    /^[ \t]*ignore_default_excludes[ \t]*=[ \t]*true[ \t]*$/m.test(body)
+  ) return config;
+  if (/^[ \t]*(filters|include_only|exclude)[ \t]*=/m.test(body)) {
+    throw new Error("Managed Codex shell environment policy already has conflicting filters");
+  }
+  if (/^[ \t]*inherit[ \t]*=/m.test(body) &&
+      !/^[ \t]*inherit[ \t]*=[ \t]*"(?:core|all)"[ \t]*$/m.test(body)) {
+    throw new Error("Unexpected managed Codex shell inheritance policy");
+  }
+  const retained = body
+    .replace(/^[ \t]*inherit[ \t]*=[^\n]*\n?/gm, "")
+    .replace(/^[ \t]*ignore_default_excludes[ \t]*=[^\n]*\n?/gm, "")
+    .trim();
+  const replacement = `${MANAGED_SHELL_POLICY_HEADING}\n${desired}${retained ? `\n${retained}` : ""}\n`;
+  return `${config.slice(0, match.index)}${replacement}${config.slice(bodyEnd)}`;
+}
+
 function buildManagedMcpBlock(input: {
   gateways: ManagedCodexMcpGateway[];
   apiBaseUrl: string;
@@ -316,7 +360,7 @@ function buildManagedMcpBlock(input: {
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
-      `headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
@@ -327,6 +371,7 @@ export async function writeManagedCodexMcpConfig(input: {
   codexHome: string;
   apiBaseUrl: string;
   gateways: ManagedCodexMcpGateway[];
+  managedShellPolicy?: boolean;
 }): Promise<{ configPath: string; warnings: string[] }> {
   const configPath = path.join(input.codexHome, "config.toml");
   await fs.mkdir(input.codexHome, { recursive: true });
@@ -334,7 +379,10 @@ export async function writeManagedCodexMcpConfig(input: {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
   });
-  const unmanagedConfig = stripManagedMcpBlock(existing);
+  const unmodifiedConfig = stripManagedMcpBlock(existing);
+  const unmanagedConfig = (input.managedShellPolicy
+    ? withManagedCodexShellPolicy(unmodifiedConfig)
+    : unmodifiedConfig).trimEnd();
   const { block, warnings } = buildManagedMcpBlock({
     gateways: input.gateways,
     apiBaseUrl: input.apiBaseUrl,

@@ -2372,6 +2372,30 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain(commentBody);
   });
 
+  it("keeps durable continuation receipts while bounding an oversized wake environment value", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "issue-long", identifier: "SOU-40", title: "Native review", status: "in_review" },
+      executionContinuation: {
+        version: 1,
+        messages: [{ role: "assistant", body: "中".repeat(50_000) }],
+        completedActions: [{ kind: "write", receipt: "already-recorded" }],
+      },
+      continuationSummary: { body: "Resume independent QA" },
+      latestCommentId: "comment-long",
+    };
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized ?? "", "utf8")).toBeLessThan(64 * 1024);
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed.issue.id).toBe("issue-long");
+    expect(parsed.latestCommentId).toBe("comment-long");
+    expect(parsed.continuationSummary.body).toBe("Resume independent QA");
+    expect(parsed.executionContinuation.messages).toEqual([]);
+    expect(parsed.executionContinuation.completedActions).toEqual([{ kind: "write", receipt: "already-recorded" }]);
+    expect(parsed).toMatchObject({ truncated: true, fallbackFetchNeeded: true });
+  });
+
   it("renders planning-mode directives for assignment and comment wakes", () => {
     const assignmentPrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",

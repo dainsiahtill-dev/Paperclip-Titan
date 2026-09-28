@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it("keeps GPT-6 Luna at xhigh or above even when effort is omitted or stale", () => {
+    for (const effort of [undefined, "", "medium", "high", "xhigh"]) {
+      const result = buildCodexExecArgs({ model: "gpt-6-luna", modelReasoningEffort: effort });
+      expect(result.args).toContain('model_reasoning_effort="xhigh"');
+    }
+    expect(buildCodexExecArgs({ model: "gpt-6-luna", modelReasoningEffort: "max" }).args)
+      .toContain('model_reasoning_effort="max"');
+  });
+
   it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
     const result = buildCodexExecArgs({
       model: "gpt-6-astra",

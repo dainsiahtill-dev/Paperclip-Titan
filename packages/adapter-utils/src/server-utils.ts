@@ -1926,17 +1926,58 @@ export function stringifyPaperclipWakePayload(
 ): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
-  if (options.omitIssueDescription === true && normalized.issue) {
-    return JSON.stringify({
-      ...normalized,
-      issue: {
-        ...normalized.issue,
-        description: null,
-        descriptionTruncated: false,
-      },
-    });
-  }
-  return JSON.stringify(normalized);
+  // Linux limits each individual argument/environment string; the durable run
+  // still owns the full continuation, while this value is only a wake hint.
+  const maxEnvironmentBytes = 64 * 1024;
+  const initial = options.omitIssueDescription === true && normalized.issue
+    ? {
+        ...normalized,
+        issue: {
+          ...normalized.issue,
+          description: null,
+          descriptionTruncated: false,
+        },
+      }
+    : normalized;
+  const fitsEnvironment = (serialized: string) =>
+    Buffer.byteLength(serialized, "utf8") < maxEnvironmentBytes;
+  let serialized = JSON.stringify(initial);
+  if (fitsEnvironment(serialized)) return serialized;
+
+  const compact = {
+    ...initial,
+    executionContinuation: initial.executionContinuation
+      ? { ...initial.executionContinuation, messages: [] }
+      : null,
+    truncated: true,
+    fallbackFetchNeeded: true,
+  };
+  serialized = JSON.stringify(compact);
+  if (fitsEnvironment(serialized)) return serialized;
+
+  const comments = compact.comments.length > 0 ? [compact.comments.at(-1)!] : [];
+  const reduced = {
+    ...compact,
+    comments,
+    includedCount: comments.length,
+    missingCount: Math.max(compact.missingCount, compact.requestedCount - comments.length),
+    issue: compact.issue
+      ? { ...compact.issue, description: null, descriptionTruncated: true }
+      : null,
+    continuationSummary: compact.continuationSummary
+      ? {
+          ...compact.continuationSummary,
+          body: compact.continuationSummary.body.slice(0, 4_000),
+          bodyTruncated: true,
+        }
+      : null,
+  };
+  serialized = JSON.stringify(reduced);
+  if (fitsEnvironment(serialized)) return serialized;
+
+  serialized = JSON.stringify({ ...reduced, executionContinuation: null });
+  if (fitsEnvironment(serialized)) return serialized;
+  throw new Error("Paperclip wake payload remains too large for one environment value; fetch the durable task context instead");
 }
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {

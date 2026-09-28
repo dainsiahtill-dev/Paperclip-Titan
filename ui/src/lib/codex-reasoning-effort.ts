@@ -17,8 +17,9 @@ export function codexReasoningEffortOptions(
   model: string | null | undefined,
   defaultLabel = "Default",
 ) {
+  const isLuna = model?.trim() === "gpt-6-luna";
   return [
-    { value: "", label: defaultLabel },
+    { value: "", label: isLuna ? `${defaultLabel} (X-High)` : defaultLabel },
     ...codexLocalReasoningEffortsForModel(model).map((value) => ({
       value,
       label: CODEX_REASONING_EFFORT_LABELS[value],
