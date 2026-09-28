@@ -26,6 +26,7 @@ export async function deliverAgentUnblockNotification(input: {
     source: "automation";
     triggerDetail: "system";
     reason: "issue_unblock_requested";
+    allowRunCoalescing: false;
     idempotencyKey: string;
     payload: { issueId: string; action: string };
     contextSnapshot: { wakeReason: "issue_unblock_requested"; issueId: string; taskId: string };
@@ -45,6 +46,9 @@ export async function deliverAgentUnblockNotification(input: {
     source: "automation",
     triggerDetail: "system",
     reason: "issue_unblock_requested",
+    // The current owner run just blocked this issue. Coalescing the notification
+    // into that run marks it delivered without leaving a successor to unblock it.
+    allowRunCoalescing: false,
     idempotencyKey: `issue-unblock:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
     payload: { issueId: issue.id, action: issue.unblockDescriptor.action },
     contextSnapshot: { wakeReason: "issue_unblock_requested", issueId: issue.id, taskId: issue.id },

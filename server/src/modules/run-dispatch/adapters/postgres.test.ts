@@ -13,6 +13,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -57,6 +58,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(documents);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -608,6 +610,72 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_assignee_changed",
       });
+    });
+
+    it("keeps a pending question wake for its verified non-assignee addressee", async () => {
+      const { companyId, agentId: assigneeId } = await seedCompanyAndAgent();
+      const addresseeId = randomUUID();
+      await seedAgent({ id: addresseeId, companyId, name: "CEO", role: "ceo" });
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: assigneeId });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        addresseeAgentId: addresseeId,
+        payload: { version: 1, questions: [] },
+      });
+      const runId = await seedRun({
+        companyId,
+        agentId: addresseeId,
+        contextSnapshot: {
+          issueId,
+          interactionId,
+          interactionKind: "ask_user_questions",
+          wakeReason: "interaction_pending",
+          mutation: "interaction",
+        },
+      });
+
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(result).toMatchObject({ outcome: "not_stale" });
+    });
+
+    it.each([
+      { status: "resolved", resolverPolicy: "anyone", matchingAddressee: true },
+      { status: "pending", resolverPolicy: "human_only", matchingAddressee: true },
+      { status: "pending", resolverPolicy: "anyone", matchingAddressee: false },
+    ] as const)("rejects a stale or unauthorized pending-question wake (%j)", async (scenario) => {
+      const { companyId, agentId: assigneeId } = await seedCompanyAndAgent();
+      const candidateId = randomUUID();
+      await seedAgent({ id: candidateId, companyId, name: "CandidateCEO", role: "ceo" });
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: assigneeId });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: scenario.status,
+        effectiveResolverPolicy: scenario.resolverPolicy,
+        addresseeAgentId: scenario.matchingAddressee ? candidateId : assigneeId,
+        payload: { version: 1, questions: [] },
+      });
+      const runId = await seedRun({
+        companyId,
+        agentId: candidateId,
+        contextSnapshot: { issueId, interactionId, wakeReason: "interaction_pending" },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId, companyId, expectedStatus: "queued", now: new Date(),
+      });
+      expect(result).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
     });
 
     it(

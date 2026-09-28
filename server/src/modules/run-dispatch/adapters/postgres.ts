@@ -13,7 +13,7 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
-import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
+import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON, isUuidLike } from "@paperclipai/shared";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService } from "../../../services/budgets.js";
@@ -22,6 +22,7 @@ import { collectDispositionRepairSourceState } from "../../../services/recovery/
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { issueThreadInteractionAttentionAgentAllowed } from "../../../services/issue-thread-interaction-resolution.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -493,7 +494,33 @@ export function createPostgresRunDispatchAdapter(
     );
 
     const wakeCommentId = deriveCommentId(context);
-    const isInteractionWake = allowsIssueInteractionWake(
+    const pendingInteractionId = readNonEmptyString(context.interactionId);
+    const pendingAddresseeInteraction =
+      issue &&
+      context.wakeReason === "interaction_pending" &&
+      isUuidLike(pendingInteractionId)
+        ? await dbOrTx
+            .select()
+            .from(issueThreadInteractions)
+            .where(and(
+              eq(issueThreadInteractions.id, pendingInteractionId!),
+              eq(issueThreadInteractions.companyId, input.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+              eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+    const verifiedPendingAddressee = pendingAddresseeInteraction
+      ? issueThreadInteractionAttentionAgentAllowed({
+          agentId: input.agentId,
+          interaction: pendingAddresseeInteraction,
+          governedAction: pendingAddresseeInteraction.kind === "request_confirmation" &&
+            parseObject(pendingAddresseeInteraction.payload).toolAction !== undefined,
+        })
+      : false;
+    const isInteractionWake = verifiedPendingAddressee || allowsIssueInteractionWake(
       context,
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );

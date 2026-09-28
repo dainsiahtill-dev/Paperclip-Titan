@@ -377,6 +377,33 @@ describe("releaseIssueExecution", () => {
     expect(findNextDeferredWake).toHaveBeenCalledTimes(1);
   });
 
+  it("promotes a deferred owner-unblock wake after a blocked issue releases its run", async () => {
+    const candidate = wakeCandidate({
+      agentId: RUN.agentId,
+      reason: "issue_unblock_requested",
+      wakeReason: "issue_unblock_requested",
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      payload: { issueId: ISSUE.id, action: "Inspect the blocker after this run" },
+    });
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(candidate)
+        .mockResolvedValue(null),
+      findInvokableAgent: vi.fn(async () => ({ ...AGENT, id: RUN.agentId })),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: "blocked" }),
+      recovery: createFakeRecovery(),
+    });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("promoted");
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "issue_unblock_requested" }),
+    );
+  });
+
   it("continues the loop after a cancel outcome, a fail outcome, and a normalize outcome, then promotes", async () => {
     const queue = [
       // cancel_empty: queued comments, none live, no independent continuation.
@@ -769,6 +796,24 @@ function createFakeAdmissionHelpers(
 }
 
 describe("admitWakeBehindIssueExecution", () => {
+  it("persists a self-owned unblock wake behind the still-running issue", async () => {
+    const writer = createFakeAdmissionWriter();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader: createFakeAdmissionReader(),
+      writer,
+      helpers: createFakeAdmissionHelpers(),
+    });
+    const result = await admit(SCOPE, admissionInput({
+      allowRunCoalescing: false,
+      reason: "issue_unblock_requested",
+      payload: { issueId: "issue-1", action: "Retry after the owner run ends" },
+      contextSnapshot: { issueId: "issue-1", wakeReason: "issue_unblock_requested" },
+    }));
+    expect(result).toEqual({ kind: "deferred" });
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledOnce();
+  });
+
   it.each(["running", "queued"])(
     "keeps a dedicated durable continuation separate from a %s execution and an existing deferred wake",
     async (status) => {
