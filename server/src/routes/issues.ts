@@ -258,6 +258,7 @@ import {
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
+  buildIssueChildrenReadyWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
   resolvedDependencyWakeHoldReason,
 } from "../services/issue-dependency-wakeups.js";
@@ -14798,7 +14799,12 @@ export function issueRoutes(
                 source: "automation",
                 triggerDetail: "system",
                 reason: "issue_children_completed",
-                idempotencyKey: `issue_children_ready:${issue.id}:${issue.updatedAt.toISOString()}`,
+                idempotencyKey: buildIssueChildrenReadyWakeStateKey({
+                  parentIssueId: readyParent.id,
+                  children: readyParent.childReadyState,
+                  blockerIssueIds: readyParent.blockerIssueIds,
+                  blockedTransitionAt: readyParent.blockedTransitionAt,
+                }),
                 payload: {
                   issueId: issue.id,
                   childIssueIds: readyParent.childIssueIds,
@@ -14898,6 +14904,12 @@ export function issueRoutes(
               source: "automation",
               triggerDetail: "system",
               reason: "issue_children_completed",
+              idempotencyKey: buildIssueChildrenReadyWakeStateKey({
+                parentIssueId: parent.id,
+                children: parent.childReadyState,
+                blockerIssueIds: parent.blockerIssueIds,
+                blockedTransitionAt: parent.blockedTransitionAt,
+              }),
               payload: {
                 issueId: parent.id,
                 completedChildIssueId: issue.id,
@@ -18238,6 +18250,12 @@ export function issueRoutes(
               source: "automation",
               triggerDetail: "system",
               reason: "issue_children_completed",
+              idempotencyKey: buildIssueChildrenReadyWakeStateKey({
+                parentIssueId: parent.id,
+                children: parent.childReadyState,
+                blockerIssueIds: parent.blockerIssueIds,
+                blockedTransitionAt: parent.blockedTransitionAt,
+              }),
               payload: {
                 issueId: parent.id,
                 completedChildIssueId: currentIssue.id,

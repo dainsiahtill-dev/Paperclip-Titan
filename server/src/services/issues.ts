@@ -9094,6 +9094,7 @@ export function issueService(db: Db) {
           status: issues.status,
           companyId: issues.companyId,
           unblockDescriptor: issues.unblockDescriptor,
+          blockedTransitionAt: issues.blockedTransitionAt,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
@@ -9196,6 +9197,9 @@ export function issueService(db: Db) {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
         childIssueIds: children.map((child) => child.id),
+        childReadyState: children.map((child) => ({ id: child.id, status: child.status, updatedAt: child.updatedAt })),
+        blockerIssueIds: readiness.get(parentIssueId)?.blockerIssueIds ?? [],
+        blockedTransitionAt: parent.blockedTransitionAt,
         childIssueSummaries,
         childIssueSummaryTruncated:
           children.length > childIssueSummaries.length,

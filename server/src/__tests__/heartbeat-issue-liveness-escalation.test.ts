@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -76,6 +76,7 @@ import { runningProcesses } from "../adapters/index.ts";
 import {
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
+  buildIssueChildrenReadyWakeStateKey,
 } from "../services/issue-dependency-wakeups.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -696,6 +697,112 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const [original] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(original?.contextSnapshot).toMatchObject({ wakeReason: "issue_blockers_resolved" });
+  });
+
+  it("executes only one of two queued wakes for the same terminal child state", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    await db.update(issues).set({ parentId: blockedIssueId }).where(eq(issues.id, blockerIssueId));
+    const [child] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, blockerIssueId));
+    const key = buildIssueChildrenReadyWakeStateKey({
+      parentIssueId: blockedIssueId, blockerIssueIds: [], blockedTransitionAt: null,
+      children: [{ id: blockerIssueId, status: "done", updatedAt: child!.updatedAt }],
+    });
+    const runIds = [randomUUID(), randomUUID()];
+    for (let index = 0; index < runIds.length; index += 1) {
+      const wakeId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeId, companyId, agentId, source: "automation", triggerDetail: "system",
+        reason: "issue_children_completed", payload: { issueId: blockedIssueId, completedChildIssueId: blockerIssueId },
+        status: "queued", runId: runIds[index], idempotencyKey: key,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runIds[index], companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "queued", wakeupRequestId: wakeId,
+        contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_children_completed" },
+        createdAt: new Date(Date.now() + index),
+      });
+    }
+    mockAdapterExecute.mockClear();
+    mockAdapterExecute.mockImplementation(async () => {
+      await db.insert(issueComments).values({
+        companyId, issueId: blockedIssueId, authorAgentId: agentId, authorType: "agent",
+        createdByRunId: runIds[0], body: "Reviewed the terminal child state.",
+      });
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Reviewed the terminal child state.", provider: "test", model: "test-model" };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const rows = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds)));
+    expect(rows.filter((row) => row.status === "succeeded")).toHaveLength(1);
+    expect(rows.filter((row) => row.status === "cancelled")).toHaveLength(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("supersedes a queued child-ready wake when its child becomes a formal blocker", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    await db.update(issues).set({ parentId: blockedIssueId }).where(eq(issues.id, blockerIssueId));
+    const [child] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, blockerIssueId));
+    const childKey = buildIssueChildrenReadyWakeStateKey({
+      parentIssueId: blockedIssueId, blockerIssueIds: [], blockedTransitionAt: null,
+      children: [{ id: blockerIssueId, status: "done", updatedAt: child!.updatedAt }],
+    });
+    const dependencyKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+    });
+    const childRunId = randomUUID();
+    const dependencyRunId = randomUUID();
+    for (const [runId, reason, key] of [
+      [childRunId, "issue_children_completed", childKey],
+      [dependencyRunId, "issue_blockers_resolved", dependencyKey],
+    ] as const) {
+      const wakeId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeId, companyId, agentId, source: "automation", triggerDetail: "system",
+        reason, payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerIssueId },
+        status: "queued", runId, idempotencyKey: key,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "queued", wakeupRequestId: wakeId,
+        contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: reason },
+      });
+      if (reason === "issue_children_completed") {
+        await db.insert(issueRelations).values({
+          companyId, issueId: blockerIssueId, relatedIssueId: blockedIssueId, type: "blocks",
+        });
+      }
+    }
+    mockAdapterExecute.mockClear();
+    mockAdapterExecute.mockImplementation(async () => {
+      await db.insert(issueComments).values({
+        companyId, issueId: blockedIssueId, authorAgentId: agentId, authorType: "agent",
+        createdByRunId: dependencyRunId, body: "Handled the current blocker-ready state.",
+      });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockedIssueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Handled the current blocker-ready state.", provider: "test", model: "test-model" };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [childRun] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, childRunId));
+    const [dependencyRun] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, dependencyRunId));
+    expect(childRun?.status).toBe("cancelled");
+    expect(dependencyRun?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {

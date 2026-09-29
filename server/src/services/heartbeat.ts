@@ -396,6 +396,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
+  buildIssueChildrenReadyWakeStateKey,
   resolvedDependencyWakeHoldReason,
 } from "./issue-dependency-wakeups.js";
 import {
@@ -17095,22 +17096,38 @@ export function heartbeatService(
     )).limit(1);
     if (!wake || wake.status !== "queued" || wake.runId !== run.id) return "wake_identity_changed";
 
+    let currentKey: string;
     if (wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
       if (readiness.blockerIssueIds.length === 0) return "missing_blocker_edge";
-      const currentKey = buildIssueBlockersResolvedWakeStateKey({
+      currentKey = buildIssueBlockersResolvedWakeStateKey({
         dependentIssueId: issueId,
         blockerIssueIds: readiness.blockerIssueIds,
         blockedTransitionAt: currentIssue.blockedTransitionAt,
       });
-      if (wake.idempotencyKey !== currentKey) return "blocked_cycle_changed";
-      return null;
+    } else {
+      const children = await tx.select({ id: issues.id, status: issues.status, updatedAt: issues.updatedAt })
+        .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, issueId)));
+      if (children.length === 0 || children.some((child) =>
+        child.status !== "done" && child.status !== "cancelled")) return "children_not_terminal";
+      currentKey = buildIssueChildrenReadyWakeStateKey({
+        parentIssueId: issueId,
+        children,
+        blockerIssueIds: readiness.blockerIssueIds,
+        blockedTransitionAt: currentIssue.blockedTransitionAt,
+      });
     }
+    if (wake.idempotencyKey !== currentKey) return "ready_state_key_changed";
 
-    const [children] = await tx.select({
-      total: sql<number>`count(*)::int`,
-      unfinished: sql<number>`count(*) filter (where ${issues.status} not in ('done', 'cancelled'))::int`,
-    }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, issueId)));
-    if (!children || Number(children.total) === 0 || Number(children.unfinished) > 0) return "children_not_terminal";
+    const [alreadyAdmitted] = await tx.select({ id: heartbeatRuns.id })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
+      .where(and(eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId),
+        eq(agentWakeupRequests.idempotencyKey, currentKey),
+        ne(heartbeatRuns.id, run.id),
+        inArray(heartbeatRuns.status, ["running", "succeeded"])))
+      .limit(1);
+    if (alreadyAdmitted) return "ready_state_already_admitted";
     return null;
   }
 

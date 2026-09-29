@@ -41,7 +41,7 @@ import {
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
-import { buildIssueBlockersResolvedWakeStateKey } from "../issue-dependency-wakeups.js";
+import { buildIssueBlockersResolvedWakeStateKey, buildIssueChildrenReadyWakeStateKey } from "../issue-dependency-wakeups.js";
 import {
   persistActivity,
   publishActivity,
@@ -1961,7 +1961,12 @@ export async function commitNativeStatusDecision(input: {
           issueId: parent.id,
           agentId: parent.assigneeAgentId,
           reason: "issue_children_completed",
-          idempotencyKey: `issue_children_completed:${parent.id}:${input.issueId}`,
+          idempotencyKey: buildIssueChildrenReadyWakeStateKey({
+            parentIssueId: parent.id,
+            children: parent.childReadyState,
+            blockerIssueIds: parent.blockerIssueIds,
+            blockedTransitionAt: parent.blockedTransitionAt,
+          }),
           payload: {
             completedChildIssueId: input.issueId,
             childIssueIds: parent.childIssueIds,

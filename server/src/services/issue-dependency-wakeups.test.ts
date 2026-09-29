@@ -4,6 +4,7 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
+  buildIssueChildrenReadyWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
   resolvedDependencyWakeHoldReason,
 } from "./issue-dependency-wakeups.js";
@@ -36,6 +37,34 @@ describe("resolvedDependencyWakeHoldReason", () => {
       pendingInteraction: false,
       pendingApproval: false,
     })).toBeNull();
+  });
+});
+
+describe("buildIssueChildrenReadyWakeStateKey", () => {
+  const ready = {
+    parentIssueId: dependentIssueId,
+    blockedTransitionAt: firstCycle,
+    blockerIssueIds: [] as string[],
+    children: [
+      { id: blockerIssueId, status: "done", updatedAt: firstCycle },
+      { id: companyId, status: "cancelled", updatedAt: secondCycle },
+    ],
+  };
+
+  it("keeps one key for the same terminal child state regardless of input order", () => {
+    const first = buildIssueChildrenReadyWakeStateKey(ready);
+    const reordered = buildIssueChildrenReadyWakeStateKey({ ...ready, children: [...ready.children].reverse() });
+    expect(first).toBe(reordered);
+    expect(first).toMatch(new RegExp(`^issue_children_completed:state:${dependentIssueId}:2:`));
+  });
+
+  it("changes when a child revision, formal blocker set, or blocked cycle changes", () => {
+    const first = buildIssueChildrenReadyWakeStateKey(ready);
+    expect(buildIssueChildrenReadyWakeStateKey({ ...ready, children: [
+      { ...ready.children[0], updatedAt: secondCycle }, ready.children[1],
+    ] })).not.toBe(first);
+    expect(buildIssueChildrenReadyWakeStateKey({ ...ready, blockerIssueIds: [blockerIssueId] })).not.toBe(first);
+    expect(buildIssueChildrenReadyWakeStateKey({ ...ready, blockedTransitionAt: secondCycle })).not.toBe(first);
   });
 });
 

@@ -144,6 +144,28 @@ export function buildIssueBlockersResolvedWakeStateKey(input: IssueBlockersResol
   );
 }
 
+export type IssueChildrenReadyWakeStateInput = {
+  parentIssueId: string;
+  children: Array<{ id: string; status: string; updatedAt: Date | string }>;
+  blockerIssueIds: string[];
+  blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
+};
+
+export function buildIssueChildrenReadyWakeStateKey(input: IssueChildrenReadyWakeStateInput): string {
+  if (input.children.length === 0) throw new Error("A child-ready wake requires at least one child");
+  const children = input.children.map((child) => {
+    const updatedAt = child.updatedAt instanceof Date ? child.updatedAt : new Date(child.updatedAt);
+    if (Number.isNaN(updatedAt.getTime())) throw new Error("A child-ready wake requires valid child timestamps");
+    return `${child.id}\t${child.status}\t${updatedAt.toISOString()}`;
+  }).sort();
+  const digest = createHash("sha256").update(JSON.stringify({
+    children,
+    blockerIssueIds: uniqueSortedBlockerIssueIds(input.blockerIssueIds),
+    blockedTransitionAt: formatIssueBlockersResolvedWakeCycle(input.blockedTransitionAt),
+  })).digest("hex").slice(0, 32);
+  return `issue_children_completed:state:${input.parentIssueId}:${children.length}:${digest}`;
+}
+
 function parseWakeCycleDate(blockedTransitionAt: IssueBlockersResolvedWakeCycleInput): Date | null {
   if (blockedTransitionAt == null || blockedTransitionAt === "") return null;
   const parsed = blockedTransitionAt instanceof Date
