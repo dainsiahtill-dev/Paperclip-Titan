@@ -102,6 +102,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  resolvedDependencyWakeHoldReason,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
@@ -1122,6 +1123,20 @@ export function recoveryService(
           ]),
         ),
       )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasPendingIssueApproval(companyId: string, issueId: string) {
+    return db
+      .select({ id: approvals.id })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+      .where(and(
+        eq(issueApprovals.companyId, companyId),
+        eq(issueApprovals.issueId, issueId),
+        inArray(approvals.status, ["pending", "revision_requested"]),
+      ))
       .limit(1)
       .then((rows) => Boolean(rows[0]));
   }
@@ -5215,6 +5230,8 @@ export function recoveryService(
       existingWakeSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
+      approvalSkipped: 0,
+      independentWaitSkipped: 0,
       pauseHoldSkipped: 0,
       notReadySkipped: 0,
       candidateLimitSkipped: 0,
@@ -5258,6 +5275,7 @@ export function recoveryService(
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
+            unblockDescriptor: issues.unblockDescriptor,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -5274,6 +5292,7 @@ export function recoveryService(
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
+          unblockDescriptor: issues.unblockDescriptor,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -5345,6 +5364,14 @@ export function recoveryService(
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
         if (!agentId) continue;
+        if (resolvedDependencyWakeHoldReason({
+          unblockDescriptor: candidate.unblockDescriptor,
+          pendingInteraction: false,
+          pendingApproval: false,
+        })) {
+          result.independentWaitSkipped += 1;
+          continue;
+        }
 
         const readiness = readinessMap.get(candidate.id);
         const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
@@ -5388,8 +5415,18 @@ export function recoveryService(
           continue;
         }
 
-        if (await hasPendingWakeInteraction(companyId, candidate.id)) {
-          result.interactionSkipped += 1;
+        const [pendingInteraction, pendingApproval] = await Promise.all([
+          hasPendingWakeInteraction(companyId, candidate.id),
+          hasPendingIssueApproval(companyId, candidate.id),
+        ]);
+        const holdReason = resolvedDependencyWakeHoldReason({
+          unblockDescriptor: candidate.unblockDescriptor,
+          pendingInteraction,
+          pendingApproval,
+        });
+        if (holdReason) {
+          if (holdReason === "pending_interaction") result.interactionSkipped += 1;
+          if (holdReason === "pending_approval") result.approvalSkipped += 1;
           continue;
         }
 

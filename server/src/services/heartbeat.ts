@@ -393,7 +393,10 @@ import {
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  resolvedDependencyWakeHoldReason,
+} from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -17164,6 +17167,45 @@ export function heartbeatService(
         return null;
       }
 
+      if (readNonEmptyString(context.wakeReason) === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
+        const [currentIssue, pendingInteraction, pendingApproval] = await Promise.all([
+          db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+            unblockDescriptor: issues.unblockDescriptor })
+            .from(issues)
+            .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+            .limit(1).then((rows) => rows[0] ?? null),
+          db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
+            .where(and(eq(issueThreadInteractions.companyId, run.companyId),
+              eq(issueThreadInteractions.issueId, issueId),
+              eq(issueThreadInteractions.status, "pending"),
+              inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"])))
+            .limit(1).then((rows) => Boolean(rows[0])),
+          db.select({ id: approvals.id }).from(issueApprovals)
+            .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+            .where(and(eq(issueApprovals.companyId, run.companyId),
+              eq(issueApprovals.issueId, issueId),
+              inArray(approvals.status, ["pending", "revision_requested"])))
+            .limit(1).then((rows) => Boolean(rows[0])),
+        ]);
+        const holdReason = !currentIssue || currentIssue.status !== "blocked" ||
+          currentIssue.assigneeAgentId !== run.agentId ||
+          !readiness?.blockerIssueIds.length
+          ? "issue_or_dependency_changed"
+          : resolvedDependencyWakeHoldReason({
+            unblockDescriptor: currentIssue.unblockDescriptor,
+            pendingInteraction,
+            pendingApproval,
+          });
+        if (holdReason) {
+          await cancelQueuedRunForBlockedDependencies(run, issueId, [], {
+            reason: `Cancelled stale dependency wake because ${holdReason}`,
+            errorCode: "issue_dependency_wake_stale",
+            details: { holdReason },
+          });
+          return null;
+        }
+      }
+
       const staleness = await runDispatch.cancelStaleQueuedRun({
         runId: run.id,
         companyId: run.companyId,
@@ -17675,17 +17717,19 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     unresolvedBlockerIssueIds: string[],
+    options?: { reason: string; errorCode: string; details: Record<string, unknown> },
   ) {
     const now = new Date();
-    const reason =
+    const reason = options?.reason ??
       "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+    const errorCode = options?.errorCode ?? "issue_dependencies_blocked";
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
-      errorCode: "issue_dependencies_blocked",
+      errorCode,
       resultJson: {
         ...parseObject(run.resultJson),
-        stopReason: "issue_dependencies_blocked",
+        stopReason: errorCode,
         effectiveTimeoutSec: 0,
         timeoutConfigured: false,
         timeoutSource: "dependency_gate",
@@ -17723,6 +17767,7 @@ export function heartbeatService(
       payload: {
         issueId,
         unresolvedBlockerIssueIds,
+        ...options?.details,
       },
     });
 

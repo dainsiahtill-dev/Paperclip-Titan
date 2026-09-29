@@ -3,6 +3,22 @@ import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 
+export type ResolvedDependencyWakeHoldReason =
+  | "unblock_descriptor"
+  | "pending_interaction"
+  | "pending_approval";
+
+export function resolvedDependencyWakeHoldReason(input: {
+  unblockDescriptor: unknown;
+  pendingInteraction: boolean;
+  pendingApproval: boolean;
+}): ResolvedDependencyWakeHoldReason | null {
+  if (input.unblockDescriptor) return "unblock_descriptor";
+  if (input.pendingInteraction) return "pending_interaction";
+  if (input.pendingApproval) return "pending_approval";
+  return null;
+}
+
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
 // A wake counts as "already delivered or in flight for the current ready state"

@@ -5,6 +5,7 @@ export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 type RoutableBlockedIssue = {
   id: string;
   status: string;
+  assigneeAgentId?: string | null;
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
@@ -41,6 +42,9 @@ export async function deliverAgentUnblockNotification(input: {
 
   const owner = issue.unblockDescriptor.owner;
   if (owner === "board" || !("agentId" in owner)) return false;
+  // An assignee cannot supply a new unblock signal by re-entering the same
+  // blocked state. The transition itself must not queue another turn for them.
+  if (owner.agentId === issue.assigneeAgentId) return false;
 
   await input.wakeup(owner.agentId, {
     source: "automation",

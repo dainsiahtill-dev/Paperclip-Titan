@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  approvals,
   agentWakeupRequests,
   agentRuntimeState,
   budgetPolicies,
@@ -16,6 +17,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueApprovals,
   issueRelations,
   issueRecoveryActions,
   issueTreeHoldMembers,
@@ -115,6 +117,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -471,6 +475,63 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       entityId: blockedIssueId,
       details: expect.objectContaining({ source: "issue_graph_liveness.backstop" }),
     });
+  });
+
+  it("does not reconcile a dependency wake while a board-owned unblock wait remains", async () => {
+    const { companyId, blockedIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db.update(issues).set({
+      unblockDescriptor: { owner: "board", action: "Await external resource" },
+    }).where(eq(issues.id, blockedIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(0);
+    const wakes = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toEqual([]);
+  });
+
+  it("does not reconcile a dependency wake while linked approval is pending", async () => {
+    const { companyId, blockedIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId: blockedIssueId, approvalId });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result.healed).toBe(0);
+    const wakes = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toEqual([]);
+  });
+
+  it("skips a queued dependency wake if an independent wait appears before claim", async () => {
+    const { companyId, agentId, blockedIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_blockers_resolved", payload: { issueId: blockedIssueId },
+      status: "queued", runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId,
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+    await db.update(issues).set({
+      unblockDescriptor: { owner: "board", action: "Await external resource" },
+    }).where(eq(issues.id, blockedIssueId));
+    mockAdapterExecute.mockClear();
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toEqual({ status: "cancelled", errorCode: "issue_dependency_wake_stale" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {

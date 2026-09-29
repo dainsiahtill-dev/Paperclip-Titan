@@ -259,6 +259,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  resolvedDependencyWakeHoldReason,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -3555,6 +3556,22 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const resolvedDependencyWakeHold = async (companyId: string, issueId: string, unblockDescriptor: unknown) => {
+    const [pendingInteraction, linkedApprovals] = await Promise.all([
+      issueThreadInteractionsSvc.hasPendingWakeContinuationForIssue(
+        companyId,
+        issueId,
+      ),
+      issueApprovalsSvc.listApprovalsForIssue(issueId),
+    ]);
+    return resolvedDependencyWakeHoldReason({
+      unblockDescriptor,
+      pendingInteraction,
+      pendingApproval: linkedApprovals.some((approval) =>
+        approval.status === "pending" || approval.status === "revision_requested"
+      ),
+    });
+  };
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
     resolveNativeQuestion: (interaction) =>
@@ -14463,12 +14480,14 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          unblockDescriptor?: unknown;
           source: string;
           mutation: string;
         }) => {
-          if (await issueThreadInteractionsSvc.hasPendingWakeContinuationForIssue(
+          if (await resolvedDependencyWakeHold(
             issue.companyId,
             input.dependentIssueId,
+            input.unblockDescriptor,
           )) return;
           const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
             dependentIssueId: input.dependentIssueId,
@@ -14720,6 +14739,7 @@ export function issueRoutes(
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              unblockDescriptor: dependent.unblockDescriptor,
               source: "issue.blockers_resolved",
               mutation: "blocker_done",
             });
@@ -14729,6 +14749,7 @@ export function issueRoutes(
         const restoredBlockedReadyDependency =
           issue.status === "blocked" &&
           issue.assigneeAgentId &&
+          !issue.unblockDescriptor &&
           (existing.status !== "blocked" ||
             Array.isArray(req.body.blockedByIssueIds) ||
             existing.assigneeAgentId !== issue.assigneeAgentId);
@@ -14751,6 +14772,7 @@ export function issueRoutes(
               resolvedBlockerIssueId,
               blockerIssueIds: readiness.blockerIssueIds,
               blockedTransitionAt: issue.blockedTransitionAt,
+              unblockDescriptor: issue.unblockDescriptor,
               source: "issue.blockers_restored",
               mutation: "blocked_dependency_restored",
             });
@@ -17915,10 +17937,12 @@ export function issueRoutes(
           resolvedBlockerIssueId: string;
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
+          unblockDescriptor?: unknown;
         }) => {
-          if (await issueThreadInteractionsSvc.hasPendingWakeContinuationForIssue(
+          if (await resolvedDependencyWakeHold(
             currentIssue.companyId,
             input.dependentIssueId,
+            input.unblockDescriptor,
           )) return;
           const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
             dependentIssueId: input.dependentIssueId,
@@ -18139,6 +18163,7 @@ export function issueRoutes(
               resolvedBlockerIssueId: currentIssue.id,
               blockerIssueIds: dependent.blockerIssueIds,
               blockedTransitionAt: dependent.blockedTransitionAt,
+              unblockDescriptor: dependent.unblockDescriptor,
             });
           }
         }

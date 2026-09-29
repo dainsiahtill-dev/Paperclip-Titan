@@ -5,6 +5,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  resolvedDependencyWakeHoldReason,
 } from "./issue-dependency-wakeups.js";
 
 const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -12,6 +13,31 @@ const blockerIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const companyId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const firstCycle = new Date("2026-04-01T12:00:00.000Z");
 const secondCycle = new Date("2026-08-01T09:30:00.000Z");
+
+describe("resolvedDependencyWakeHoldReason", () => {
+  it("keeps an independent wait closed after issue blockers finish", () => {
+    expect(resolvedDependencyWakeHoldReason({
+      unblockDescriptor: { owner: "board", action: "Wait for external storage" },
+      pendingInteraction: false,
+      pendingApproval: false,
+    })).toBe("unblock_descriptor");
+    expect(resolvedDependencyWakeHoldReason({
+      unblockDescriptor: null,
+      pendingInteraction: true,
+      pendingApproval: false,
+    })).toBe("pending_interaction");
+    expect(resolvedDependencyWakeHoldReason({
+      unblockDescriptor: null,
+      pendingInteraction: false,
+      pendingApproval: true,
+    })).toBe("pending_approval");
+    expect(resolvedDependencyWakeHoldReason({
+      unblockDescriptor: null,
+      pendingInteraction: false,
+      pendingApproval: false,
+    })).toBeNull();
+  });
+});
 
 type WakeRow = {
   id: string;

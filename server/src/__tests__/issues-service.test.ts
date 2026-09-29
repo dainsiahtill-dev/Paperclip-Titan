@@ -4374,7 +4374,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
-  it("only returns dependents once every blocker is done", async () => {
+  it("only returns dependents once every blocker and independent wait is resolved", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     await db.insert(companies).values({
@@ -4424,6 +4424,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
       }),
     ]);
+
+    await db.update(issues).set({
+      unblockDescriptor: { owner: "board", action: "Wait for an external resource" },
+    }).where(eq(issues.id, blockedIssueId));
+    expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
+
+    await db.update(issues).set({ unblockDescriptor: null }).where(eq(issues.id, blockedIssueId));
+    expect(await svc.listWakeableBlockedDependents(blockerA)).toHaveLength(1);
   });
 
   it("treats done blockers on a shared workspace as ready while a foreign issue is in-flight", async () => {

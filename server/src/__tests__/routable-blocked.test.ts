@@ -39,6 +39,21 @@ describe("routable blocked notifications", () => {
     expect(markNotified).toHaveBeenCalledWith(now);
   });
 
+  it("does not wake an assignee merely because they named themselves as the unblock owner", async () => {
+    const wakeup = vi.fn(async () => undefined);
+    const markNotified = vi.fn(async () => undefined);
+
+    const delivered = await deliverAgentUnblockNotification({
+      issue: { ...blockedIssue(), assigneeAgentId: agentId },
+      wakeup,
+      markNotified,
+    });
+
+    expect(delivered).toBe(false);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(markNotified).not.toHaveBeenCalled();
+  });
+
   it("leaves pre-existing blocked issues untouched", async () => {
     const wakeup = vi.fn(async () => undefined);
     const markNotified = vi.fn(async () => undefined);

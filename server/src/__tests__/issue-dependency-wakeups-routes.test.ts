@@ -18,6 +18,7 @@ vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHasPendingWakeContinuation = vi.hoisted(() => vi.fn(async () => false));
+const mockListApprovalsForIssue = vi.hoisted(() => vi.fn(async () => [] as Array<{ status: string }>));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -69,7 +70,7 @@ vi.mock("../services/index.js", () => ({
     get: vi.fn(),
     listCompanyIds: vi.fn(),
   }),
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => ({ listApprovalsForIssue: mockListApprovalsForIssue }),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -164,6 +165,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
     mockHasPendingWakeContinuation.mockResolvedValue(false);
+    mockListApprovalsForIssue.mockResolvedValue([]);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
@@ -245,7 +247,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
-  it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
+  it("does not wake a blocked issue whose independent board wait remains after its blocker is done", async () => {
     const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     mockIssueService.getById.mockResolvedValue({
@@ -272,6 +274,7 @@ describe("issue dependency wakeups in issue routes", () => {
       title: "Blocked after completion",
       description: null,
       status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
       priority: "medium",
       parentId: null,
       assigneeAgentId: "agent-2",
@@ -301,34 +304,37 @@ describe("issue dependency wakeups in issue routes", () => {
       });
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => {
-      expect(mockWakeup).toHaveBeenCalledWith(
-        "agent-2",
-        expect.objectContaining({
-          reason: "issue_blockers_resolved",
-          payload: expect.objectContaining({
-            issueId: parentIssueId,
-            resolvedBlockerIssueId: childIssueId,
-            mutation: "blocked_dependency_restored",
-          }),
-          contextSnapshot: expect.objectContaining({
-            source: "issue.blockers_restored",
-          }),
-        }),
-      );
-    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockWakeup).not.toHaveBeenCalled();
 
     mockWakeup.mockClear();
-    mockHasPendingWakeContinuation.mockResolvedValue(true);
+    mockIssueService.getById.mockResolvedValue({
+      id: parentIssueId, companyId: "company-1", status: "blocked", assigneeAgentId: "agent-2",
+      assigneeUserId: null, unblockDescriptor: null, labels: [], labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: parentIssueId, companyId: "company-1", status: "blocked", assigneeAgentId: "agent-2",
+      assigneeUserId: null, unblockDescriptor: null, labels: [], labelIds: [],
+    });
+    mockListApprovalsForIssue.mockResolvedValue([{ status: "pending" }]);
     const waiting = await request(await createApp())
       .patch(`/api/issues/${parentIssueId}`)
       .send({
         status: "blocked",
         blockedByIssueIds: [childIssueId],
-        unblockDescriptor: { owner: "board", action: "Await the pending answer" },
       });
 
     expect(waiting.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockWakeup).not.toHaveBeenCalled();
+
+    mockListApprovalsForIssue.mockResolvedValue([]);
+    mockHasPendingWakeContinuation.mockResolvedValue(true);
+    const questioning = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [childIssueId] });
+    expect(questioning.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockWakeup).not.toHaveBeenCalled();
   });
 
