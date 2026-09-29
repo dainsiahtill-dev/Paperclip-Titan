@@ -10,7 +10,7 @@ describe("DeliveryEvidenceCard", () => {
         evidence={{
           windowDays: 14,
           registeredWorkProducts: 3,
-          reviewedWorkProducts: 1,
+          approvedStatusWorkProducts: 1,
           productAcceptance: "untracked",
         }}
       />,
@@ -18,7 +18,7 @@ describe("DeliveryEvidenceCard", () => {
 
     expect(html).toContain("Run attempts");
     expect(html).toContain("Registered work products");
-    expect(html).toContain("Reviewed work products");
+    expect(html).toContain("Marked approved (self reported)");
     expect(html).toContain("Product acceptance is not tracked here");
     expect(html).not.toContain("Product accepted");
   });

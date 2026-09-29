@@ -3481,6 +3481,19 @@ export async function realizeExecutionWorkspace(input: {
     throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
   }
 
+  if (requestedExistingBranch && rawStrategy.requireExistingWorktree === true) {
+    throw new WorkspaceRuntimeValidationFailure(
+      `Workspace strategy requires a pre-existing registered worktree for branch "${requestedExistingBranch}". Restore its sparse worktree before retrying; automatic attachment would materialize the full repository.`,
+      {
+        workspaceValidation: {
+          reason: "required_existing_worktree_missing",
+          requestedExistingBranch,
+          worktreePath,
+        },
+      },
+    );
+  }
+
   if (requestedExistingBranch) {
     try {
       await recordGitOperation(input.recorder, {

@@ -43,6 +43,7 @@ function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrate
     ...(typeof parsed.existingBranch === "string" && parsed.existingBranch.trim().length > 0
       ? { existingBranch: parsed.existingBranch.trim() }
       : {}),
+    ...(parsed.requireExistingWorktree === true ? { requireExistingWorktree: true } : {}),
     ...(typeof parsed.worktreeParentDir === "string" ? { worktreeParentDir: parsed.worktreeParentDir } : {}),
     ...(typeof parsed.provisionCommand === "string" ? { provisionCommand: parsed.provisionCommand } : {}),
     ...(typeof parsed.runtimeProvisionCommand === "string"

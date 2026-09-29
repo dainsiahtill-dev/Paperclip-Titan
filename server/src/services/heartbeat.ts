@@ -395,6 +395,7 @@ import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  buildIssueBlockersResolvedWakeStateKey,
   resolvedDependencyWakeHoldReason,
 } from "./issue-dependency-wakeups.js";
 import {
@@ -17044,6 +17045,75 @@ export function heartbeatService(
     }
   }
 
+  async function issueAutomationWakeClaimHold(
+    tx: Db,
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    wakeReason: string,
+  ): Promise<string | null> {
+    const [currentIssue] = await tx.select({
+      status: issues.status,
+      assigneeAgentId: issues.assigneeAgentId,
+      unblockDescriptor: issues.unblockDescriptor,
+      blockedTransitionAt: issues.blockedTransitionAt,
+    }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))).limit(1);
+    if (!currentIssue || currentIssue.assigneeAgentId !== run.agentId ||
+      ["backlog", "done", "cancelled"].includes(currentIssue.status)) return "issue_or_assignee_changed";
+
+    const [pendingInteraction] = await tx.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(eq(issueThreadInteractions.companyId, run.companyId),
+        eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"])))
+      .limit(1);
+    const [pendingApproval] = await tx.select({ id: approvals.id }).from(issueApprovals)
+      .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+      .where(and(eq(issueApprovals.companyId, run.companyId),
+        eq(issueApprovals.issueId, issueId),
+        eq(approvals.companyId, run.companyId),
+        inArray(approvals.status, ["pending", "revision_requested"])))
+      .limit(1);
+    const wait = resolvedDependencyWakeHoldReason({
+      unblockDescriptor: currentIssue.unblockDescriptor,
+      pendingInteraction: Boolean(pendingInteraction),
+      pendingApproval: Boolean(pendingApproval),
+    });
+    if (wait) return wait;
+
+    const readiness = (await issuesSvc.listDependencyReadiness(run.companyId, [issueId], tx)).get(issueId);
+    if (!readiness?.isDependencyReady) return "issue_dependency_not_ready";
+    if (!run.wakeupRequestId) return "missing_wake_identity";
+    const [wake] = await tx.select({
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      status: agentWakeupRequests.status,
+      runId: agentWakeupRequests.runId,
+    }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, run.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId),
+    )).limit(1);
+    if (!wake || wake.status !== "queued" || wake.runId !== run.id) return "wake_identity_changed";
+
+    if (wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
+      if (readiness.blockerIssueIds.length === 0) return "missing_blocker_edge";
+      const currentKey = buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: issueId,
+        blockerIssueIds: readiness.blockerIssueIds,
+        blockedTransitionAt: currentIssue.blockedTransitionAt,
+      });
+      if (wake.idempotencyKey !== currentKey) return "blocked_cycle_changed";
+      return null;
+    }
+
+    const [children] = await tx.select({
+      total: sql<number>`count(*)::int`,
+      unfinished: sql<number>`count(*) filter (where ${issues.status} not in ('done', 'cancelled'))::int`,
+    }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, issueId)));
+    if (!children || Number(children.total) === 0 || Number(children.unfinished) > 0) return "children_not_terminal";
+    return null;
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -17165,45 +17235,6 @@ export function heartbeatService(
           "claimQueuedRun: cancelled blocked queued run",
         );
         return null;
-      }
-
-      if (readNonEmptyString(context.wakeReason) === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) {
-        const [currentIssue, pendingInteraction, pendingApproval] = await Promise.all([
-          db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
-            unblockDescriptor: issues.unblockDescriptor })
-            .from(issues)
-            .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
-            .limit(1).then((rows) => rows[0] ?? null),
-          db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
-            .where(and(eq(issueThreadInteractions.companyId, run.companyId),
-              eq(issueThreadInteractions.issueId, issueId),
-              eq(issueThreadInteractions.status, "pending"),
-              inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"])))
-            .limit(1).then((rows) => Boolean(rows[0])),
-          db.select({ id: approvals.id }).from(issueApprovals)
-            .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
-            .where(and(eq(issueApprovals.companyId, run.companyId),
-              eq(issueApprovals.issueId, issueId),
-              inArray(approvals.status, ["pending", "revision_requested"])))
-            .limit(1).then((rows) => Boolean(rows[0])),
-        ]);
-        const holdReason = !currentIssue || currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== run.agentId ||
-          !readiness?.blockerIssueIds.length
-          ? "issue_or_dependency_changed"
-          : resolvedDependencyWakeHoldReason({
-            unblockDescriptor: currentIssue.unblockDescriptor,
-            pendingInteraction,
-            pendingApproval,
-          });
-        if (holdReason) {
-          await cancelQueuedRunForBlockedDependencies(run, issueId, [], {
-            reason: `Cancelled stale dependency wake because ${holdReason}`,
-            errorCode: "issue_dependency_wake_stale",
-            details: { holdReason },
-          });
-          return null;
-        }
       }
 
       const staleness = await runDispatch.cancelStaleQueuedRun({
@@ -17559,10 +17590,16 @@ export function heartbeatService(
       void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
+    let staleIssueWakeReason: string | null = null;
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          const wakeReason = readNonEmptyString(context.wakeReason);
+          if (issueId && (wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON || wakeReason === "issue_children_completed")) {
+            staleIssueWakeReason = await issueAutomationWakeClaimHold(tx, run, issueId, wakeReason);
+            if (staleIssueWakeReason) return null;
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
@@ -17579,8 +17616,15 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
+    if (!claimed && staleIssueWakeReason && issueId) {
+      await cancelQueuedRunForBlockedDependencies(run, issueId, [], {
+        reason: `Cancelled stale issue wake because ${staleIssueWakeReason}`,
+        errorCode: "issue_dependency_wake_stale",
+        details: { holdReason: staleIssueWakeReason },
+      });
+    }
     if (!claimed) return null;
 
     publishLiveEvent({

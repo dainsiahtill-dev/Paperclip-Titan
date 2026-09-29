@@ -87,7 +87,7 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(summary.evidence).toEqual({
       windowDays: 14,
       registeredWorkProducts: 2,
-      reviewedWorkProducts: 1,
+      approvedStatusWorkProducts: 1,
       productAcceptance: "untracked",
     });
     expect(summary.runActivity.at(-1)?.succeeded).toBe(1);

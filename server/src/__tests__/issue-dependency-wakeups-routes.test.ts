@@ -18,7 +18,7 @@ vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHasPendingWakeContinuation = vi.hoisted(() => vi.fn(async () => false));
-const mockListApprovalsForIssue = vi.hoisted(() => vi.fn(async () => [] as Array<{ status: string }>));
+const mockListApprovalsForIssue = vi.hoisted(() => vi.fn(async () => [] as Array<{ status: string; companyId: string }>));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -316,7 +316,7 @@ describe("issue dependency wakeups in issue routes", () => {
       id: parentIssueId, companyId: "company-1", status: "blocked", assigneeAgentId: "agent-2",
       assigneeUserId: null, unblockDescriptor: null, labels: [], labelIds: [],
     });
-    mockListApprovalsForIssue.mockResolvedValue([{ status: "pending" }]);
+    mockListApprovalsForIssue.mockResolvedValue([{ status: "pending", companyId: "company-1" }]);
     const waiting = await request(await createApp())
       .patch(`/api/issues/${parentIssueId}`)
       .send({
@@ -336,6 +336,36 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(questioning.status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes once when the final independent descriptor is cleared after blockers are done", async () => {
+    const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const blockerId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const base = {
+      id: issueId, companyId: "company-1", identifier: "PAP-201", title: "Waiting issue",
+      status: "blocked", priority: "medium", parentId: null, assigneeAgentId: "agent-2",
+      assigneeUserId: null, createdByAgentId: null, createdByUserId: null,
+      executionWorkspaceId: null, labels: [], labelIds: [],
+    };
+    mockIssueService.getById.mockResolvedValue({
+      ...base, unblockDescriptor: { owner: "board", action: "Wait for resource" },
+    });
+    mockIssueService.update.mockResolvedValue({ ...base, unblockDescriptor: null });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId, blockerIssueIds: [blockerId], unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0, pendingFinalizeBlockerIssueIds: [], allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const response = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ unblockDescriptor: null });
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(mockWakeup).toHaveBeenCalledWith("agent-2", expect.objectContaining({
+      reason: "issue_blockers_resolved",
+      contextSnapshot: expect.objectContaining({ source: "issue.blockers_restored" }),
+    })));
   });
 
   it("wakes the parent when all direct children become terminal", async () => {
@@ -426,6 +456,29 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("preserves the cycle-aware dependency wake when the completed child is also the blocker", async () => {
+    mockIssueService.getById.mockResolvedValue(issueRecord({ id: "child-1", status: "in_progress", parentId: "parent-1" }));
+    mockIssueService.update.mockResolvedValue(issueRecord({ id: "child-1", status: "done", parentId: "parent-1" }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([{
+      id: "parent-1", assigneeAgentId: "agent-9", blockerIssueIds: ["child-1"],
+      blockedTransitionAt: null, unblockDescriptor: null,
+    }]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+      id: "parent-1", assigneeAgentId: "agent-9", childIssueIds: ["child-1"],
+      childIssueSummaries: [], childIssueSummaryTruncated: false,
+    });
+
+    const response = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(mockWakeup).toHaveBeenCalled());
+    const parentWake = mockWakeup.mock.calls.find((call) => call[0] === "agent-9")?.[1];
+    expect(parentWake?.reason).toBe("issue_blockers_resolved");
+    expect(parentWake?.idempotencyKey).toBe(buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: "parent-1", blockerIssueIds: ["child-1"], blockedTransitionAt: null,
+    }));
   });
 
   function issueRecord(overrides: Record<string, unknown> = {}) {

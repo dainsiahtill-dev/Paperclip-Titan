@@ -1314,7 +1314,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     monthUtilizationPercent: 27,
   },
   pendingApprovals: 2,
-  evidence: { windowDays: 14, registeredWorkProducts: 8, reviewedWorkProducts: 3, productAcceptance: "untracked" },
+  evidence: { windowDays: 14, registeredWorkProducts: 8, approvedStatusWorkProducts: 3, productAcceptance: "untracked" },
   budgets: {
     activeIncidents: 1,
     pendingApprovals: 1,

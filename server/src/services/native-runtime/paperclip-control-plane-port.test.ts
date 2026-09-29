@@ -1323,7 +1323,8 @@ describe("PaperclipControlPlanePort conformance", () => {
       .then((rows) => rows.filter((row) => row.payload?.issueId === parentIssueId));
     expect(parentWakes).toHaveLength(1);
     expect(parentWakes[0]).toMatchObject({
-      reason: "issue_children_completed",
+      reason: "issue_blockers_resolved",
+      idempotencyKey: expect.stringMatching(new RegExp(`^issue_blockers_resolved:state:${parentIssueId}:1:`)),
       payload: {
         issueId: parentIssueId,
         completedChildIssueId: childIssueId,
@@ -1336,7 +1337,7 @@ describe("PaperclipControlPlanePort conformance", () => {
         }],
         childIssueSummaryTruncated: false,
         _paperclipWakeContext: {
-          wakeReason: "issue_children_completed",
+          wakeReason: "issue_blockers_resolved",
           childIssueSummaries: [{
             id: childIssueId,
             summary: "Implemented the accepted plan and passed 44/44 tests.",

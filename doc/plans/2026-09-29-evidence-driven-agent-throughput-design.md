@@ -19,7 +19,7 @@ Keep the existing persisted sources of truth: `issue_relations`, pending issue-t
 
 An agent-owned descriptor whose owner is also the issue assignee records a wait but does not send an immediate `issue_unblock_requested` turn. A different named agent may be notified once for the blocked transition. The notification is an attention signal, not proof that the blocked condition changed. Reblocking with the same unresolved condition must not create another executable turn.
 
-The pre-dispatch check cancels stale dependency-ready wakes before provider invocation. It records the condition that prevented execution and leaves the issue blocked. A valid transition to ready still wakes once; the existing cycle-aware idempotency key remains for legitimate later blocked cycles.
+The final claim transaction holds the issue row, then checks the current wait sources and the dependency wake's cycle-aware idempotency key before changing the run from queued to running. Issue-thread interaction creation and approval linking serialize on the same issue row. A child-completion wake uses the same wait gate; when that child is also a formal blocker, the dependency wake and its cycle key take precedence. Rejected wakes record a concrete reason and leave the issue blocked. A valid transition to ready still wakes once; a later blocked cycle has a new key and cannot consume an old queued wake.
 
 ### Task and review flow
 
@@ -29,9 +29,9 @@ At most one active implementation candidate per shared integration branch and on
 
 ### Workspace and evidence
 
-Keep the Starwave primary project workspace for integration and running services. New independent implementation jobs use issue-specific sparse Git worktrees, with explicit sync into a single integration candidate. A normal worktree copies approximately 67 GB of tracked `backend/runtime` data, so the worktree must be created with `--no-checkout`, a bounded sparse profile, then checkout. The helper estimates size before creation and verifies the materialized size before reporting success. Paperclip attaches an existing branch; it must not create a full worktree for Starwave. QA reads the frozen commit/tree and does not write into the candidate. The existing dirty shared tree is inventoried before any branch migration; no uncommitted work is moved or discarded automatically.
+Keep the Starwave primary project workspace for integration and running services. New independent implementation jobs use issue-specific sparse Git worktrees, with explicit sync into a single integration candidate. A normal worktree copies approximately 67 GB of tracked `backend/runtime` data, so the worktree must be created with `--no-checkout`, a bounded sparse profile, then checkout. The helper estimates size before creation and verifies the materialized size before reporting success. Paperclip attaches an existing branch with `requireExistingWorktree: true`; it fails closed instead of creating a full checkout if the sparse worktree is missing. QA reads the frozen commit/tree and does not write into the candidate. The existing dirty shared tree is inventoried before any branch migration; no uncommitted work is moved or discarded automatically.
 
-The dashboard reports run activity separately from durable delivery signals. It may count issue work products, document revisions, and status transitions, but labels them by evidence type. It must never derive product acceptance from `done` counts or liveness `advanced`; if no trusted acceptance record exists, show that acceptance is unrecorded. Starwave's actual release gate remains in its domain evidence and personal review.
+The dashboard reports run activity separately from registered delivery signals. It may count issue work products and their author-writable approval labels, but must identify those labels as self-reported. It must never derive independent review or product acceptance from `done` counts, work-product labels, or liveness `advanced`; if no trusted acceptance record exists, show that acceptance is unrecorded. Starwave's actual release gate remains in its domain evidence and personal review.
 
 ## Rollout
 

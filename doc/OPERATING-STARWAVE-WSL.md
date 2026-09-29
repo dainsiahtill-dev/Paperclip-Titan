@@ -107,6 +107,7 @@ returns a branch and path, bind that **existing** branch to the issue:
     "workspaceStrategy": {
       "type": "git_worktree",
       "existingBranch": "paperclip-SOU-159",
+      "requireExistingWorktree": true,
       "worktreeParentDir": "/home/dains/Documents/starwave-agent-worktrees"
     }
   }
@@ -114,7 +115,9 @@ returns a branch and path, bind that **existing** branch to the issue:
 ```
 
 Use the real issue identifier in both commands. Do not enable an isolated
-issue setting before its sparse worktree exists. Current shared tasks stay
+issue setting before its sparse worktree exists. `requireExistingWorktree`
+prevents Paperclip from materializing a full checkout if the sparse worktree
+is missing at dispatch. Current shared tasks stay
 on their existing checkout. The task owner records the branch, commit, tree and test evidence. The
 engineering manager integrates one candidate into `main` only after resolving
 shared-file ownership. QA receives the exact integrated commit/tree and runs
@@ -131,7 +134,7 @@ stale dependency wakes before provider invocation; explicit human comments
 and valid newly ready dependencies remain wake paths.
 
 The dashboard's Work evidence panel distinguishes run attempts, registered
-work products and reviewed work products over 14 days. These are platform
+work products and self-reported approval labels over 14 days. These are platform
 records, not an automatic judgment that code or customer service is accepted.
 Verify the project's frozen candidate, independent QA report and real
 business evidence separately.

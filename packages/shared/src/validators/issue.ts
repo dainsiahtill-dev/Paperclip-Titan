@@ -170,6 +170,7 @@ const executionWorkspaceStrategySchema = z
       })
       .optional()
       .nullable(),
+    requireExistingWorktree: z.boolean().optional(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
     runtimeProvisionCommand: z.string().optional().nullable(),
@@ -177,6 +178,13 @@ const executionWorkspaceStrategySchema = z
   })
   .strict()
   .superRefine((strategy, ctx) => {
+    if (strategy.requireExistingWorktree && !strategy.existingBranch) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["requireExistingWorktree"],
+        message: "requireExistingWorktree requires existingBranch",
+      });
+    }
     if (!strategy.existingBranch) return;
     if (strategy.type !== "git_worktree") {
       ctx.addIssue({

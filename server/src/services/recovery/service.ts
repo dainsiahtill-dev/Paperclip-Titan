@@ -1135,6 +1135,7 @@ export function recoveryService(
       .where(and(
         eq(issueApprovals.companyId, companyId),
         eq(issueApprovals.issueId, issueId),
+        eq(approvals.companyId, companyId),
         inArray(approvals.status, ["pending", "revision_requested"]),
       ))
       .limit(1)

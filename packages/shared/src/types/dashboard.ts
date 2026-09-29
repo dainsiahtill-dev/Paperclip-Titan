@@ -54,7 +54,7 @@ export interface DashboardSummary {
   evidence: {
     windowDays: number;
     registeredWorkProducts: number;
-    reviewedWorkProducts: number;
+    approvedStatusWorkProducts: number;
     productAcceptance: "untracked";
   };
 }

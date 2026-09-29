@@ -40,9 +40,9 @@
 
 **Files:** `server/src/services/heartbeat.ts` and its issue-wake integration tests.
 
-**Interfaces:** The Task 1 eligibility helper is re-read for a queued `issue_blockers_resolved` turn before adapter invocation. Existing skipped-request and issue status semantics remain.
+**Interfaces:** The Task 1 eligibility helper, formal blocker set, and blocked cycle key are re-read under the issue row lock in the claim transaction for queued `issue_blockers_resolved` and `issue_children_completed` turns. Existing skipped-request and issue status semantics remain.
 
-- [ ] Add a failing integration test for a wake queued when ready and invalidated by a new pending wait.
+- [ ] Add failing integration tests for a wake invalidated by a new pending wait, one changed between preliminary scan and claim, and an older blocked-cycle key.
 - [ ] Verify it fails before source changes.
 - [ ] Cancel the stale queued run with an explicit reason; retain the valid ready path.
 - [ ] Verify targeted issue liveness and dependency wake suites.
@@ -51,7 +51,7 @@
 
 **Files:** `server/src/services/dashboard.ts`, shared dashboard type, `ui/src/pages/Dashboard.tsx`, and corresponding tests.
 
-**Interfaces:** Add a bounded recent evidence summary that distinguishes run outcomes, durable work products, and issue status. Report acceptance as unrecorded unless there is a trusted explicit result.
+**Interfaces:** Add a bounded recent evidence summary that distinguishes run outcomes, registered work products, and issue status. Treat an Agent-writable `approved` work-product label as self-reported; report product acceptance as untracked unless there is a trusted explicit result.
 
 - [ ] Write failing API and UI tests for separate activity and delivery labels.
 - [ ] Verify the red tests.
@@ -73,7 +73,7 @@
 
 **Files:** `scripts/create-starwave-sparse-worktree.mjs`, its Node test, `doc/OPERATING-STARWAVE-WSL.md`, project workspace configuration, service supervisor and release verification records.
 
-**Interfaces:** New independent implementation tasks use size-bounded sparse Git worktrees attached through `existingBranch`; integration and QA use one frozen candidate. Existing dirty work remains in place.
+**Interfaces:** New independent implementation tasks use size-bounded sparse Git worktrees attached through `existingBranch` and `requireExistingWorktree: true`; integration and QA use one frozen candidate. Existing dirty work remains in place.
 
 - [ ] Document and configure the worktree workflow for new tasks.
 - [ ] Run targeted suites, repository typecheck/build, and relevant full test gate.

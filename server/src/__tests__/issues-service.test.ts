@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
   companies,
   companyMemberships,
   createDb,
@@ -16,6 +17,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueApprovals,
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
@@ -3982,6 +3984,9 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueApprovals);
+    await db.delete(approvals);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -4431,6 +4436,19 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
 
     await db.update(issues).set({ unblockDescriptor: null }).where(eq(issues.id, blockedIssueId));
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: blockedIssueId, kind: "ask_user_questions", status: "pending",
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [] },
+    }).returning({ id: issueThreadInteractions.id });
+    expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id));
+
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId: blockedIssueId, approvalId });
+    expect(await svc.listWakeableBlockedDependents(blockerA)).toEqual([]);
+    await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, approvalId));
+    await db.delete(approvals).where(eq(approvals.id, approvalId));
     expect(await svc.listWakeableBlockedDependents(blockerA)).toHaveLength(1);
   });
 
@@ -4866,6 +4884,27 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       ],
       childIssueSummaryTruncated: false,
     });
+
+    await db.update(issues).set({
+      unblockDescriptor: { owner: "board", action: "Await external resource" },
+    }).where(eq(issues.id, parentId));
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+    await db.update(issues).set({ unblockDescriptor: null }).where(eq(issues.id, parentId));
+
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: parentId, kind: "ask_user_questions", status: "pending",
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [] },
+    }).returning({ id: issueThreadInteractions.id });
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id));
+
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+    await db.insert(issueApprovals).values({ companyId, issueId: parentId, approvalId });
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+    await db.delete(issueApprovals).where(eq(issueApprovals.approvalId, approvalId));
+    await db.delete(approvals).where(eq(approvals.id, approvalId));
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).not.toBeNull();
   });
 });
 

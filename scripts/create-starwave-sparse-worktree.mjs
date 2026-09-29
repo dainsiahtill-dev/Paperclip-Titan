@@ -74,7 +74,7 @@ function run() {
   const workspace = path.join(input.parent, input.branch);
   if (fs.existsSync(workspace)) throw new Error(`Worktree path already exists: ${workspace}`);
   const limitBytes = input.maxMb * 1024 * 1024;
-  const estimatedBytes = estimateCheckoutBytes(input.repo, input.base, selectedDirectories);
+  const estimatedBytes = estimateCheckoutBytes(input.repo, baseSha, selectedDirectories);
   if (estimatedBytes > limitBytes) {
     throw new Error(`Estimated sparse checkout ${Math.ceil(estimatedBytes / 1048576)} MB exceeds the ${input.maxMb} MB limit`);
   }
@@ -82,7 +82,7 @@ function run() {
   fs.mkdirSync(input.parent, { recursive: true });
   let created = false;
   try {
-    git(input.repo, ["worktree", "add", "--no-checkout", "-b", input.branch, workspace, input.base]);
+    git(input.repo, ["worktree", "add", "--no-checkout", "-b", input.branch, workspace, baseSha]);
     created = true;
     git(workspace, ["sparse-checkout", "set", ...selectedDirectories]);
     git(workspace, ["reset", "--hard", "HEAD"]);

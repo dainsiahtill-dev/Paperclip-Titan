@@ -122,6 +122,16 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("requires a pinned branch for strict reuse of a pre-created sparse worktree", () => {
+    const strategy = { type: "git_worktree" as const, existingBranch: "paperclip-SOU-159", requireExistingWorktree: true };
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: strategy },
+    }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({
+      executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", requireExistingWorktree: true } },
+    }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

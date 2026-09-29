@@ -9659,6 +9659,17 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
     expect(await readGit(repoRoot, ["rev-parse", "feature/preexisting-work"])).toBe(branchTip);
   });
 
+  it("refuses to materialize a missing worktree when exact-branch reuse is required", async () => {
+    const repoRoot = await createTempRepo();
+    await createBranchWithCommit(repoRoot, "feature/sparse-only", "existing.txt");
+
+    await expect(realizeExistingBranch(repoRoot, "feature/sparse-only", {
+      requireExistingWorktree: true,
+    })).rejects.toThrow(/requires a pre-existing registered worktree/);
+    const worktrees = await readGit(repoRoot, ["worktree", "list", "--porcelain"]);
+    expect(worktrees).not.toContain("branch refs/heads/feature/sparse-only");
+  });
+
   it("reuses a registered legacy worktree that already has the branch checked out", async () => {
     const repoRoot = await createTempRepo();
     const branchTip = await createBranchWithCommit(repoRoot, "feature/legacy-checkout", "legacy.txt");

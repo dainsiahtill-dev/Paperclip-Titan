@@ -22,12 +22,12 @@ export function DeliveryEvidenceCard({ runAttempts, evidence }: DeliveryEvidence
           <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{evidence.registeredWorkProducts}</dd>
         </div>
         <div>
-          <dt className="text-sm text-muted-foreground">Reviewed work products</dt>
-          <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{evidence.reviewedWorkProducts}</dd>
+          <dt className="text-sm text-muted-foreground">Marked approved (self reported)</dt>
+          <dd className="mt-1 text-2xl font-semibold tabular-nums text-foreground">{evidence.approvedStatusWorkProducts}</dd>
         </div>
       </dl>
       <p className="mt-4 border-t border-border pt-3 text-sm text-muted-foreground">
-        Product acceptance is not tracked here. Check the project&apos;s acceptance evidence before treating a completed issue as a delivered product.
+        Approval labels can be set by the work author. Product acceptance is not tracked here. Check independent project evidence before treating a completed issue as delivered.
       </p>
     </section>
   );

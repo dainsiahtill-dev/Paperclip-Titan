@@ -87,7 +87,7 @@ export function dashboardService(db: Db) {
       const [workProductEvidence] = await db
         .select({
           registered: sql<number>`count(*)::int`,
-          reviewed: sql<number>`count(*) filter (where ${issueWorkProducts.reviewState} = 'approved')::int`,
+          markedApproved: sql<number>`count(*) filter (where ${issueWorkProducts.reviewState} = 'approved')::int`,
         })
         .from(issueWorkProducts)
         .where(and(
@@ -220,7 +220,7 @@ export function dashboardService(db: Db) {
         evidence: {
           windowDays: DASHBOARD_RUN_ACTIVITY_DAYS,
           registeredWorkProducts: Number(workProductEvidence?.registered ?? 0),
-          reviewedWorkProducts: Number(workProductEvidence?.reviewed ?? 0),
+          approvedStatusWorkProducts: Number(workProductEvidence?.markedApproved ?? 0),
           productAcceptance: "untracked" as const,
         },
       };

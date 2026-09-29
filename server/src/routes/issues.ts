@@ -3568,7 +3568,8 @@ export function issueRoutes(
       unblockDescriptor,
       pendingInteraction,
       pendingApproval: linkedApprovals.some((approval) =>
-        approval.status === "pending" || approval.status === "revision_requested"
+        approval.companyId === companyId &&
+        (approval.status === "pending" || approval.status === "revision_requested")
       ),
     });
   };
@@ -14472,7 +14473,13 @@ export function issueRoutes(
             typeof wakeup.payload.issueId === "string"
               ? wakeup.payload.issueId
               : issue.id;
-          wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+          const key = `${agentId}:${wakeIssueId}`;
+          // A completed child can also be the final formal blocker. Keep the
+          // dependency wake's cycle-aware key instead of replacing it with a
+          // generic parent notification from the same issue transition.
+          if (wakeups.get(key)?.wakeup.reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON &&
+            wakeup.reason === "issue_children_completed") return;
+          wakeups.set(key, { agentId, wakeup });
         };
         const addDependencyResolvedWakeup = async (input: {
           agentId: string;
@@ -14752,6 +14759,7 @@ export function issueRoutes(
           !issue.unblockDescriptor &&
           (existing.status !== "blocked" ||
             Array.isArray(req.body.blockedByIssueIds) ||
+            (Boolean(existing.unblockDescriptor) && !issue.unblockDescriptor) ||
             existing.assigneeAgentId !== issue.assigneeAgentId);
         if (
           restoredBlockedReadyDependency &&

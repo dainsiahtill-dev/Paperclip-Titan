@@ -90,6 +90,8 @@ export interface ExecutionWorkspaceStrategy {
    * fails closed when the branch does not exist or is not safely attachable.
    */
   existingBranch?: string | null;
+  /** Fail closed if this exact branch is not already checked out in a registered worktree. */
+  requireExistingWorktree?: boolean;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
   runtimeProvisionCommand?: string | null;

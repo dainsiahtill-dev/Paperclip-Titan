@@ -506,13 +506,16 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   });
 
   it("skips a queued dependency wake if an independent wait appears before claim", async () => {
-    const { companyId, agentId, blockedIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
       reason: "issue_blockers_resolved", payload: { issueId: blockedIssueId },
       status: "queued", runId,
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+      }),
     });
     await db.insert(heartbeatRuns).values({
       id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
@@ -522,6 +525,70 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.update(issues).set({
       unblockDescriptor: { owner: "board", action: "Await external resource" },
     }).where(eq(issues.id, blockedIssueId));
+    mockAdapterExecute.mockClear();
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toEqual({ status: "cancelled", errorCode: "issue_dependency_wake_stale" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("rechecks a dependency wake under the claim lock after a new wait arrives", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_blockers_resolved", payload: { issueId: blockedIssueId }, status: "queued", runId,
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+      }),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId,
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+    mockAdapterExecute.mockClear();
+    const heartbeat = heartbeatService(db, {
+      beforeChatControlRecoveryCheck: async ({ stage }) => {
+        if (stage === "claim") await db.update(issues).set({
+          unblockDescriptor: { owner: "board", action: "New external wait" },
+        }).where(eq(issues.id, blockedIssueId));
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toEqual({ status: "cancelled", errorCode: "issue_dependency_wake_stale" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("rejects a queued dependency wake from an earlier blocked cycle", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_blockers_resolved", payload: { issueId: blockedIssueId }, status: "queued", runId,
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+      }),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId,
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+    await db.update(issues).set({ blockedTransitionAt: new Date("2026-09-29T12:00:00.000Z") })
+      .where(eq(issues.id, blockedIssueId));
     mockAdapterExecute.mockClear();
 
     const heartbeat = heartbeatService(db);

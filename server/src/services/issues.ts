@@ -2,6 +2,7 @@ import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
+import { resolvedDependencyWakeHoldReason } from "./issue-dependency-wakeups.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
@@ -9021,10 +9022,31 @@ export function issueService(db: Db) {
         );
       if (candidates.length === 0) return [];
 
+      const candidateIds = candidates.map((candidate) => candidate.id);
+      const [pendingInteractions, pendingApprovals] = await Promise.all([
+        db.select({ issueId: issueThreadInteractions.issueId }).from(issueThreadInteractions)
+          .where(and(eq(issueThreadInteractions.companyId, blockerIssue.companyId),
+            inArray(issueThreadInteractions.issueId, candidateIds),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]))),
+        db.select({ issueId: issueApprovals.issueId }).from(issueApprovals)
+          .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+          .where(and(eq(issueApprovals.companyId, blockerIssue.companyId),
+            eq(approvals.companyId, blockerIssue.companyId),
+            inArray(issueApprovals.issueId, candidateIds),
+            inArray(approvals.status, ["pending", "revision_requested"]))),
+      ]);
+      const interactionWaitIds = new Set(pendingInteractions.map((row) => row.issueId));
+      const approvalWaitIds = new Set(pendingApprovals.map((row) => row.issueId));
+
       const wakeableCandidates = candidates.filter(
         (candidate) =>
           candidate.assigneeAgentId &&
-          !candidate.unblockDescriptor &&
+          !resolvedDependencyWakeHoldReason({
+            unblockDescriptor: candidate.unblockDescriptor,
+            pendingInteraction: interactionWaitIds.has(candidate.id),
+            pendingApproval: approvalWaitIds.has(candidate.id),
+          }) &&
           !["backlog", "done", "cancelled"].includes(candidate.status),
       );
       if (wakeableCandidates.length === 0) return [];
@@ -9071,6 +9093,7 @@ export function issueService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           companyId: issues.companyId,
+          unblockDescriptor: issues.unblockDescriptor,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
@@ -9106,6 +9129,29 @@ export function issueService(db: Db) {
       ) {
         return null;
       }
+
+      const [readiness, pendingInteraction, pendingApproval] = await Promise.all([
+        listIssueDependencyReadinessMap(db, parent.companyId, [parentIssueId]),
+        db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
+          .where(and(eq(issueThreadInteractions.companyId, parent.companyId),
+            eq(issueThreadInteractions.issueId, parentIssueId),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"])))
+          .limit(1).then((rows) => Boolean(rows[0])),
+        db.select({ id: approvals.id }).from(issueApprovals)
+          .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+          .where(and(eq(issueApprovals.companyId, parent.companyId),
+            eq(issueApprovals.issueId, parentIssueId),
+            eq(approvals.companyId, parent.companyId),
+            inArray(approvals.status, ["pending", "revision_requested"])))
+          .limit(1).then((rows) => Boolean(rows[0])),
+      ]);
+      if (!readiness.get(parentIssueId)?.isDependencyReady ||
+        resolvedDependencyWakeHoldReason({
+          unblockDescriptor: parent.unblockDescriptor,
+          pendingInteraction,
+          pendingApproval,
+        })) return null;
 
       const childIdsForSummaries = children
         .slice(0, MAX_CHILD_COMPLETION_SUMMARIES)

@@ -62,3 +62,39 @@ test("rejects an over-budget checkout before creating a branch or directory", (t
   assert.equal(fs.existsSync(path.join(parent, "paperclip-SOU-1000")), false);
   assert.equal(git(repo, "branch", "--list", "paperclip-SOU-1000"), "");
 });
+
+test("pins the estimated commit when the base branch moves before creation", (t) => {
+  const { temp, repo, parent } = fixture();
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const originalSha = git(repo, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(repo, "large-root.bin"), Buffer.alloc(2_000_000));
+  git(repo, "add", ".");
+  git(repo, "commit", "-m", "new large root file");
+  const nextSha = git(repo, "rev-parse", "HEAD");
+  git(repo, "reset", "--hard", originalSha);
+
+  const shimDir = path.join(temp, "shim");
+  fs.mkdirSync(shimDir);
+  const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  fs.writeFileSync(path.join(shimDir, "git"), [
+    "#!/usr/bin/env node",
+    "const { spawnSync } = require('node:child_process');",
+    `const git = ${JSON.stringify(realGit)};`,
+    `const repo = ${JSON.stringify(repo)};`,
+    `const next = ${JSON.stringify(nextSha)};`,
+    "const args = process.argv.slice(2);",
+    "const result = spawnSync(git, args, { stdio: 'inherit' });",
+    "if (result.status === 0 && args.includes('ls-tree')) spawnSync(git, ['-C', repo, 'update-ref', 'refs/heads/main', next], { stdio: 'inherit' });",
+    "process.exit(result.status ?? 1);",
+    "",
+  ].join("\n"), { mode: 0o755 });
+
+  const result = spawnSync(process.execPath, [script,
+    "--repo", repo, "--parent", parent, "--issue", "SOU-1001", "--profile", "backend", "--max-mb", "1",
+  ], { encoding: "utf8", env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}` } });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(git(output.path, "rev-parse", "HEAD"), originalSha);
+  assert.equal(fs.existsSync(path.join(output.path, "large-root.bin")), false);
+});

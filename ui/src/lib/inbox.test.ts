@@ -309,7 +309,7 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
-  evidence: { windowDays: 14, registeredWorkProducts: 0, reviewedWorkProducts: 0, productAcceptance: "untracked" },
+  evidence: { windowDays: 14, registeredWorkProducts: 0, approvedStatusWorkProducts: 0, productAcceptance: "untracked" },
 };
 
 describe("inbox helpers", () => {
