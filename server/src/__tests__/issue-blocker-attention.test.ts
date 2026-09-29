@@ -206,6 +206,24 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("counts a queued task-bound run before checkout as live blocker work", async () => {
+    const { companyId, agentId } = await createCompany("PBQ");
+    const parentId = await insertIssue({ companyId, identifier: "PBQ-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId, identifier: "PBQ-2", title: "Queued blocker", status: "todo",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: blockerId, status: "queued", current: false });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBQ-2",
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

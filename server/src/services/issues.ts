@@ -3817,6 +3817,26 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
+  // A task-bound wake is queued before checkout assigns the issue's
+  // executionRunId. Count that persisted run for its current assignee so
+  // parent attention does not report stalled work in this gap. Running runs
+  // still require the execution lock; an unbound one may be stale.
+  for (const chunk of chunkList(nodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const boundIssueId = sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
+    const queuedRows: Array<{ issueId: string; agentId: string }> = await dbOrTx
+      .select({ issueId: boundIssueId, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+        inArray(boundIssueId, chunk),
+      ));
+    for (const row of queuedRows) {
+      if (nodesById.get(row.issueId)?.assigneeAgentId === row.agentId)
+        activeIssueIds.add(row.issueId);
+    }
+  }
+
   for (const chunk of chunkList(nodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
     const wakeRowsPromise: Promise<IssueBlockerAttentionActivePathRow[]> =
       dbOrTx

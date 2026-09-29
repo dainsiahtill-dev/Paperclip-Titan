@@ -522,6 +522,7 @@ V1 non-terminal liveness rule:
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
 - archived (hidden) child issues do not contribute implicit active blocker-attention paths; explicit dependency edges remain authoritative until removed or resolved
+- a queued task-bound run for the current assignee is a live attention path before checkout binds `execution_run_id`; a running run without that lock is not assumed to cover the task
 - external waits are durable only when persisted as a bounded monitor/scheduled wake, a first-class blocker with a named owner and action, or healthy delegated child work connected by a blocker edge when the source must wait; parent/child structure alone is not a wait path
 - unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
 - heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher

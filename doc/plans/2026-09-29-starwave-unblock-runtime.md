@@ -86,3 +86,4 @@
 - [ ] Reproduce a blocked parent with one live blocker and an archived old child whose cancelled dependency must not override the live path.
 - [ ] Exclude hidden child rows from implicit attention traversal while preserving explicit dependency edges.
 - [ ] Verify blocker-attention tests and the live SOU-6 projection after deployment.
+- [ ] Count an admitted queued run bound to the current assignee as a live path even before checkout fills `executionRunId`.
