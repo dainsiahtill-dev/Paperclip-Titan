@@ -180,6 +180,32 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("ignores an archived child with a cancelled dependency when live work covers the parent", async () => {
+    const { companyId, agentId } = await createCompany("PBA");
+    const parentId = await insertIssue({ companyId, identifier: "PBA-1", title: "Parent", status: "blocked" });
+    const liveId = await insertIssue({
+      companyId, identifier: "PBA-2", title: "Live blocker", status: "todo", parentId,
+      assigneeAgentId: agentId,
+    });
+    const archivedId = await insertIssue({
+      companyId, identifier: "PBA-3", title: "Archived old child", status: "blocked", parentId,
+    });
+    const cancelledId = await insertIssue({
+      companyId, identifier: "PBA-4", title: "Cancelled old dependency", status: "cancelled", parentId,
+    });
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, archivedId));
+    await block({ companyId, blockerIssueId: liveId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: cancelledId, blockedIssueId: archivedId });
+    await activeRun({ companyId, agentId, issueId: liveId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBA-2",
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

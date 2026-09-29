@@ -78,3 +78,11 @@
 - [ ] Reproduce a task with a `scheduled_retry` run whose log cannot be hydrated; its history must still appear.
 - [ ] Wait for persisted log hydration only for running or terminal runs, matching the log reader's readable statuses.
 - [ ] Verify task thread tests and a real SOU-16 browser view no longer retain the skeleton.
+
+### Task 7: Ignore archived children in active blocker attention
+
+**Files:** `server/src/services/issues.ts`, `server/src/__tests__/issue-blocker-attention.test.ts`.
+
+- [ ] Reproduce a blocked parent with one live blocker and an archived old child whose cancelled dependency must not override the live path.
+- [ ] Exclude hidden child rows from implicit attention traversal while preserving explicit dependency edges.
+- [ ] Verify blocker-attention tests and the live SOU-6 projection after deployment.

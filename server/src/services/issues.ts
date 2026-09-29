@@ -3721,6 +3721,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
+            isNull(issues.hiddenAt),
             notInArray(
               issues.status,
               BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES,
