@@ -1660,6 +1660,52 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
   });
 
+  it("lets Board reconcile a stopped former assignee to the current assignee without replay", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "cancelled" });
+    await db.update(issues).set({ status: "todo", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId, kind: "active_run_watchdog", status: "resolved", outcome: "blocked",
+      ownerType: "board", returnOwnerAgentId: coderId, cause: "uncertain_external_action", fingerprint: runId,
+      nextAction: "Preserve old work and continue with the current assignee.",
+      evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "mixed" } },
+    }).returning();
+    const body = {
+      actionId: action!.id,
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+      executionReconciliation: {
+        runId,
+        providerStopped: true,
+        actionOutcome: "mixed",
+        outcomeEvidence: "The previous run stopped. Its existing files were inspected and retained; no command will be replayed.",
+        transferToAssigneeAgentId: managerId,
+      },
+    };
+    const app = createApp();
+    const unapproved = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send({
+      ...body,
+      executionReconciliation: { ...body.executionReconciliation, transferToAssigneeAgentId: undefined },
+    });
+    expect(unapproved.status).toBe(409);
+    const mismatched = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send({
+      ...body,
+      executionReconciliation: { ...body.executionReconciliation, transferToAssigneeAgentId: coderId },
+    });
+    expect(mismatched.status).toBe(409);
+
+    const resolved = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body);
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.issue.status).toBe("todo");
+    const [recorded] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(recorded!.returnOwnerAgentId).toBe(managerId);
+    expect(recorded!.evidence).toMatchObject({
+      executionReconciliation: { runId, transferToAssigneeAgentId: managerId },
+      continuationDelivery: "pending",
+    });
+  });
+
   async function seedReconciledDelivery() {
     const fixture = await seedCompany();
     const { companyId, coderId, sourceIssueId } = fixture;

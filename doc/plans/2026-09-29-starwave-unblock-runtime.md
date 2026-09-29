@@ -42,6 +42,7 @@
 
 - [ ] Add a regression for archiving a non-runtime-owned shared project directory. Treat preserved directory as successful record cleanup, without deleting it.
 - [ ] Stop route-time dependency restoration wakes while a pending answer already owns the continuation; keep the periodic backstop's existing wait guard.
+- [ ] Let Board explicitly reconcile a stopped old Agent run to a new assigned Agent without replay, recording observed outcomes and routing the successor to the new owner. Keep mismatched and unverified transfers denied.
 - [ ] Recheck SOU-84 recovery action and old workspace ownership, then Board-reassign frontend work to current 星界 without replaying the old run.
 - [ ] Diagnose SOU-16's failed Claude run from actual run events and config; repair the provider path or switch the role to an already proven local Codex model if needed.
 - [ ] Resolve Board cards only where the user's existing authorization and evidence support a specific choice. Keep missing external executor, restricted holdout access, and training gates explicit.

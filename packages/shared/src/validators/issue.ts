@@ -563,6 +563,7 @@ export const resolveIssueRecoveryActionSchema = z
         providerStopped: z.literal(true),
         actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
         outcomeEvidence: z.string().trim().min(20).max(12000),
+        transferToAssigneeAgentId: z.string().guid().optional(),
       })
       .strict()
       .optional(),

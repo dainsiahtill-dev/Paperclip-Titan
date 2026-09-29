@@ -64,4 +64,6 @@ export interface ExecutionReconciliation {
   providerStopped: true;
   actionOutcome: "completed" | "not_performed" | "mixed";
   outcomeEvidence: string;
+  /** Board-verified handoff when the failed run's Agent is no longer the task assignee. */
+  transferToAssigneeAgentId?: string;
 }

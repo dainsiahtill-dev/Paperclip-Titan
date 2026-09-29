@@ -58,11 +58,14 @@ export async function validateExecutionReconciliation(input: {
     review?.status === "pending" &&
     review.currentParticipant?.type === "agent" &&
     review.currentParticipant.agentId === run?.agentId;
+  const isExplicitBoardTransfer =
+    decision.transferToAssigneeAgentId === agentId &&
+    run?.agentId !== agentId;
   if (
     !run ||
     !task ||
     task.assigneeAgentId !== agentId ||
-    (run.agentId !== agentId && !isCurrentReviewer) ||
+    (run.agentId !== agentId && !isCurrentReviewer && !isExplicitBoardTransfer) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
   ) {
@@ -132,7 +135,7 @@ export async function markExecutionReconciliation(
   db: Db,
   action: Pick<
     typeof issueRecoveryActions.$inferSelect,
-    "companyId" | "id" | "evidence" | "sourceIssueId"
+    "companyId" | "id" | "evidence" | "sourceIssueId" | "returnOwnerAgentId"
   >,
   decision: ExecutionReconciliation,
   actorId: string,
@@ -174,6 +177,7 @@ export async function markExecutionReconciliation(
   await db
     .update(issueRecoveryActions)
     .set({
+      returnOwnerAgentId: decision.transferToAssigneeAgentId ?? action.returnOwnerAgentId,
       evidence: {
         ...action.evidence,
         automaticRecovery: undefined,
