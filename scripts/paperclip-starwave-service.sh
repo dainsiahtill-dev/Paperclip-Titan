@@ -115,7 +115,7 @@ case "${1:-}" in
       printf 'Paperclip supervisor is not running\n'
       exit 0
     fi
-    tmux -S "$socket_path" send-keys -t "=$session_name" C-c
+    tmux -S "$socket_path" send-keys -t "$session_name:0.0" C-c
     for _ in {1..50}; do
       session_exists || { printf 'Paperclip supervisor stopped\n'; exit 0; }
       sleep 0.2
