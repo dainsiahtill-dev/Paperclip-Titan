@@ -38,6 +38,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { DeliveryEvidenceCard } from "../components/DeliveryEvidenceCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -450,6 +451,11 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <DeliveryEvidenceCard
+            runAttempts={data.runActivity.reduce((total, day) => total + day.total, 0)}
+            evidence={data.evidence}
+          />
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

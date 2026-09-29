@@ -1,6 +1,6 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issues, issueWorkProducts } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { executionIssueCondition } from "./issue-visibility.js";
@@ -84,6 +84,16 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
+      const [workProductEvidence] = await db
+        .select({
+          registered: sql<number>`count(*)::int`,
+          reviewed: sql<number>`count(*) filter (where ${issueWorkProducts.reviewState} = 'approved')::int`,
+        })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, companyId),
+          gte(issueWorkProducts.createdAt, runActivityStart),
+        ));
       const [{ monthSpend }] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
@@ -207,6 +217,12 @@ export function dashboardService(db: Db) {
           pausedProjects: budgetOverview.pausedProjectCount,
         },
         runActivity: Array.from(runActivity.values()),
+        evidence: {
+          windowDays: DASHBOARD_RUN_ACTIVITY_DAYS,
+          registeredWorkProducts: Number(workProductEvidence?.registered ?? 0),
+          reviewedWorkProducts: Number(workProductEvidence?.reviewed ?? 0),
+          productAcceptance: "untracked" as const,
+        },
       };
     },
   };

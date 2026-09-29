@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, issueWorkProducts } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,9 +47,51 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueWorkProducts);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  });
+
+  it("reports registered artifacts separately from successful runs and issue completion", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Paperclip", issuePrefix: "PAP", requireBoardApprovalForNewAgents: false },
+      { id: otherCompanyId, name: "Other", issuePrefix: "OTH", requireBoardApprovalForNewAgents: false },
+    ]);
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Coder", role: "engineer", status: "idle",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Implementation", status: "done", priority: "medium" },
+      { id: otherIssueId, companyId: otherCompanyId, title: "Other work", status: "done", priority: "medium" },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, invocationSource: "assignment", status: "succeeded", createdAt: utcDay(0),
+    });
+    await db.insert(issueWorkProducts).values([
+      { companyId, issueId, type: "file", provider: "local", title: "Candidate", status: "ready", reviewState: "approved", createdAt: utcDay(0) },
+      { companyId, issueId, type: "file", provider: "local", title: "Unreviewed", status: "ready", createdAt: utcDay(0) },
+      { companyId, issueId, type: "file", provider: "local", title: "Old", status: "ready", reviewState: "approved", createdAt: utcDay(-20) },
+      { companyId: otherCompanyId, issueId: otherIssueId, type: "file", provider: "local", title: "Other", status: "ready", reviewState: "approved", createdAt: utcDay(0) },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.evidence).toEqual({
+      windowDays: 14,
+      registeredWorkProducts: 2,
+      reviewedWorkProducts: 1,
+      productAcceptance: "untracked",
+    });
+    expect(summary.runActivity.at(-1)?.succeeded).toBe(1);
+    expect(summary.tasks.done).toBe(1);
   });
 
   afterAll(async () => {

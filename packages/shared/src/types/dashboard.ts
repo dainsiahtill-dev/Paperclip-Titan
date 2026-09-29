@@ -51,4 +51,10 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  evidence: {
+    windowDays: number;
+    registeredWorkProducts: number;
+    reviewedWorkProducts: number;
+    productAcceptance: "untracked";
+  };
 }
