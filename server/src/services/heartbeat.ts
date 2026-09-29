@@ -17082,6 +17082,33 @@ export function heartbeatService(
     });
     if (wait) return wait;
 
+    // The parent row is already FOR UPDATE in withChatControlRecoveryGate.
+    // Hold the present edges and their source issue rows until the queued run
+    // becomes running. This keeps a blocker reopening or a child changing
+    // status from committing between readiness and admission. The parent row
+    // also serializes new FK-backed edges and child links.
+    const relationRows = await tx.select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, run.companyId),
+        eq(issueRelations.relatedIssueId, issueId), eq(issueRelations.type, "blocks")))
+      .orderBy(issueRelations.id)
+      .for("share", { noWait: true });
+    const childIds = wakeReason === "issue_children_completed"
+      ? (await tx.select({ id: issues.id }).from(issues)
+          .where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, issueId))))
+          .map((child) => child.id)
+      : [];
+    const sourceIds = [...new Set([
+      ...relationRows.map((row) => row.blockerIssueId), ...childIds,
+    ].filter((id) => id !== issueId))].sort();
+    if (sourceIds.length > 0) {
+      const lockedSources = await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, sourceIds)))
+        .orderBy(issues.id)
+        .for("share", { noWait: true });
+      if (lockedSources.length !== sourceIds.length) return "wake_source_missing";
+    }
+
     const readiness = (await issuesSvc.listDependencyReadiness(run.companyId, [issueId], tx)).get(issueId);
     if (!readiness?.isDependencyReady) return "issue_dependency_not_ready";
     if (!run.wakeupRequestId) return "missing_wake_identity";
@@ -17105,7 +17132,7 @@ export function heartbeatService(
         blockedTransitionAt: currentIssue.blockedTransitionAt,
       });
     } else {
-      const children = await tx.select({ id: issues.id, status: issues.status, updatedAt: issues.updatedAt })
+      const children = await tx.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion })
         .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, issueId)));
       if (children.length === 0 || children.some((child) =>
         child.status !== "done" && child.status !== "cancelled")) return "children_not_terminal";

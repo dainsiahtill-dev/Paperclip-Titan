@@ -703,10 +703,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId));
     await db.update(issues).set({ parentId: blockedIssueId }).where(eq(issues.id, blockerIssueId));
-    const [child] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, blockerIssueId));
+    const [child] = await db.select({ statusVersion: issues.statusVersion }).from(issues).where(eq(issues.id, blockerIssueId));
     const key = buildIssueChildrenReadyWakeStateKey({
       parentIssueId: blockedIssueId, blockerIssueIds: [], blockedTransitionAt: null,
-      children: [{ id: blockerIssueId, status: "done", updatedAt: child!.updatedAt }],
+      children: [{ id: blockerIssueId, status: "done", statusVersion: child!.statusVersion }],
     });
     const runIds = [randomUUID(), randomUUID()];
     for (let index = 0; index < runIds.length; index += 1) {
@@ -723,6 +723,12 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         createdAt: new Date(Date.now() + index),
       });
     }
+    // A completed child's ordinary edit must not invalidate its queued
+    // completion wake. Only another status transition starts a new state.
+    await db.update(issues).set({
+      title: "Completed child with an edited title",
+      updatedAt: new Date(Date.now() + 10_000),
+    }).where(eq(issues.id, blockerIssueId));
     mockAdapterExecute.mockClear();
     mockAdapterExecute.mockImplementation(async () => {
       await db.insert(issueComments).values({
@@ -746,14 +752,38 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
+  it("rekeys a reopened and completed child but ignores ordinary edits", async () => {
+    const { blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const readChild = async () => {
+      const [child] = await db.select({
+        status: issues.status,
+        statusVersion: issues.statusVersion,
+      }).from(issues).where(eq(issues.id, blockerIssueId));
+      return child!;
+    };
+    const first = await readChild();
+    await db.update(issues).set({ title: "Edited after completion" }).where(eq(issues.id, blockerIssueId));
+    expect(await readChild()).toEqual(first);
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, blockerIssueId));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerIssueId));
+    const second = await readChild();
+    expect(second.status).toBe("done");
+    expect(second.statusVersion).toBe(first.statusVersion + 2);
+    expect(buildIssueChildrenReadyWakeStateKey({
+      parentIssueId: blockedIssueId, children: [{ id: blockerIssueId, ...first }], blockerIssueIds: [],
+    })).not.toBe(buildIssueChildrenReadyWakeStateKey({
+      parentIssueId: blockedIssueId, children: [{ id: blockerIssueId, ...second }], blockerIssueIds: [],
+    }));
+  });
+
   it("supersedes a queued child-ready wake when its child becomes a formal blocker", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
     await db.delete(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId));
     await db.update(issues).set({ parentId: blockedIssueId }).where(eq(issues.id, blockerIssueId));
-    const [child] = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, blockerIssueId));
+    const [child] = await db.select({ statusVersion: issues.statusVersion }).from(issues).where(eq(issues.id, blockerIssueId));
     const childKey = buildIssueChildrenReadyWakeStateKey({
       parentIssueId: blockedIssueId, blockerIssueIds: [], blockedTransitionAt: null,
-      children: [{ id: blockerIssueId, status: "done", updatedAt: child!.updatedAt }],
+      children: [{ id: blockerIssueId, status: "done", statusVersion: child!.statusVersion }],
     });
     const dependencyKey = buildIssueBlockersResolvedWakeStateKey({
       dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,

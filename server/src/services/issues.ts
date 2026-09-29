@@ -9112,6 +9112,7 @@ export function issueService(db: Db) {
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          statusVersion: issues.statusVersion,
           updatedAt: issues.updatedAt,
         })
         .from(issues)
@@ -9197,7 +9198,7 @@ export function issueService(db: Db) {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
         childIssueIds: children.map((child) => child.id),
-        childReadyState: children.map((child) => ({ id: child.id, status: child.status, updatedAt: child.updatedAt })),
+        childReadyState: children.map((child) => ({ id: child.id, status: child.status, statusVersion: child.statusVersion })),
         blockerIssueIds: readiness.get(parentIssueId)?.blockerIssueIds ?? [],
         blockedTransitionAt: parent.blockedTransitionAt,
         childIssueSummaries,

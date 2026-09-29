@@ -146,7 +146,7 @@ export function buildIssueBlockersResolvedWakeStateKey(input: IssueBlockersResol
 
 export type IssueChildrenReadyWakeStateInput = {
   parentIssueId: string;
-  children: Array<{ id: string; status: string; updatedAt: Date | string }>;
+  children: Array<{ id: string; status: string; statusVersion: number }>;
   blockerIssueIds: string[];
   blockedTransitionAt?: IssueBlockersResolvedWakeCycleInput;
 };
@@ -154,9 +154,10 @@ export type IssueChildrenReadyWakeStateInput = {
 export function buildIssueChildrenReadyWakeStateKey(input: IssueChildrenReadyWakeStateInput): string {
   if (input.children.length === 0) throw new Error("A child-ready wake requires at least one child");
   const children = input.children.map((child) => {
-    const updatedAt = child.updatedAt instanceof Date ? child.updatedAt : new Date(child.updatedAt);
-    if (Number.isNaN(updatedAt.getTime())) throw new Error("A child-ready wake requires valid child timestamps");
-    return `${child.id}\t${child.status}\t${updatedAt.toISOString()}`;
+    if (!Number.isSafeInteger(child.statusVersion) || child.statusVersion < 0) {
+      throw new Error("A child-ready wake requires a valid child status version");
+    }
+    return `${child.id}\t${child.status}\t${child.statusVersion}`;
   }).sort();
   const digest = createHash("sha256").update(JSON.stringify({
     children,

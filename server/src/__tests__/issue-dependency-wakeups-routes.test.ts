@@ -386,7 +386,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
       id: issueId, assigneeAgentId: "agent-2", childIssueIds: ["child-1"],
-      childReadyState: [{ id: "child-1", status: "done", updatedAt: new Date("2026-09-29T12:00:00.000Z") }],
+      childReadyState: [{ id: "child-1", status: "done", statusVersion: 1 }],
       blockerIssueIds: [], blockedTransitionAt: null,
       childIssueSummaries: [], childIssueSummaryTruncated: false,
     });
@@ -440,8 +440,8 @@ describe("issue dependency wakeups in issue routes", () => {
       assigneeAgentId: "agent-9",
       childIssueIds: ["child-0", "child-1"],
       childReadyState: [
-        { id: "child-0", status: "done", updatedAt: new Date("2026-04-18T12:00:00.000Z") },
-        { id: "child-1", status: "done", updatedAt: new Date("2026-04-18T12:05:00.000Z") },
+        { id: "child-0", status: "done", statusVersion: 1 },
+        { id: "child-1", status: "done", statusVersion: 1 },
       ],
       blockerIssueIds: [], blockedTransitionAt: null,
       childIssueSummaries: [
@@ -504,7 +504,7 @@ describe("issue dependency wakeups in issue routes", () => {
     }]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
       id: "parent-1", assigneeAgentId: "agent-9", childIssueIds: ["child-1"],
-      childReadyState: [{ id: "child-1", status: "done", updatedAt: new Date("2026-09-29T12:00:00.000Z") }],
+      childReadyState: [{ id: "child-1", status: "done", statusVersion: 1 }],
       blockerIssueIds: ["child-1"], blockedTransitionAt: null,
       childIssueSummaries: [], childIssueSummaryTruncated: false,
     });

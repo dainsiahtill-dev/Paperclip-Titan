@@ -46,8 +46,8 @@ describe("buildIssueChildrenReadyWakeStateKey", () => {
     blockedTransitionAt: firstCycle,
     blockerIssueIds: [] as string[],
     children: [
-      { id: blockerIssueId, status: "done", updatedAt: firstCycle },
-      { id: companyId, status: "cancelled", updatedAt: secondCycle },
+      { id: blockerIssueId, status: "done", statusVersion: 2 },
+      { id: companyId, status: "cancelled", statusVersion: 4 },
     ],
   };
 
@@ -58,10 +58,10 @@ describe("buildIssueChildrenReadyWakeStateKey", () => {
     expect(first).toMatch(new RegExp(`^issue_children_completed:state:${dependentIssueId}:2:`));
   });
 
-  it("changes when a child revision, formal blocker set, or blocked cycle changes", () => {
+  it("changes when a child status revision, formal blocker set, or blocked cycle changes", () => {
     const first = buildIssueChildrenReadyWakeStateKey(ready);
     expect(buildIssueChildrenReadyWakeStateKey({ ...ready, children: [
-      { ...ready.children[0], updatedAt: secondCycle }, ready.children[1],
+      { ...ready.children[0], statusVersion: 3 }, ready.children[1],
     ] })).not.toBe(first);
     expect(buildIssueChildrenReadyWakeStateKey({ ...ready, blockerIssueIds: [blockerIssueId] })).not.toBe(first);
     expect(buildIssueChildrenReadyWakeStateKey({ ...ready, blockedTransitionAt: secondCycle })).not.toBe(first);
