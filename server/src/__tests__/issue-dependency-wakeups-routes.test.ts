@@ -368,6 +368,36 @@ describe("issue dependency wakeups in issue routes", () => {
     })));
   });
 
+  it("wakes a parent after its descriptor clears when all children had already finished", async () => {
+    const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const base = {
+      id: issueId, companyId: "company-1", identifier: "PAP-202", title: "Parent waiting for input",
+      status: "blocked", priority: "medium", parentId: null, assigneeAgentId: "agent-2",
+      assigneeUserId: null, createdByAgentId: null, createdByUserId: null,
+      executionWorkspaceId: null, labels: [], labelIds: [], updatedAt: new Date("2026-09-29T12:30:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue({
+      ...base, unblockDescriptor: { owner: "board", action: "Await external resource" },
+    });
+    mockIssueService.update.mockResolvedValue({ ...base, unblockDescriptor: null });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId, blockerIssueIds: [], unresolvedBlockerIssueIds: [], unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [], allBlockersDone: true, isDependencyReady: true,
+    });
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+      id: issueId, assigneeAgentId: "agent-2", childIssueIds: ["child-1"],
+      childIssueSummaries: [], childIssueSummaryTruncated: false,
+    });
+
+    const response = await request(await createApp()).patch(`/api/issues/${issueId}`).send({ unblockDescriptor: null });
+
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(mockWakeup).toHaveBeenCalledWith("agent-2", expect.objectContaining({
+      reason: "issue_children_completed",
+      payload: expect.objectContaining({ issueId, childIssueIds: ["child-1"] }),
+    })));
+  });
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",

@@ -14787,6 +14787,41 @@ export function issueRoutes(
           }
         }
 
+        if (issue.status === "blocked" && issue.assigneeAgentId &&
+          existing.unblockDescriptor && !issue.unblockDescriptor &&
+          typeof dependencyReadinessSvc.getDependencyReadiness === "function") {
+          const readiness = await dependencyReadinessSvc.getDependencyReadiness(issue.id);
+          if (readiness.blockerIssueIds.length === 0) {
+            const readyParent = await svc.getWakeableParentAfterChildCompletion(issue.id);
+            if (readyParent) {
+              addWakeup(readyParent.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "issue_children_completed",
+                idempotencyKey: `issue_children_ready:${issue.id}:${issue.updatedAt.toISOString()}`,
+                payload: {
+                  issueId: issue.id,
+                  childIssueIds: readyParent.childIssueIds,
+                  childIssueSummaries: readyParent.childIssueSummaries,
+                  childIssueSummaryTruncated: readyParent.childIssueSummaryTruncated,
+                  mutation: "independent_wait_cleared",
+                },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  wakeReason: "issue_children_completed",
+                  source: "issue.children_ready_after_wait_cleared",
+                  childIssueIds: readyParent.childIssueIds,
+                  childIssueSummaries: readyParent.childIssueSummaries,
+                  childIssueSummaryTruncated: readyParent.childIssueSummaryTruncated,
+                },
+              });
+            }
+          }
+        }
+
         const stopRelay = stopRelayResult.value;
         if (stopRelay) {
           await logActivity(db, {

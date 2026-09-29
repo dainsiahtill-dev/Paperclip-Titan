@@ -25789,6 +25789,33 @@ export function heartbeatService(
     }
   }
 
+  function isStrictIssueWakeReason(reason: string | null): boolean {
+    return reason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON || reason === "issue_children_completed";
+  }
+
+  async function canCoalesceIssueWakeIdentity(
+    queryDb: Db,
+    target: { id: string; status: string; contextSnapshot: unknown; wakeupRequestId: string | null },
+    input: { companyId: string; agentId: string; reason: string | null; idempotencyKey: string | null },
+  ): Promise<boolean> {
+    const existingReason = readNonEmptyString(parseObject(target.contextSnapshot).wakeReason);
+    if (!isStrictIssueWakeReason(input.reason) && !isStrictIssueWakeReason(existingReason)) return true;
+    if (target.status !== "queued" || !isStrictIssueWakeReason(input.reason) ||
+      input.reason !== existingReason || !input.idempotencyKey || !target.wakeupRequestId) return false;
+    const [receipt] = await queryDb.select({
+      reason: agentWakeupRequests.reason,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      runId: agentWakeupRequests.runId,
+      status: agentWakeupRequests.status,
+    }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, target.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+    )).limit(1);
+    return receipt?.status === "queued" && receipt.reason === input.reason &&
+      receipt.idempotencyKey === input.idempotencyKey && receipt.runId === target.id;
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -27280,7 +27307,18 @@ export function heartbeatService(
             }
           }
 
-          if (activeExecutionRun) {
+          const safeIssueWakeCoalesce = activeExecutionRun
+            ? await canCoalesceIssueWakeIdentity(tx as unknown as Db, activeExecutionRun, {
+                companyId: agent.companyId,
+                agentId,
+                reason,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+            : true;
+          // A queued run with a different guarded wake identity is not yet
+          // executing. Keep both receipts and runs separate so the next claim
+          // validates each against its own reason and key.
+          if (activeExecutionRun && !(activeExecutionRun.status === "queued" && !safeIssueWakeCoalesce)) {
             // The resolved action is already a durable retry outbox. Do not merge
             // its fresh-session contract into unrelated work or create a second
             // deferred wake that could later replay the same reconciliation.
@@ -27305,7 +27343,7 @@ export function heartbeatService(
                   contextSnapshot: activeExecutionRun.contextSnapshot,
                   wakeupRequestId: activeExecutionRun.wakeupRequestId,
                 },
-                allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
+                allowRunCoalescing: !safeIssueWakeCoalesce || isConversation(issue) ? false : opts.allowRunCoalescing,
                 durableReceipt: durableRequest
                   ? {
                       id: durableRequest.id,
@@ -27770,10 +27808,17 @@ export function heartbeatService(
             ? null
             : (sameScopeRunningRun ?? null)));
 
-    const coalescedTargetRun = filterZombieCoalesceTarget(
+    let coalescedTargetRun = filterZombieCoalesceTarget(
       rawCoalescedTarget,
       liveRunExecutions,
     );
+
+    if (coalescedTargetRun && !(await canCoalesceIssueWakeIdentity(db, coalescedTargetRun, {
+      companyId: agent.companyId,
+      agentId,
+      reason,
+      idempotencyKey: opts.idempotencyKey ?? null,
+    }))) coalescedTargetRun = null;
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(

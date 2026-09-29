@@ -601,6 +601,103 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["issue_children_completed", "issue_blockers_resolved"],
+    ["issue_blockers_resolved", "issue_children_completed"],
+  ] as const)("keeps queued %s identity when %s arrives for the same issue", async (firstReason, incomingReason) => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const blockerKey = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+    });
+    const childKey = `issue_children_completed:${blockedIssueId}:${blockerIssueId}`;
+    const firstKey = firstReason === "issue_blockers_resolved" ? blockerKey : childKey;
+    const incomingKey = incomingReason === "issue_blockers_resolved" ? blockerKey : childKey;
+    const occupiedRunId = randomUUID();
+    const originalRunId = randomUUID();
+    const originalWakeId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: occupiedRunId, companyId, agentId, invocationSource: "automation", status: "running",
+      contextSnapshot: { taskKey: "other-work" },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: originalWakeId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: firstReason, payload: { issueId: blockedIssueId }, status: "queued",
+      runId: originalRunId, idempotencyKey: firstKey,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: originalRunId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId: originalWakeId,
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: firstReason },
+    });
+
+    const newRun = await heartbeatService(db).wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: incomingReason,
+      idempotencyKey: incomingKey, payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerIssueId },
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: incomingReason },
+    });
+
+    expect(newRun?.id).not.toBe(originalRunId);
+    const [original] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, originalRunId));
+    expect(original?.contextSnapshot).toMatchObject({ wakeReason: firstReason });
+    const [newWake] = await db.select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, newRun!.id));
+    expect(newWake?.idempotencyKey).toBe(incomingKey);
+
+    if (incomingReason === "issue_blockers_resolved") {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockedIssueId));
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+          summary: "Completed the current dependency-ready work.", provider: "test", model: "test-model" };
+      });
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, occupiedRunId));
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const [oldRun] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, originalRunId));
+      const [validRun] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, newRun!.id));
+      expect(oldRun?.status).toBe("cancelled");
+      expect(validRun?.status).toBe("succeeded");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("coalesces a queued dependency wake only when its reason and cycle key match", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    const key = buildIssueBlockersResolvedWakeStateKey({
+      dependentIssueId: blockedIssueId, blockerIssueIds: [blockerIssueId], blockedTransitionAt: null,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, invocationSource: "automation", status: "running",
+      contextSnapshot: { taskKey: "other-work" },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: "issue_blockers_resolved", payload: { issueId: blockedIssueId },
+      status: "queued", runId, idempotencyKey: key,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+      status: "queued", wakeupRequestId,
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+
+    const run = await heartbeatService(db).wakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_blockers_resolved",
+      idempotencyKey: key, payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerIssueId },
+      contextSnapshot: { issueId: blockedIssueId, taskId: blockedIssueId, wakeReason: "issue_blockers_resolved" },
+    });
+
+    expect(run?.id).toBe(runId);
+    const [original] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(original?.contextSnapshot).toMatchObject({ wakeReason: "issue_blockers_resolved" });
+  });
+
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
