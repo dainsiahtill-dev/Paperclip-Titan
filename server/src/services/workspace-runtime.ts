@@ -4221,7 +4221,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // An operator-owned local directory is deliberately retained. Archiving its
+  // execution session removes the record, not the project workspace on disk.
   const cleaned =
+    (input.workspace.providerType === "local_fs" && !createdByRuntime) ||
     !workspacePath ||
     !(await directoryExists(workspacePath));
 

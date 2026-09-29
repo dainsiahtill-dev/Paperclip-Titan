@@ -3762,6 +3762,33 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("archives an operator-owned shared directory without deleting its files", async () => {
+    const repoRoot = await createTempRepo();
+    const markerPath = path.join(repoRoot, "keep.txt");
+    await fs.writeFile(markerPath, "operator data", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-shared",
+        cwd: repoRoot,
+        providerType: "local_fs",
+        providerRef: null,
+        branchName: null,
+        repoUrl: null,
+        baseRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        metadata: { createdByRuntime: false },
+      },
+      projectWorkspace: { cwd: repoRoot, cleanupCommand: null },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([]);
+    expect(await fs.readFile(markerPath, "utf8")).toBe("operator data");
+  });
+
   it("deletes a runtime-created branch at its verified tip after a reuse realization", async () => {
     const repoRoot = await createTempRepo();
     const realizationInput = {

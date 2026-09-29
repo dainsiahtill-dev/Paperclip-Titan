@@ -2941,6 +2941,23 @@ export function issueThreadInteractionService(
         woken,
       };
     },
+    hasPendingWakeContinuationForIssue: async (companyId: string, issueId: string) => {
+      const pending = await db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+          inArray(issueThreadInteractions.continuationPolicy, [
+            "wake_assignee",
+            "wake_assignee_on_accept",
+          ]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return pending !== null;
+    },
     listForIssue: async (issueId: string) => {
       const [rows, issueStatus] = await Promise.all([
         db

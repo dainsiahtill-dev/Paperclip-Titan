@@ -14466,6 +14466,10 @@ export function issueRoutes(
           source: string;
           mutation: string;
         }) => {
+          if (await issueThreadInteractionsSvc.hasPendingWakeContinuationForIssue(
+            issue.companyId,
+            input.dependentIssueId,
+          )) return;
           const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,
@@ -17912,6 +17916,10 @@ export function issueRoutes(
           blockerIssueIds: string[];
           blockedTransitionAt?: Date | string | null;
         }) => {
+          if (await issueThreadInteractionsSvc.hasPendingWakeContinuationForIssue(
+            currentIssue.companyId,
+            input.dependentIssueId,
+          )) return;
           const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
             dependentIssueId: input.dependentIssueId,
             blockerIssueIds: input.blockerIssueIds,

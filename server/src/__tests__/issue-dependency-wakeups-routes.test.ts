@@ -17,6 +17,7 @@ import {
 vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockHasPendingWakeContinuation = vi.hoisted(() => vi.fn(async () => false));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -88,6 +89,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueThreadInteractionService: () => ({
     listForIssue: vi.fn(async () => []),
+    hasPendingWakeContinuationForIssue: mockHasPendingWakeContinuation,
     expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
     expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
@@ -161,6 +163,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
+    mockHasPendingWakeContinuation.mockResolvedValue(false);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
@@ -314,6 +317,19 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+
+    mockWakeup.mockClear();
+    mockHasPendingWakeContinuation.mockResolvedValue(true);
+    const waiting = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Await the pending answer" },
+      });
+
+    expect(waiting.status).toBe(200);
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the parent when all direct children become terminal", async () => {
