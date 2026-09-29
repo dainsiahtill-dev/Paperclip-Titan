@@ -28,6 +28,9 @@ export const heartbeatRuns = pgTable(
     status: text("status").notNull().default("queued"),
     // Null is a historical run; empty string means explicitly ungrouped.
     capacityGroup: text("capacity_group"),
+    // A terminal status alone does not release provider capacity: Stop may
+    // still be waiting for the CLI process or native provider to terminate.
+    capacityReleasedAt: timestamp("capacity_released_at", { withTimezone: true }),
     responsibleUserId: text("responsible_user_id"),
     // The service validates the company/run boundary; avoid a cyclic schema import.
     activeIdentityContextId: uuid("active_identity_context_id"),
@@ -100,6 +103,9 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    activeCapacityIdx: index("heartbeat_runs_active_capacity_idx")
+      .on(table.agentId, table.capacityGroup)
+      .where(sql`${table.status} = 'running' or (${table.capacityGroup} is not null and ${table.capacityReleasedAt} is null)`),
     executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
       .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
     executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")

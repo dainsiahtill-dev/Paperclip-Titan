@@ -30,4 +30,8 @@ The server treats invalid or unconfigured group names as a closed capacity gate,
 
 ## Risks
 
-Global limits include all running Agent runs, including preparation and cleanup, so they are conservative relative to actual provider calls. A group assignment is explicit; changing CC-Switch does not automatically reclassify an Agent. The first live deployment must wait for current long-running work to finish so the dev watcher does not interrupt it. Settings use existing JSON columns, while the durable per-run group requires one additive migration.
+Global limits include all admitted Agent runs until owned execution has stopped, including preparation, cancellation grace and cleanup, so they are conservative relative to actual provider calls. A group assignment is explicit; changing CC-Switch does not automatically reclassify an Agent. The first live deployment must wait for current long-running work to finish so the dev watcher does not interrupt it. Settings use existing JSON columns, while the durable per-run group and stop receipt require additive migrations.
+
+## Review adjustments
+
+The first review found that `status=cancelled` can precede physical process termination. A second nullable `heartbeat_runs.capacity_released_at` records a confirmed release; capacity counts admitted rows with no release receipt even when their status is terminal. The same transaction lock also rechecks the per-Agent limit. For queued comments, chat-close and deleted-comment gates precede the capacity check. Live-run list projections carry the capacity-wait reason so queued work is explainable.

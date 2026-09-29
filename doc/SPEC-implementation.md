@@ -1281,7 +1281,10 @@ Queued-to-running admission checks the instance and selected group ceilings
 under a database lock before starting adapter work. When full, a run remains
 queued with a capacity-wait reason and the normal queued-run scheduler retries
 it on the next tick; it does not create a chain of cancelled retries. A limit
-reduction does not terminate already-running work. Capacity is an upper bound:
+reduction does not terminate already-running work. A cancellation status does
+not free a capacity slot until the owned provider execution has stopped; a
+terminal run can retain its slot during the termination grace period. Capacity
+is an upper bound:
 workspace serialization, dependencies, agent state, and budgets can further
 reduce actual parallelism.
 

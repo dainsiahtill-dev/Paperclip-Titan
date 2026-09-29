@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { admitQueuedRunCapacity } from "../services/run-capacity.ts";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -119,6 +120,15 @@ describePostgres("shared Agent run capacity", () => {
     return await heartbeat.getRun(runId);
   }
 
+  async function waitForCapacityRelease(runId: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const row = await heartbeat.getRun(runId);
+      if (row?.capacityReleasedAt) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`Capacity release for ${runId} was not recorded`);
+  }
+
   async function waitForDispatchCount(count: number) {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if (dispatched.length >= count) return;
@@ -138,6 +148,16 @@ describePostgres("shared Agent run capacity", () => {
     const waiting = await heartbeat.getRun(candidate!.id);
     expect(waiting?.status).toBe("queued");
     expect(heartbeat.decorateActiveRunStatus(waiting!).currentStatusMessage)
+      .toContain('concurrency group "minimax"');
+    const summary = {
+      id: waiting!.id,
+      companyId: waiting!.companyId,
+      agentId: waiting!.agentId,
+      status: waiting!.status,
+      executionStage: waiting!.executionStage,
+      capacityWaitReason: (waiting!.resultJson as { capacityWait?: { reason?: string } })?.capacityWait?.reason,
+    };
+    expect(heartbeat.decorateActiveRunStatus(summary).currentStatusMessage)
       .toContain('concurrency group "minimax"');
     expect(dispatched).not.toContain(candidate!.id);
 
@@ -234,10 +254,68 @@ describePostgres("shared Agent run capacity", () => {
 
     releases.get(dispatched[0]!)?.();
     await waitForTerminal(dispatched[0]!);
+    await waitForCapacityRelease(dispatched[0]!);
     await heartbeat.resumeQueuedRuns();
     await waitForDispatchCount(2);
     releases.get(dispatched[1]!)?.();
     await waitForTerminal(dispatched[1]!);
+  }, 30_000);
+
+  it("rechecks the same Agent's run limit inside concurrent claim transactions", async () => {
+    const { holderRunId, candidateId, companyId } = await seed("openai", "minimax");
+    await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 6 }] },
+    });
+    const runIds = [randomUUID(), randomUUID()];
+    for (const id of runIds) {
+      await database.insert(heartbeatRuns).values({
+        id, companyId, agentId: candidateId, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "queued", contextSnapshot: {},
+      });
+    }
+    const [agent] = await database.select().from(agents).where(eq(agents.id, candidateId));
+    expect(agent).toBeDefined();
+    const admissions = await Promise.all(runIds.map((id) => database.transaction(async (transaction) => {
+      const result = await admitQueuedRunCapacity(transaction as unknown as Db, agent!, id, 1);
+      if (result.allowed) {
+        await transaction.update(heartbeatRuns).set({ status: "running", capacityGroup: result.group ?? "" })
+          .where(eq(heartbeatRuns.id, id));
+      }
+      return result;
+    })));
+    expect(admissions.filter((result) => result.allowed)).toHaveLength(1);
+    const persisted = await database.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, candidateId));
+    expect(persisted.map((run) => run.status).sort()).toEqual(["queued", "running"]);
+  }, 30_000);
+
+  it("keeps a slot occupied after cancellation until the adapter has stopped", async () => {
+    const { holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
+    await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+    });
+    blockAdapter = true;
+    const first = await heartbeat.invoke(holderId, "on_demand", {}, "manual");
+    expect(first).not.toBeNull();
+    await waitForDispatchCount(1);
+    // Models the existing pause path's order: status changes before the
+    // process finishes its grace period.
+    await database.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, first!.id));
+
+    const second = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    expect(second).not.toBeNull();
+    expect((await heartbeat.getRun(second!.id))?.status).toBe("queued");
+    expect(dispatched).toHaveLength(1);
+
+    releases.get(first!.id)?.();
+    await heartbeat.drainActiveRunExecutions();
+    await waitForCapacityRelease(first!.id);
+    await heartbeat.resumeQueuedRuns();
+    await waitForDispatchCount(2);
+    releases.get(second!.id)?.();
+    await waitForTerminal(second!.id);
   }, 30_000);
 
   it("keeps an Agent with an unconfigured group queued", async () => {

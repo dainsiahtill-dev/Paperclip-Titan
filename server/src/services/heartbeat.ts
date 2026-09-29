@@ -3459,6 +3459,8 @@ const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
   runtimeMode: heartbeatRuns.runtimeMode,
   status: heartbeatRuns.status,
+  executionStage: heartbeatRuns.executionStage,
+  capacityWaitReason: sql<string | null>`${heartbeatRuns.resultJson} #>> '{capacityWait,reason}'`.as("capacityWaitReason"),
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
   contextCommentId: sql<
@@ -8195,6 +8197,7 @@ type HeartbeatRunRuntimeStatusRunLike = {
   contextSnapshot?: Record<string, unknown> | null;
   executionStage?: string | null;
   resultJson?: Record<string, unknown> | null;
+  capacityWaitReason?: string | null;
 };
 
 function readRuntimeStatusIssueIdCandidate(
@@ -8243,7 +8246,8 @@ function decorateHeartbeatRunRuntimeStatus<
       : null;
   const capacityWaitMessage =
     run.status === "queued" && run.executionStage === "waiting_capacity"
-      ? readNonEmptyString(parseObject(parseObject(run.resultJson).capacityWait).reason)
+      ? readNonEmptyString(run.capacityWaitReason) ??
+        readNonEmptyString(parseObject(parseObject(run.resultJson).capacityWait).reason)
       : null;
 
   return {
@@ -16805,6 +16809,42 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  async function releaseRunCapacityIfStopped(
+    runId: string,
+    options: { reaperConfirmedStop?: boolean } = {},
+  ): Promise<boolean> {
+    const current = await getRun(runId);
+    if (
+      !current ||
+      current.capacityGroup === null ||
+      current.capacityReleasedAt !== null ||
+      !isHeartbeatRunTerminalStatus(current.status)
+    ) return false;
+    if (activeRunExecutions.has(runId)) return false;
+    if (
+      current.runtimeMode === "legacy" &&
+      current.controllerBootId &&
+      current.controllerBootId !== legacyControllerBootId &&
+      !options.reaperConfirmedStop
+    ) return false;
+    const tracked = runningProcesses.get(runId);
+    if (tracked && tracked.child.exitCode === null && tracked.child.signalCode === null) return false;
+    if (
+      (current.processPid && isProcessAlive(current.processPid)) ||
+      (current.processGroupId && isProcessGroupAlive(current.processGroupId)) ||
+      (current.runtimeMode === "native" && isNativeRunnerOwnershipHeld(current))
+    ) return false;
+    const [released] = await db.update(heartbeatRuns).set({ capacityReleasedAt: new Date() })
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        isNotNull(heartbeatRuns.capacityGroup),
+        isNull(heartbeatRuns.capacityReleasedAt),
+        inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+      ))
+      .returning({ id: heartbeatRuns.id });
+    return Boolean(released);
+  }
+
   async function withChatControlRecoveryGate(
     run: typeof heartbeatRuns.$inferSelect,
     stage: "claim" | "dispatch",
@@ -17189,6 +17229,7 @@ export function heartbeatService(
       return null;
     }
 
+    const maxAgentRuns = parseHeartbeatPolicy(agent).maxConcurrentRuns;
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
@@ -17382,9 +17423,6 @@ export function heartbeatService(
                 return { kind: "stale" as const, run: null };
               }
 
-              const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id);
-              if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
-
               if (lockedRun.invocationSource === "automation") {
                 const admission = readChatControlRecoveryAdmission(lockedRun);
                 if (admission === "invalid")
@@ -17481,11 +17519,14 @@ export function heartbeatService(
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
+                const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id, maxAgentRuns);
+                if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
                     capacityGroup: capacity.group ?? "",
+                    capacityReleasedAt: null,
                     executionStage: null,
                     runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
@@ -17569,6 +17610,8 @@ export function heartbeatService(
                 };
               }
 
+              const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id, maxAgentRuns);
+              if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -17586,6 +17629,7 @@ export function heartbeatService(
                 .set({
                   status: "running",
                   capacityGroup: capacity.group ?? "",
+                  capacityReleasedAt: null,
                   executionStage: null,
                   runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
@@ -17658,13 +17702,14 @@ export function heartbeatService(
               staleIssueWakeReason = await issueAutomationWakeClaimHold(claimDb, run, issueId, wakeReason);
               if (staleIssueWakeReason) return null;
             }
-            const capacity = await admitQueuedRunCapacity(claimDb, agent, run.id);
+            const capacity = await admitQueuedRunCapacity(claimDb, agent, run.id, maxAgentRuns);
             if (!capacity.allowed) return null;
             return claimDb
               .update(heartbeatRuns)
               .set({
                 status: "running",
                 capacityGroup: capacity.group ?? "",
+                capacityReleasedAt: null,
                 executionStage: null,
                 runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                 ...legacyControllerClaim(run.runtimeMode),
@@ -19085,6 +19130,7 @@ export function heartbeatService(
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
       });
+      await releaseRunCapacityIfStopped(finalizedRun.id, { reaperConfirmedStop: true });
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
@@ -25798,6 +25844,9 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
+        await releaseRunCapacityIfStopped(run.id).catch((error) => {
+          logger.warn({ err: error, runId: run.id }, "could not release stopped run capacity");
+        });
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
@@ -28740,6 +28789,9 @@ export function heartbeatService(
         await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
+        await releaseRunCapacityIfStopped(cancelled.id).catch((error) => {
+          logger.warn({ err: error, runId: cancelled.id }, "could not release cancelled run capacity");
+        });
         await startNextQueuedRunForAgent(run.agentId);
       }
       return cancelled;
@@ -28817,6 +28869,9 @@ export function heartbeatService(
           });
         }
         runningProcesses.delete(run.id);
+        await releaseRunCapacityIfStopped(run.id).catch((error) => {
+          logger.warn({ err: error, runId: run.id }, "could not release paused run capacity");
+        });
         await releaseIssueExecutionAndPromote(run);
       } finally {
         stopOwnership?.release();

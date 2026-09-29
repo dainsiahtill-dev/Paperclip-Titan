@@ -1,6 +1,6 @@
 import { agents, heartbeatRuns, instanceSettings, type Db } from "@paperclipai/db";
 import { agentConcurrencySettingsSchema, DEFAULT_AGENT_CONCURRENCY } from "@paperclipai/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 
 type AgentRow = typeof agents.$inferSelect;
 
@@ -51,6 +51,7 @@ export async function admitQueuedRunCapacity(
   transaction: Db,
   agent: AgentRow,
   runId: string,
+  maxAgentRuns: number,
 ): Promise<RunCapacityAdmission> {
   const group = runtimeGroup(agent.runtimeConfig);
   const rawGroup = record(record(agent.runtimeConfig).heartbeat).concurrencyGroup;
@@ -63,9 +64,8 @@ export async function admitQueuedRunCapacity(
     .from(instanceSettings)
     .where(eq(instanceSettings.singletonKey, "default"))
     .limit(1);
-  const initial = configuredCapacity(initialRow?.general);
-  if (initial.maxActiveRuns === null && initial.groups.length === 0 && group === null) {
-    return { allowed: true, group: null };
+  if (!initialRow) {
+    await transaction.insert(instanceSettings).values({}).onConflictDoNothing();
   }
 
   const [lockedRow] = await transaction
@@ -75,26 +75,33 @@ export async function admitQueuedRunCapacity(
     .for("update")
     .limit(1);
   const capacity = configuredCapacity(lockedRow?.general);
+  const reserved = await transaction
+    .select({
+      agentId: heartbeatRuns.agentId,
+      capacityGroup: heartbeatRuns.capacityGroup,
+      runtimeConfig: agents.runtimeConfig,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .where(or(
+      eq(heartbeatRuns.status, "running"),
+      and(isNotNull(heartbeatRuns.capacityGroup), isNull(heartbeatRuns.capacityReleasedAt)),
+    ));
+  const agentRunning = reserved.filter((row) => row.agentId === agent.id).length;
+  if (agentRunning >= maxAgentRuns) {
+    return waiting(transaction, runId, `Waiting for Agent slot (${agentRunning}/${maxAgentRuns})`);
+  }
   const pool = group === null ? null : capacity.groups.find((entry) => entry.name === group);
   if (group !== null && !pool) {
     const reason = `Concurrency group "${group}" has no configured limit`;
     return waiting(transaction, runId, reason);
   }
   if (capacity.maxActiveRuns === null && pool === null) return { allowed: true, group };
-
-  const running = await transaction
-    .select({
-      capacityGroup: heartbeatRuns.capacityGroup,
-      runtimeConfig: agents.runtimeConfig,
-    })
-    .from(heartbeatRuns)
-    .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
-    .where(eq(heartbeatRuns.status, "running"));
   const groupRunning = group === null
     ? 0
-    : running.filter((row) => runningGroup(row) === group).length;
-  const reason = capacity.maxActiveRuns !== null && running.length >= capacity.maxActiveRuns
-    ? `Waiting for an instance Agent slot (${running.length}/${capacity.maxActiveRuns})`
+    : reserved.filter((row) => runningGroup(row) === group).length;
+  const reason = capacity.maxActiveRuns !== null && reserved.length >= capacity.maxActiveRuns
+    ? `Waiting for an instance Agent slot (${reserved.length}/${capacity.maxActiveRuns})`
     : pool && groupRunning >= pool.maxActiveRuns
       ? `Waiting for concurrency group "${group}" (${groupRunning}/${pool.maxActiveRuns})`
       : null;

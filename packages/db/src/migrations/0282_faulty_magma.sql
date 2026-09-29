@@ -1,0 +1,1 @@
+CREATE INDEX "heartbeat_runs_active_capacity_idx" ON "heartbeat_runs" USING btree ("agent_id","capacity_group") WHERE "heartbeat_runs"."status" = 'running' or ("heartbeat_runs"."capacity_group" is not null and "heartbeat_runs"."capacity_released_at" is null);
