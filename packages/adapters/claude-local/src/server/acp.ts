@@ -127,7 +127,9 @@ export function buildClaudeAcpConfig(
   const model = resolveClaudeModel(config.model, { ...inheritedEnv, ...env }, config.modelSelection);
   const agentCommand = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   const stateDir = firstNonEmptyString(config.stateDir, config.acpStateDir);
-  const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
+  const mode = config.modelSelection === "claude_config"
+    ? "oneshot"
+    : firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
   const permissionMode =
     firstNonEmptyString(config.permissionMode, config.acpPermissionMode) ??
     DEFAULT_ACP_ENGINE_PERMISSION_MODE;
@@ -630,6 +632,9 @@ export async function probeClaudeAcpSandboxLogin(input: {
     env = built.env;
     cwd = asString(config.cwd, process.cwd());
   }
+  // The local probe builder drops empty caller values. Restore this explicit
+  // mask after it runs so an inherited host pin cannot replace Claude settings.
+  if (config.modelSelection === "claude_config") env.ANTHROPIC_MODEL = "";
 
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
   if (config.managedAiConnection) args.push("--setting-sources", "user");
@@ -844,6 +849,7 @@ export async function testClaudeAcpEnvironment(
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") probeEnv[key] = value;
     }
+    if (config.modelSelection === "claude_config") probeEnv.ANTHROPIC_MODEL = "";
     // Seed the host ANTHROPIC_API_KEY when the config sets no key, so the probe
     // env matches the credential the real local run inherits from the host.
     if (isNonEmpty(hostApiKey) && !isNonEmpty(probeEnv.ANTHROPIC_API_KEY)) {
@@ -892,7 +898,9 @@ export async function testClaudeAcpEnvironment(
     }
   }
 
-  const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
+  const mode = config.modelSelection === "claude_config"
+    ? "oneshot"
+    : firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
   const warmHandleIdleMs = asNumber(
     config.warmHandleIdleMs ?? config.acpWarmHandleIdleMs,
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,

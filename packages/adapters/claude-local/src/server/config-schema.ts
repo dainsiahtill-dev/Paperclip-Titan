@@ -31,7 +31,7 @@ export function getConfigSchema(): AdapterConfigSchema {
           { value: "explicit", label: "Paperclip model" },
           { value: "claude_config", label: "Claude settings / CC-Switch" },
         ],
-        hint: "Follow the selected runtime's own Claude settings instead of sending a Paperclip model override.",
+        hint: "Follow the selected runtime's own Claude settings. Each run starts a fresh session so external model changes apply; this can use more tokens.",
       },
       {
         key: "agentCommand",

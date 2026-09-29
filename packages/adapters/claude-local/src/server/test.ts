@@ -384,7 +384,11 @@ export async function testEnvironment(
       // deny-by-default child env. A remote probe uses the caller command and
       // env, because the remote transport owns its own env sanitization.
       const probeCommand = localProbe?.command ?? command;
-      const probeEnv = localProbe ? localProbe.env : env;
+      // The trusted local probe builder drops empty values. Reinstate the
+      // mask before spawn so a host ANTHROPIC_MODEL cannot override settings.
+      const probeEnv = localProbe && config.modelSelection === "claude_config"
+        ? { ...localProbe.env, ANTHROPIC_MODEL: "" }
+        : localProbe ? localProbe.env : env;
       const probe = await runAdapterExecutionTargetProcess(
         runId,
         target,

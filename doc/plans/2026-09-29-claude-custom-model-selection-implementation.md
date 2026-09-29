@@ -7,8 +7,9 @@
 Files: `packages/adapters/claude-local/src/index.ts`, `src/server/{execute,acp,test,config-schema}.ts`, corresponding tests, and `packages/adapter-utils/src/types.ts`.
 
 1. Add failing tests for legacy fallback, exact custom MiniMax ID, and `modelSelection: "claude_config"` omitting CLI `--model` and ACP's injected model, including an existing `ANTHROPIC_MODEL` adapter env value.
-2. Implement the optional mode with the old behavior as the default. Mask the adapter model env in follow mode without changing CC-Switch credentials or base URL.
-3. Run focused adapter tests and typecheck.
+2. Test a saved CLI session from an old or different model and an ACP Test probe with a stale model env. Reject stale CLI resumes; use a fresh session for follow mode and ACP one-shot mode.
+3. Implement the optional mode with the old model fallback as the default. Mask the adapter model env in follow mode without changing CC-Switch credentials or base URL.
+4. Run focused adapter tests and typecheck.
 
 ## Task 2: Company model suggestions
 
@@ -36,6 +37,7 @@ Files: `ui/src/components/AgentConfigForm.tsx`, `ui/src/components/AgentConfigFo
 
 - An exact MiniMax ID must not be replaced by Paperclip's fallback.
 - Follow mode must not accidentally leave a `--model` argument or agent-level `ANTHROPIC_MODEL` override.
+- A saved CLI session must not retain the old model after switching; follow mode must read external CC-Switch changes on each new run.
 - One company's configured model names must not leak to another company.
 - Existing agents without the new field must continue using the current default.
 - Typing a custom ID must remain visible and save through create and edit flows.

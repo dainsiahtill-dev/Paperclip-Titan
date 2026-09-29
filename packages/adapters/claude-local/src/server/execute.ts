@@ -772,6 +772,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
   const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
+  const modelIdentity = config.modelSelection === "claude_config"
+    ? "claude_config"
+    : `model:${model || "provider_default"}`;
+  // A resumed Claude session keeps its old model. Legacy sessions have no
+  // model identity, so the first run after this change starts fresh once.
+  // Following external settings must start fresh every run: CC-Switch can
+  // change routing without changing any Paperclip configuration.
+  const hasMatchingModelIdentity = config.modelSelection !== "claude_config"
+    && asString(runtimeSessionParams.modelIdentity, "") === modelIdentity;
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
   const hasMatchingMcpServers =
@@ -782,6 +791,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     isValidUuid &&
+    hasMatchingModelIdentity &&
     hasMatchingPromptBundle &&
     hasMatchingMcpServers &&
     claudeSessionCwdMatchesExecutionTarget({
@@ -797,7 +807,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[paperclip] Claude session "${runtimeSessionId}" is not a valid UUID and will not be passed to --resume.\n`,
     );
   }
-  if (
+  if (runtimeSessionId && isValidUuid && !hasMatchingModelIdentity) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" cannot be resumed with the current model selection. Starting a fresh session.\n`,
+    );
+  } else if (
     executionTargetIsRemote &&
     runtimeSessionId &&
     isValidUuid &&
@@ -1146,6 +1161,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? ({
         sessionId: resolvedSessionId,
         cwd,
+        modelIdentity,
         promptBundleKey: promptBundle.bundleKey,
         mcpServerIdentity: runtimeMcpIdentity,
         ...(executionTargetIsRemote

@@ -558,6 +558,7 @@ describe("claude CLI local hello probe hardening", () => {
     "https_proxy",
     "no_proxy",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_USE_BEDROCK",
     "ANTHROPIC_BEDROCK_BASE_URL",
@@ -637,6 +638,28 @@ describe("claude CLI local hello probe hardening", () => {
     // The trusted proxy reaches the child; the caller proxy never does.
     expect(spawnedEnv.HTTPS_PROXY).toBe("http://trusted-proxy:8443");
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
+  });
+
+  it("tests Claude settings without an inherited or agent model pin", async () => {
+    process.env.ANTHROPIC_MODEL = "host-pin";
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli", command: "claude", modelSelection: "claude_config",
+        model: "MiniMax-M3.1-Flash-Preview",
+        env: { ANTHROPIC_MODEL: "stale-pin" },
+      },
+      executionTarget: null,
+      environmentName: null,
+    });
+    const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[
+      string, AdapterExecutionTarget, string, string[], { env: Record<string, string> },
+    ]>;
+    const call = calls.find((entry) => entry[3].includes("--print"));
+    expect(call?.[3]).not.toContain("--model");
+    expect(call?.[4].env.ANTHROPIC_MODEL).toBe("");
   });
 
   it("warns without executing when runtime PATH selects a different local Claude executable", async () => {

@@ -282,6 +282,7 @@ describe("claude_local ACP lane", () => {
     expect(config).toMatchObject({
       model: "",
       env: { ANTHROPIC_MODEL: "", ANTHROPIC_BASE_URL: "http://127.0.0.1:15723" },
+      mode: "oneshot",
     });
   });
 

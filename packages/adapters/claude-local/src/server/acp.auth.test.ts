@@ -405,6 +405,7 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     "https_proxy",
     "no_proxy",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
@@ -454,6 +455,32 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(result.checks.some((check) => check.code === "claude_environment_target")).toBe(true);
     // The token value never enters a check.
     expect(JSON.stringify(result.checks)).not.toContain("oauth-token-secret");
+  });
+
+  it("tests the Claude-settings selection without the agent or host model pin", async () => {
+    process.env.ANTHROPIC_MODEL = "host-pin";
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "acp",
+        modelSelection: "claude_config",
+        model: "MiniMax-M3.1-Flash-Preview",
+        env: { ANTHROPIC_MODEL: "stale-pin" },
+      },
+      executionTarget: null,
+      environmentName: null,
+    });
+    const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[
+      string, AdapterExecutionTarget, string, string[], { env: Record<string, string> },
+    ]>;
+    const call = calls.find((entry) => entry[3].includes("--print"));
+    expect(call?.[4].env.ANTHROPIC_MODEL).toBe("");
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "claude_acp_runtime_scaffold",
+      detail: expect.stringContaining("mode=oneshot"),
+    }));
   });
 
   it("runs on a local target and reports auth-required without the sandbox-only adapter_auth_missing", async () => {

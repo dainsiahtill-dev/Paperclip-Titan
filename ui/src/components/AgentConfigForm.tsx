@@ -1751,7 +1751,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   <span>
                     <span className="block font-medium">Follow Claude/CC-Switch settings</span>
                     <span className="block text-xs text-muted-foreground">
-                      Let the selected Claude runtime choose its model. For local CC-Switch, use the Claude CLI on the same machine and config directory.
+                      Let the selected Claude runtime choose its model. Each run starts a fresh session so CC-Switch changes apply; this can use more tokens. For local CC-Switch, use Claude CLI on the same machine and config directory.
                     </span>
                   </span>
                 </label>

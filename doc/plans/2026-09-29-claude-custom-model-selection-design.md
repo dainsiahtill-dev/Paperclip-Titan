@@ -14,6 +14,8 @@ Keep `adapterConfig.model` as the exact pinned model ID. The UI exposes a labele
 
 Add optional `adapterConfig.modelSelection: "claude_config"`. An absent value retains the current default and existing explicit model behavior. In `claude_config` mode, the adapter omits `--model` on CLI and does not inject a model into ACP. It masks `ANTHROPIC_MODEL` inherited through the agent's adapter environment so the runtime can read its own Claude configuration. The UI clears a pinned model when this mode is selected and explains that the selected execution machine/config directory must contain the intended CC-Switch settings. Switching back restores ordinary preset or custom selection; it does not rewrite CC-Switch settings or credentials.
 
+Claude Code keeps a resumed session's model. Record the resolved pinned model in CLI session identity and reject a resume whenever that identity is absent or different; legacy sessions need one fresh turn after rollout. Follow mode cannot know when CC-Switch changes an external routing rule, so it starts a fresh CLI session on each run and forces ACP one-shot mode. This costs more context tokens than a pinned custom model, but guarantees that a CC-Switch change is read at the next run. The form states this tradeoff.
+
 The active local CC-Switch relay returns an empty `/v1/models` list, so relying on provider discovery would still hide valid MiniMax versions. Manual entry remains authoritative. An invalid ID fails in Claude's existing environment test or run trace; Paperclip does not silently replace it with an official model.
 
 ## Data flow
@@ -25,4 +27,5 @@ The active local CC-Switch relay returns an empty `/v1/models` list, so relying 
 - A custom ID may be rejected by CC-Switch or the upstream provider; report the real error rather than substituting a model.
 - Claude settings are machine and config-directory specific. Following settings on a remote execution target follows that target's settings, not the operator's desktop configuration.
 - A historical agent with no `modelSelection` must retain the existing fallback, while an agent pinned to MiniMax must retain its exact model and permission flags.
+- Legacy CLI session continuity resets once; the model pin and task history remain intact. Follow mode has a fresh-session token cost on every run.
 - Test model-list company isolation, create/edit form persistence, CLI arguments and ACP environment, invalid/blank values, TypeScript, focused adapter/UI suites, build, and a local browser flow. Deploy only after running agents drain, then read back saved configuration and an actual adapter invocation.

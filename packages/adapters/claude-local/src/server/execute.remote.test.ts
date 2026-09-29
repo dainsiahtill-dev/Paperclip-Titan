@@ -294,7 +294,7 @@ describe("claude remote execution", () => {
     const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-resume/workspace";
     await mkdir(workspaceDir, { recursive: true });
 
-    await execute({
+    const result = await execute({
       runId: "run-ssh-resume",
       agent: {
         id: "agent-1",
@@ -308,6 +308,7 @@ describe("claude remote execution", () => {
         sessionParams: {
           sessionId: "12345678-1234-4abc-9def-123456789012",
           cwd: managedRemoteWorkspace,
+          modelIdentity: "model:claude-opus-5",
           remoteExecution: {
             transport: "ssh",
             host: "127.0.0.1",
@@ -348,6 +349,55 @@ describe("claude remote execution", () => {
     const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
     expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
+    expect(result.sessionParams).toMatchObject({ modelIdentity: "model:claude-opus-5" });
+  });
+
+  it.each([
+    { name: "the old session has no model identity", savedModelIdentity: undefined, config: { modelSelection: "claude_config" } },
+    { name: "Claude settings may have changed since the last run", savedModelIdentity: "claude_config", config: { modelSelection: "claude_config" } },
+    { name: "the pinned model changes", savedModelIdentity: "model:MiniMax-M3.1-Flash-Preview", config: { model: "MiniMax-M4-Preview" } },
+  ])("starts a fresh Claude session when $name", async ({ savedModelIdentity, config }) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-model-transition-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-ssh-model-transition/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+    await execute({
+      runId: "run-ssh-model-transition",
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "Claude Coder",
+        adapterType: "claude_local", adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "12345678-1234-4abc-9def-123456789012",
+        sessionParams: {
+          sessionId: "12345678-1234-4abc-9def-123456789012",
+          cwd: managedRemoteWorkspace,
+          ...(savedModelIdentity ? { modelIdentity: savedModelIdentity } : {}),
+          remoteExecution: {
+            transport: "ssh", host: "127.0.0.1", port: 2222,
+            username: "fixture", remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "12345678-1234-4abc-9def-123456789012",
+        taskKey: null,
+      },
+      config: { engine: "cli", command: "claude", ...config },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1", port: 2222, username: "fixture",
+          remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+    const call = runChildProcess.mock.calls.find((candidate) =>
+      (candidate[2] as string[]).includes("--print"),
+    ) as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
   });
 
   it("forwards the duplex_channel_lost transport code on the unparsed Claude result path", async () => {
