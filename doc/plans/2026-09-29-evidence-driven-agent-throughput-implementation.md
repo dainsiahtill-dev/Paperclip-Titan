@@ -71,9 +71,9 @@
 
 ## Task 5: Workspace and deployment
 
-**Files:** `doc/OPERATING-STARWAVE-WSL.md`, project workspace configuration if required, service supervisor and release verification records.
+**Files:** `scripts/create-starwave-sparse-worktree.mjs`, its Node test, `doc/OPERATING-STARWAVE-WSL.md`, project workspace configuration, service supervisor and release verification records.
 
-**Interfaces:** New implementation tasks use isolated Git branches/worktrees; integration and QA use one frozen candidate. Existing dirty work remains in place.
+**Interfaces:** New independent implementation tasks use size-bounded sparse Git worktrees attached through `existingBranch`; integration and QA use one frozen candidate. Existing dirty work remains in place.
 
 - [ ] Document and configure the worktree workflow for new tasks.
 - [ ] Run targeted suites, repository typecheck/build, and relevant full test gate.

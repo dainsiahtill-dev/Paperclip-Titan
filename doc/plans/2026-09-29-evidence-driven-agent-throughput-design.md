@@ -29,7 +29,7 @@ At most one active implementation candidate per shared integration branch and on
 
 ### Workspace and evidence
 
-Keep the Starwave primary project workspace for integration and running services. New independent implementation jobs use issue-specific Git worktrees or branches, with explicit sync into a single integration candidate. QA reads the frozen commit/tree and does not write into the candidate. The existing dirty shared tree is inventoried before any branch migration; no uncommitted work is moved or discarded automatically.
+Keep the Starwave primary project workspace for integration and running services. New independent implementation jobs use issue-specific sparse Git worktrees, with explicit sync into a single integration candidate. A normal worktree copies approximately 67 GB of tracked `backend/runtime` data, so the worktree must be created with `--no-checkout`, a bounded sparse profile, then checkout. The helper estimates size before creation and verifies the materialized size before reporting success. Paperclip attaches an existing branch; it must not create a full worktree for Starwave. QA reads the frozen commit/tree and does not write into the candidate. The existing dirty shared tree is inventoried before any branch migration; no uncommitted work is moved or discarded automatically.
 
 The dashboard reports run activity separately from durable delivery signals. It may count issue work products, document revisions, and status transitions, but labels them by evidence type. It must never derive product acceptance from `done` counts or liveness `advanced`; if no trusted acceptance record exists, show that acceptance is unrecorded. Starwave's actual release gate remains in its domain evidence and personal review.
 
@@ -38,7 +38,7 @@ The dashboard reports run activity separately from durable delivery signals. It 
 1. Add regressions and fix dependency/self wake admission in the fork. Validate pending interaction, approval, descriptor, true dependency completion, stale queued wake, and cycle changes.
 2. Show activity and evidence as distinct dashboard measures without altering liveness recovery semantics.
 3. Reconfigure CEO/managers to skip empty generic timer turns; keep event wakes and a bounded periodic governance check. Remove redundant self-owned descriptors from tasks already covered by live dependencies, using current API readback and without modifying unrelated tasks.
-4. Introduce the worktree/frozen-candidate operating procedure for new work; keep current active Starwave runs intact until their write boundary.
+4. Introduce the size-bounded sparse worktree/frozen-candidate procedure for new work; keep current active Starwave runs intact until their write boundary.
 5. Build and deploy the tested fork through the existing WSL supervisor. Observe live API health, blocked task wake behavior, and actual candidate/QA handoff.
 
 ## Risks and verification
