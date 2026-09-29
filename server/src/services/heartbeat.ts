@@ -1,5 +1,5 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
-import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { PROCESS_IDENTITY_RECORDED, hasNativeLocalProcessStop, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
@@ -16829,10 +16829,11 @@ export function heartbeatService(
     ) return false;
     const tracked = runningProcesses.get(runId);
     if (tracked && tracked.child.exitCode === null && tracked.child.signalCode === null) return false;
-    if (
+    if (current.runtimeMode === "native") {
+      if (!(await nativeCapacityReleaseAllowed(current))) return false;
+    } else if (
       (current.processPid && isProcessAlive(current.processPid)) ||
-      (current.processGroupId && isProcessGroupAlive(current.processGroupId)) ||
-      (current.runtimeMode === "native" && isNativeRunnerOwnershipHeld(current))
+      (current.processGroupId && isProcessGroupAlive(current.processGroupId))
     ) return false;
     const [released] = await db.update(heartbeatRuns).set({ capacityReleasedAt: new Date() })
       .where(and(
@@ -16843,6 +16844,47 @@ export function heartbeatService(
       ))
       .returning({ id: heartbeatRuns.id });
     return Boolean(released);
+  }
+
+  async function nativeCapacityReleaseAllowed(run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+    const [coordinator] = await db.select({
+      phase: nativeRunFinalizations.phase,
+      resultId: nativeRunFinalizations.resultId,
+    }).from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, run.companyId),
+      eq(nativeRunFinalizations.runId, run.id),
+    )).limit(1);
+    // The same run can resume from this durable failure. Keep its original
+    // reservation so recovery never opens a fresh provider turn above quota.
+    if (run.status === "failed" &&
+      (coordinator?.phase === "retryable_failure" || coordinator?.phase === "observed") &&
+      !coordinator.resultId) {
+      return false;
+    }
+    if (isNativeRunnerOwnershipHeld(run)) return false;
+    if (coordinator?.phase === "committed" && coordinator.resultId) return true;
+    if (run.status === "cancelled" && await acknowledgedNativeStopExecutionHasStopped(db, run)) return true;
+
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId),
+      eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (leases.some((lease) => lease.provider !== "local")) {
+      return leases.every(hasRemoteTerminationReceipt);
+    }
+    if (leases.length > 0) {
+      if (leases.some((lease) => !lease.releasedAt || lease.cleanupStatus === "failed")) return false;
+      if (run.processPid || run.processGroupId) {
+        return (!run.processPid || !isProcessAlive(run.processPid)) &&
+          (!run.processGroupId || !isProcessGroupAlive(run.processGroupId));
+      }
+      return hasNativeLocalProcessStop(db, run.companyId, run.id);
+    }
+    const recovery = parseObject(parseObject(run.resultJson).executionRecovery);
+    return !run.processPid && !run.processGroupId && (
+      recovery.providerWorkStarted === false ||
+      typeof parseObject(run.resultJson).startupPreparationSettledAt === "string"
+    );
   }
 
   async function withChatControlRecoveryGate(
@@ -19213,8 +19255,46 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  let terminalCapacitySweepCursor: { createdAt: Date; id: string } | null = null;
+
+  async function reconcileTerminalCapacityReleases() {
+    const unreleased = and(
+      isNotNull(heartbeatRuns.capacityGroup),
+      isNull(heartbeatRuns.capacityReleasedAt),
+      inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+    );
+    const batch = (cursor: { createdAt: Date; id: string } | null) => db.select().from(heartbeatRuns).where(and(
+      unreleased,
+      cursor
+        ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+        : undefined,
+    )).orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id)).limit(200);
+    let terminalUnreleased = await batch(terminalCapacitySweepCursor);
+    if (terminalUnreleased.length === 0 && terminalCapacitySweepCursor) {
+      terminalCapacitySweepCursor = null;
+      terminalUnreleased = await batch(null);
+    }
+    const last = terminalUnreleased.at(-1);
+    if (last) terminalCapacitySweepCursor = { createdAt: last.createdAt, id: last.id };
+    for (const run of terminalUnreleased) {
+      if (activeRunExecutions.has(run.id)) continue;
+      let reaperConfirmedStop = false;
+      if (run.runtimeMode === "legacy" && run.controllerBootId !== legacyControllerBootId) {
+        const recovery = parseObject(parseObject(run.resultJson).executionRecovery);
+        // A terminal status does not prove a foreign controller has stopped
+        // its child. A PID is only meaningful on the controller's own host.
+        if (run.processPid || run.processGroupId || recovery.providerWorkStarted !== false) continue;
+        reaperConfirmedStop = true;
+      }
+      await releaseRunCapacityIfStopped(run.id, { reaperConfirmedStop }).catch((error) => {
+        logger.warn({ err: error, runId: run.id }, "could not reconcile terminal run capacity");
+      });
+    }
+  }
+
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
+    await reconcileTerminalCapacityReleases();
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { admitQueuedRunCapacity } from "../services/run-capacity.ts";
+import { legacyControllerBootId } from "../services/legacy-controller-lease.ts";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -316,6 +317,88 @@ describePostgres("shared Agent run capacity", () => {
     await waitForDispatchCount(2);
     releases.get(second!.id)?.();
     await waitForTerminal(second!.id);
+  }, 30_000);
+
+  it("reclaims a completed run's slot after a missed release on this controller", async () => {
+    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({
+      status: "succeeded",
+      finishedAt: new Date(),
+      capacityGroup: "minimax",
+      capacityReleasedAt: null,
+      controllerBootId: legacyControllerBootId,
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+    });
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    expect(candidate).not.toBeNull();
+    expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+
+    await heartbeat.resumeQueuedRuns();
+    expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).not.toBeNull();
+    expect((await waitForTerminal(candidate!.id))?.status).toBe("succeeded");
+  }, 30_000);
+
+  it("keeps a foreign controller's terminal run reserved without stop proof", async () => {
+    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({
+      status: "succeeded",
+      finishedAt: new Date(),
+      capacityGroup: "minimax",
+      capacityReleasedAt: null,
+      controllerBootId: randomUUID(),
+      // A remote PID can collide with this host's PID; it is not stop proof.
+      processPid: process.pid,
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+    });
+
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    expect(candidate).not.toBeNull();
+    await heartbeat.resumeQueuedRuns();
+    expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+    expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+  }, 30_000);
+
+  it("keeps a native retryable failure reserved for same-run recovery", async () => {
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
+    const issueId = randomUUID();
+    await database.insert(issues).values({ id: issueId, companyId, title: "Native retry capacity" });
+    await database.update(heartbeatRuns).set({
+      status: "failed",
+      finishedAt: new Date(),
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      capacityGroup: "minimax",
+      capacityReleasedAt: null,
+      resultJson: { executionRecovery: { providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    await database.insert(nativeRunFinalizations).values({
+      runId: holderRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+      nextAttemptAt: new Date(Date.now() + 60_000),
+    });
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+    });
+
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    expect(candidate).not.toBeNull();
+    await heartbeat.resumeQueuedRuns();
+    expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+    expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+    expect(dispatched).not.toContain(candidate!.id);
+
+    await database.update(nativeRunFinalizations).set({ phase: "observed" })
+      .where(eq(nativeRunFinalizations.runId, holderRunId));
+    await heartbeat.resumeQueuedRuns();
+    expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+    expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
   }, 30_000);
 
   it("keeps an Agent with an unconfigured group queued", async () => {
