@@ -4,7 +4,9 @@ export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5";
 export function resolveClaudeModel(
   model: unknown,
   env: Record<string, unknown> = {},
+  modelSelection: unknown = undefined,
 ): string {
+  if (modelSelection === "claude_config") return "";
   const configured = typeof model === "string" ? model.trim() : "";
   if (configured) return configured;
   const environmentModel = typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL.trim() : "";
@@ -49,6 +51,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
 - model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
+- modelSelection (string, optional): set to "claude_config" to omit Paperclip's model override and follow the Claude runtime's own settings. In this mode, agent-level ANTHROPIC_MODEL is masked. The default is the existing explicit/default model behavior.
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template

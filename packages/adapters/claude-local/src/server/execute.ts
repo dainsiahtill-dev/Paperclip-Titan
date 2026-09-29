@@ -306,6 +306,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
   }
+  if (config.modelSelection === "claude_config") env.ANTHROPIC_MODEL = "";
 
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
@@ -492,7 +493,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ),
   );
   const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
-  const model = resolveClaudeModel(config.model, modelEnv);
+  const model = resolveClaudeModel(config.model, modelEnv, config.modelSelection);
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
@@ -665,6 +666,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
+  // Workspace projection may reapply adapter env bindings after the initial
+  // runtime env was built. Keep the explicit Claude-settings choice intact.
+  if (config.modelSelection === "claude_config") env.ANTHROPIC_MODEL = "";
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
     : null;

@@ -124,7 +124,7 @@ export function buildClaudeAcpConfig(
   inheritedEnv: Record<string, unknown> = {},
 ): Record<string, unknown> {
   const env = parseObject(config.env);
-  const model = resolveClaudeModel(config.model, { ...inheritedEnv, ...env });
+  const model = resolveClaudeModel(config.model, { ...inheritedEnv, ...env }, config.modelSelection);
   const agentCommand = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   const stateDir = firstNonEmptyString(config.stateDir, config.acpStateDir);
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
@@ -143,7 +143,11 @@ export function buildClaudeAcpConfig(
     ...config,
     model,
     // ACP reads ANTHROPIC_MODEL at startup; keep it aligned with CLI precedence.
-    ...(model ? { env: { ...env, ANTHROPIC_MODEL: model } } : {}),
+    ...(model
+      ? { env: { ...env, ANTHROPIC_MODEL: model } }
+      : config.modelSelection === "claude_config"
+        ? { env: { ...env, ANTHROPIC_MODEL: "" } }
+        : {}),
     agent: "claude",
     mode,
     permissionMode,

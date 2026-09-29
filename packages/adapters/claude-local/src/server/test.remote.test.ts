@@ -141,6 +141,33 @@ describe("claude sandbox auth-missing check", () => {
 });
 
 describe("claude CLI model compatibility check", () => {
+  it("probes the Claude-configured model without a stale agent override", async () => {
+    probeResult.value = {
+      exitCode: 0,
+      stdout: [initLine, '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}'].join("\n"),
+      stderr: "",
+    };
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        modelSelection: "claude_config",
+        model: "claude-fable-5-1",
+        env: { ANTHROPIC_MODEL: "stale-pin" },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+    const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[
+      string, AdapterExecutionTarget, string, string[], { env: Record<string, string> },
+    ]>;
+    expect(calls.some((call) => call[3].includes("--version"))).toBe(false);
+    const helloCall = calls.find((call) => call[3].includes("--print"));
+    expect(helloCall?.[4].env.ANTHROPIC_MODEL).toBe("");
+  });
+
   it("fails before the hello probe when Fable 5.1 is configured with an older CLI", async () => {
     probeResult.value = {
       exitCode: 0,

@@ -680,6 +680,7 @@ export interface CreateConfigValues {
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   claudeEngine?: "auto" | "cli" | "acp";
+  claudeModelSelection?: "explicit" | "claude_config";
   claudeAcpAgentCommand?: string;
   claudeAcpMode?: "persistent" | "oneshot";
   claudeAcpNonInteractivePermissions?: "deny" | "fail";

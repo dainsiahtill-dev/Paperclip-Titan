@@ -273,6 +273,18 @@ describe("claude_local ACP lane", () => {
     expect(buildClaudeAcpConfig({ env: { CLAUDE_CODE_USE_VERTEX: "1" } }).model).toBe("");
   });
 
+  it("does not inject a stale model when following Claude settings", () => {
+    const config = buildClaudeAcpConfig({
+      modelSelection: "claude_config",
+      model: "MiniMax-M3.1-Flash-Preview",
+      env: { ANTHROPIC_MODEL: "stale-pin", ANTHROPIC_BASE_URL: "http://127.0.0.1:15723" },
+    });
+    expect(config).toMatchObject({
+      model: "",
+      env: { ANTHROPIC_MODEL: "", ANTHROPIC_BASE_URL: "http://127.0.0.1:15723" },
+    });
+  });
+
   it("maps Claude config to the ACPX Claude target", () => {
     expect(buildClaudeAcpConfig({
       engine: "acp",

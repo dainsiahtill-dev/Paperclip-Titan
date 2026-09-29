@@ -23,6 +23,17 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.",
       },
       {
+        key: "modelSelection",
+        label: "Model source",
+        type: "select",
+        default: "explicit",
+        options: [
+          { value: "explicit", label: "Paperclip model" },
+          { value: "claude_config", label: "Claude settings / CC-Switch" },
+        ],
+        hint: "Follow the selected runtime's own Claude settings instead of sending a Paperclip model override.",
+      },
+      {
         key: "agentCommand",
         label: "ACP server command",
         type: "text",

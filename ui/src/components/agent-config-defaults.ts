@@ -9,6 +9,7 @@ export const defaultCreateValues: CreateConfigValues = {
   thinkingEffort: "",
   chrome: false,
   dangerouslySkipPermissions: true,
+  claudeModelSelection: "explicit",
   search: false,
   fastMode: false,
   dangerouslyBypassSandbox: false,

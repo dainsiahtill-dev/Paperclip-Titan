@@ -15,6 +15,12 @@ describe("Claude model defaults", () => {
       .toBe("MiniMax-M3.1-Flash-Preview");
   });
 
+  it("lets an explicit Claude-settings choice bypass the Paperclip model override", () => {
+    expect(resolveClaudeModel("MiniMax-M3.1-Flash-Preview", { ANTHROPIC_MODEL: "stale-pin" }, "claude_config"))
+      .toBe("");
+    expect(resolveClaudeModel(undefined, {}, "claude_config")).toBe("");
+  });
+
   it.each([
     { CLAUDE_CODE_USE_BEDROCK: "1" },
     { CLAUDE_CODE_USE_BEDROCK: "true" },

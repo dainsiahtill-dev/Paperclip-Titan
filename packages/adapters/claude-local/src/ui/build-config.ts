@@ -36,7 +36,8 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
-  if (v.model) ac.model = v.model;
+  if (v.claudeModelSelection === "claude_config") ac.modelSelection = "claude_config";
+  else if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.effort = v.thinkingEffort;
   if (v.chrome) ac.chrome = true;
   ac.timeoutSec = 0;

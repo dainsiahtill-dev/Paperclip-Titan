@@ -94,4 +94,14 @@ describe("buildClaudeLocalConfig", () => {
       env: { ANTHROPIC_BASE_URL: { type: "plain", value: "https://gateway.example" } },
     });
   });
+
+  it("persists a Claude-settings model choice without a stale pinned model", () => {
+    const config = buildClaudeLocalConfig(makeValues({
+      model: "MiniMax-M3.1-Flash-Preview",
+      claudeModelSelection: "claude_config",
+      claudeEngine: "cli",
+    }));
+    expect(config).toMatchObject({ engine: "cli", modelSelection: "claude_config" });
+    expect(config).not.toHaveProperty("model");
+  });
 });

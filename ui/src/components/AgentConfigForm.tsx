@@ -1246,6 +1246,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? val!.model ?? ""
     : eff("adapterConfig", "model", String(config.model ?? ""));
   const currentModelId = typeof currentModelValue === "string" ? currentModelValue : "";
+  const followClaudeConfigModel = adapterType === "claude_local" && (
+    isCreate
+      ? val!.claudeModelSelection === "claude_config"
+      : eff("adapterConfig", "modelSelection", config.modelSelection) === "claude_config"
+  );
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
@@ -1297,6 +1302,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  function selectModel(model: string) {
+    const supportedEfforts = codexReasoningEffortOptions(model, "Auto");
+    const clearUnsupportedEffort = adapterType === "codex_local"
+      && Boolean(currentThinkingEffort)
+      && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+    if (isCreate) {
+      set!({ model, ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}) });
+      return;
+    }
+    mark("adapterConfig", "model", model || undefined);
+    if (clearUnsupportedEffort) {
+      mark("adapterConfig", thinkingEffortKey, undefined);
+      mark("adapterConfig", "reasoningEffort", undefined);
+    }
+  }
+
+  function setFollowClaudeConfigModel(follow: boolean) {
+    if (isCreate) {
+      set!({ claudeModelSelection: follow ? "claude_config" : "explicit", ...(follow ? { model: "" } : {}) });
+      return;
+    }
+    mark("adapterConfig", "modelSelection", follow ? "claude_config" : undefined);
+    if (follow) mark("adapterConfig", "model", undefined);
+  }
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1629,6 +1658,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
                         effort: "",
+                        modelSelection: undefined,
                         modelReasoningEffort: "",
                         variant: "",
                         mode: "",
@@ -1709,27 +1739,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {renderAdapterFields("adapter")}
           {isLocal && (<>
+              {adapterType === "claude_local" && (
+                <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    aria-label="Follow Claude/CC-Switch settings"
+                    checked={followClaudeConfigModel}
+                    onChange={(event) => setFollowClaudeConfigModel(event.target.checked)}
+                    className="mt-0.5 size-4 accent-primary"
+                  />
+                  <span>
+                    <span className="block font-medium">Follow Claude/CC-Switch settings</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Let the selected Claude runtime choose its model. For local CC-Switch, use the Claude CLI on the same machine and config directory.
+                    </span>
+                  </span>
+                </label>
+              )}
+              {!followClaudeConfigModel ? (<>
               <ModelDropdown
                 models={models}
                 value={currentModelId}
-                onChange={(v) => {
-                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
-                  const clearUnsupportedEffort = adapterType === "codex_local"
-                    && Boolean(currentThinkingEffort)
-                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
-                  if (isCreate) {
-                    set!({
-                      model: v,
-                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
-                    });
-                    return;
-                  }
-                  mark("adapterConfig", "model", v || undefined);
-                  if (clearUnsupportedEffort) {
-                    mark("adapterConfig", thinkingEffortKey, undefined);
-                    mark("adapterConfig", "reasoningEffort", undefined);
-                  }
-                }}
+                onChange={selectModel}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
@@ -1754,6 +1785,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
+              {adapterType === "claude_local" && (
+                <Field label="Custom model ID" hint="Enter any model ID accepted by this Claude runtime or CC-Switch. Paperclip sends the exact ID to Claude; saved company model IDs appear in the list above.">
+                  <input
+                    aria-label="Custom model ID"
+                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    value={currentModelId}
+                    onChange={(event) => selectModel(event.target.value.trim())}
+                    placeholder="MiniMax-M3.1-Flash-Preview"
+                    maxLength={200}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+              )}
               {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
@@ -1767,6 +1812,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 && currentDefaultEnvironment.driver !== "local" && (
                 <p className="text-xs text-muted-foreground">
                   Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
+                </p>
+              )}
+              </>) : (
+                <p className="text-xs text-muted-foreground">
+                  Paperclip will not pin a model for this Agent. Claude selects from its own settings on the execution machine.
                 </p>
               )}
 

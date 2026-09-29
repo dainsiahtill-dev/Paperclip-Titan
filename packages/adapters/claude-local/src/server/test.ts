@@ -125,6 +125,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (config.modelSelection === "claude_config") env.ANTHROPIC_MODEL = "";
   // For a local probe, resolve the trusted `claude` executable and a
   // deny-by-default child env from the shared builder, so a hostile caller
   // value can neither select the executable nor reach the child. A remote
@@ -244,7 +245,11 @@ export async function testEnvironment(
         check.code !== "claude_managed_config_dir_failed",
     );
   let configuredModelIsCompatible = true;
-  const configuredModel = resolveClaudeModel(config.model, considerHostEnv ? { ...process.env, ...env } : env);
+  const configuredModel = resolveClaudeModel(
+    config.model,
+    considerHostEnv ? { ...process.env, ...env } : env,
+    config.modelSelection,
+  );
   const minimumCliVersion =
     claudeCommandLooksLike(command, "claude") &&
     (!hasBedrock || isBedrockModelId(configuredModel))

@@ -465,8 +465,8 @@ describe("claude remote execution", () => {
 
       const call = runChildProcess.mock.calls.find((candidate) =>
         (candidate[2] as string[]).includes("--print"),
-      ) as unknown as [string, string, string[]] | undefined;
-      return { args: call?.[2] ?? [], result };
+      ) as unknown as [string, string, string[], { env: Record<string, string> }] | undefined;
+      return { args: call?.[2] ?? [], env: call?.[3]?.env ?? {}, result };
     }
 
     it("passes the exact configured Fable 5.1 ID as --model on the CLI lane", async () => {
@@ -477,6 +477,17 @@ describe("claude remote execution", () => {
       const modelFlag = args.indexOf("--model");
       expect(modelFlag).toBeGreaterThanOrEqual(0);
       expect(args[modelFlag + 1]).toBe("claude-fable-5-1");
+    });
+
+    it("uses Claude settings without --model or a stale agent model env", async () => {
+      const { args, env } = await executeWithModel("paperclip-claude-model-settings-", {
+        modelSelection: "claude_config",
+        model: "MiniMax-M3.1-Flash-Preview",
+        env: { ANTHROPIC_MODEL: "stale-pin", ANTHROPIC_BASE_URL: "http://127.0.0.1:15723" },
+      });
+      expect(args).not.toContain("--model");
+      expect(env.ANTHROPIC_MODEL).toBe("");
+      expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:15723");
     });
 
     it("passes the Bedrock-native Fable 5.1 ID as --model under Bedrock auth", async () => {

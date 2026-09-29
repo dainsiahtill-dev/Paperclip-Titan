@@ -1,4 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { withCompanyClaudeModelSuggestions } from "../services/claude-model-suggestions.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -3224,7 +3225,9 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
-    res.json(models);
+    res.json(type === "claude_local"
+      ? await withCompanyClaudeModelSuggestions(db, companyId, models)
+      : models);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {

@@ -1,8 +1,11 @@
 import express from "express";
 import request from "supertest";
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as openCodeFallbackModels } from "@paperclipai/adapter-opencode-local";
+import { agents, companies, createDb } from "@paperclipai/db";
 import type { ServerAdapterModule } from "../adapters/index.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -103,7 +106,7 @@ function registerModuleMocks() {
 
 const refreshableAdapterType = "refreshable_adapter_route_test";
 
-async function createApp() {
+async function createApp(db: unknown = {}, companyIds = ["company-1"]) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -114,13 +117,13 @@ async function createApp() {
     (req as any).actor = {
       type: "board",
       userId: "local-board",
-      companyIds: ["company-1"],
+      companyIds,
       source: "local_implicit",
       isInstanceAdmin: false,
     };
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -182,6 +185,39 @@ describe("adapter model refresh route", () => {
   afterEach(async () => {
     await unregisterTestAdapter(refreshableAdapterType);
   });
+
+  it("reuses configured Claude model IDs only within the requesting company", async () => {
+    const support = await getEmbeddedPostgresTestSupport();
+    if (!support.supported) return;
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-claude-company-models-");
+    try {
+      const db = createDb(tempDb.connectionString);
+      const firstCompanyId = randomUUID();
+      const secondCompanyId = randomUUID();
+      await db.insert(companies).values([
+        { id: firstCompanyId, name: "First", issuePrefix: "FST", requireBoardApprovalForNewAgents: false },
+        { id: secondCompanyId, name: "Second", issuePrefix: "SND", requireBoardApprovalForNewAgents: false },
+      ]);
+      await db.insert(agents).values([
+        { id: randomUUID(), companyId: firstCompanyId, name: "First Claude", role: "engineer", status: "active", adapterType: "claude_local", adapterConfig: { model: "MiniMax-M4-Preview" }, runtimeConfig: {}, permissions: {} },
+        { id: randomUUID(), companyId: firstCompanyId, name: "Second Claude", role: "engineer", status: "active", adapterType: "claude_local", adapterConfig: { model: "MiniMax-M4-Preview" }, runtimeConfig: {}, permissions: {} },
+        { id: randomUUID(), companyId: firstCompanyId, name: "Follow Claude", role: "engineer", status: "active", adapterType: "claude_local", adapterConfig: { model: "MiniMax-stale", modelSelection: "claude_config" }, runtimeConfig: {}, permissions: {} },
+        { id: randomUUID(), companyId: firstCompanyId, name: "Other adapter", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: { model: "private-codex-model" }, runtimeConfig: {}, permissions: {} },
+        { id: randomUUID(), companyId: secondCompanyId, name: "Second company Claude", role: "engineer", status: "active", adapterType: "claude_local", adapterConfig: { model: "MiniMax-M5-Preview" }, runtimeConfig: {}, permissions: {} },
+      ]);
+      const app = await createApp(db, [firstCompanyId, secondCompanyId]);
+      const first = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${firstCompanyId}/adapters/claude_local/models`));
+      const second = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${secondCompanyId}/adapters/claude_local/models`));
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(first.body.filter((model: { id: string }) => model.id === "MiniMax-M4-Preview")).toHaveLength(1);
+      expect(first.body.some((model: { id: string }) => ["MiniMax-M5-Preview", "MiniMax-stale", "private-codex-model"].includes(model.id))).toBe(false);
+      expect(second.body.some((model: { id: string }) => model.id === "MiniMax-M5-Preview")).toBe(true);
+      expect(second.body.some((model: { id: string }) => model.id === "MiniMax-M4-Preview")).toBe(false);
+    } finally {
+      await tempDb.cleanup();
+    }
+  }, 45_000);
 
   it("uses refreshModels when refresh=1 is requested", async () => {
     const listModels = vi.fn(async () => [{ id: "stale-model", label: "stale-model" }]);

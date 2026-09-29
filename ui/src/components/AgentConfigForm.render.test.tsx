@@ -883,6 +883,43 @@ describe("AgentConfigForm environment selector", () => {
     expect(existing.onSave).not.toHaveBeenCalled();
   });
 
+  it("lets a Claude operator enter and save an arbitrary CC-Switch model ID", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "claude-opus-5", label: "Claude Opus 5" }]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: { engine: "cli", model: "MiniMax-M3.1-Flash-Preview" } },
+    );
+    roots.push(result.root);
+    const input = result.container.querySelector<HTMLInputElement>('input[aria-label="Custom model ID"]');
+    expect(input).not.toBeNull();
+    expect(input?.value).toBe("MiniMax-M3.1-Flash-Preview");
+    await act(async () => setInputValue(input!, "MiniMax-M4-Preview"));
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "MiniMax-M4-Preview" }),
+    }));
+  });
+
+  it("stages following Claude settings without retaining the old model pin", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: { engine: "cli", model: "MiniMax-M3.1-Flash-Preview" } },
+    );
+    roots.push(result.root);
+    const follow = result.container.querySelector<HTMLInputElement>('input[aria-label="Follow Claude/CC-Switch settings"]');
+    expect(follow).not.toBeNull();
+    await act(async () => follow!.click());
+    await flushReact();
+    expect(result.container.querySelector('input[aria-label="Custom model ID"]')).toBeNull();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    const saved = result.onSave.mock.calls[0]?.[0];
+    expect(saved.adapterConfig.modelSelection).toBe("claude_config");
+    expect(saved.adapterConfig.model).toBeUndefined();
+  });
+
   it("keeps secret access out of the main Configuration content", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
