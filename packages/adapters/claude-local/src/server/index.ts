@@ -82,6 +82,7 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(record.promptBundleKey) ??
       readNonEmptyString(record.prompt_bundle_key);
+    const modelIdentity = readNonEmptyString(record.modelIdentity);
     const mcpServerIdentity = readNonEmptyString(record.mcpServerIdentity);
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
@@ -90,6 +91,7 @@ export const sessionCodec: AdapterSessionCodec = {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(modelIdentity ? { modelIdentity } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -107,6 +109,7 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(params.promptBundleKey) ??
       readNonEmptyString(params.prompt_bundle_key);
+    const modelIdentity = readNonEmptyString(params.modelIdentity);
     const mcpServerIdentity = readNonEmptyString(params.mcpServerIdentity);
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
@@ -115,6 +118,7 @@ export const sessionCodec: AdapterSessionCodec = {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(modelIdentity ? { modelIdentity } : {}),
       ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),

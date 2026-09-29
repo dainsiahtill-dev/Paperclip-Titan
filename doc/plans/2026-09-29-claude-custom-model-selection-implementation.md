@@ -7,7 +7,7 @@
 Files: `packages/adapters/claude-local/src/index.ts`, `src/server/{execute,acp,test,config-schema}.ts`, corresponding tests, and `packages/adapter-utils/src/types.ts`.
 
 1. Add failing tests for legacy fallback, exact custom MiniMax ID, and `modelSelection: "claude_config"` omitting CLI `--model` and ACP's injected model, including an existing `ANTHROPIC_MODEL` adapter env value.
-2. Test a saved CLI session from an old or different model and an ACP Test probe with a stale model env. Reject stale CLI resumes; use a fresh session for follow mode and ACP one-shot mode.
+2. Test a saved CLI session from an old or different model, a codec serialization/deserialization roundtrip, a second local heartbeat after persistence, and an ACP Test probe with a stale model env. Reject stale CLI resumes; preserve matching pinned-session identity; use a fresh session for follow mode and ACP one-shot mode.
 3. Implement the optional mode with the old model fallback as the default. Mask the adapter model env in follow mode without changing CC-Switch credentials or base URL.
 4. Run focused adapter tests and typecheck.
 

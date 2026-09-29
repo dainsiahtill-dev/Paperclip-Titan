@@ -78,6 +78,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { sessionCodec } from "./index.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
 
 describe("claude remote execution", () => {
@@ -350,6 +351,35 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("--resume");
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
     expect(result.sessionParams).toMatchObject({ modelIdentity: "model:claude-opus-5" });
+  });
+
+  it("resumes a pinned local Claude session after persistence through the codec", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-codec-resume-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const sessionId = "12345678-1234-4abc-9def-123456789012";
+    const sessionParams = sessionCodec.deserialize(sessionCodec.serialize({
+      sessionId,
+      cwd: workspaceDir,
+      modelIdentity: "model:MiniMax-M3.1-Flash-Preview",
+    }));
+    await execute({
+      runId: "run-local-codec-resume",
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "Claude Coder",
+        adapterType: "claude_local", adapterConfig: {},
+      },
+      runtime: { sessionId, sessionParams, sessionDisplayId: sessionId, taskKey: null },
+      config: { engine: "cli", command: "claude", model: "MiniMax-M3.1-Flash-Preview" },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      onLog: async () => {},
+    });
+    const call = runChildProcess.mock.calls.find((candidate) =>
+      (candidate[2] as string[]).includes("--print"),
+    ) as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).toContain("--resume");
+    expect(call?.[2]).toContain(sessionId);
   });
 
   it.each([
