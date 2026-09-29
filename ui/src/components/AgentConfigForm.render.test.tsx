@@ -728,6 +728,39 @@ describe("AgentConfigForm environment selector", () => {
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
+  it("assigns an Agent to a configured shared subscription group", async () => {
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      executionMode: "any",
+      agentConcurrency: { maxActiveRuns: 8, groups: [
+        { name: "minimax", maxActiveRuns: 6 },
+        { name: "openai", maxActiveRuns: 3 },
+      ] },
+    });
+    const result = await renderForm([], {
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1, concurrencyGroup: "minimax" } },
+    });
+    roots.push(result.root);
+    const advanced = [...result.container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Advanced Run Policy"));
+    await act(async () => advanced?.click());
+    const select = result.container.querySelector<HTMLSelectElement>('[aria-label="Shared concurrency group"]');
+    expect(select?.value).toBe("minimax");
+    expect([...select!.options].map((option) => option.value)).toEqual(["", "minimax", "openai"]);
+
+    await act(async () => {
+      select!.value = "openai";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const save = [...result.container.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Save");
+    await act(async () => save?.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+      runtimeConfig: expect.objectContaining({
+        heartbeat: expect.objectContaining({ concurrencyGroup: "openai" }),
+      }),
+    }));
+  });
+
   afterEach(async () => {
     for (const root of roots) {
       await act(async () => {

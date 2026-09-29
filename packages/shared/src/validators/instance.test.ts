@@ -1,8 +1,45 @@
 import { describe, expect, it } from "vitest";
 import {
+  instanceGeneralSettingsSchema,
+  patchInstanceGeneralSettingsSchema,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
 } from "./instance.js";
+
+describe("instance agent concurrency settings", () => {
+  it("defaults to unrestricted and accepts a total cap with named pools", () => {
+    expect(instanceGeneralSettingsSchema.parse({}).agentConcurrency).toEqual({
+      maxActiveRuns: null,
+      groups: [],
+    });
+    expect(patchInstanceGeneralSettingsSchema.parse({
+      agentConcurrency: {
+        maxActiveRuns: 8,
+        groups: [{ name: "minimax", maxActiveRuns: 6 }],
+      },
+    })).toEqual({
+      agentConcurrency: {
+        maxActiveRuns: 8,
+        groups: [{ name: "minimax", maxActiveRuns: 6 }],
+      },
+    });
+  });
+
+  it("rejects zero, duplicate groups, and names that cannot match an Agent", () => {
+    const invalid = [
+      { maxActiveRuns: 0, groups: [] },
+      { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 0 }] },
+      { maxActiveRuns: null, groups: [{ name: "MiniMax", maxActiveRuns: 6 }] },
+      { maxActiveRuns: null, groups: [
+        { name: "minimax", maxActiveRuns: 6 },
+        { name: "minimax", maxActiveRuns: 5 },
+      ] },
+    ];
+    for (const agentConcurrency of invalid) {
+      expect(patchInstanceGeneralSettingsSchema.safeParse({ agentConcurrency }).success).toBe(false);
+    }
+  });
+});
 
 describe("instance experimental settings validators", () => {
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {

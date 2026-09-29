@@ -1,0 +1,1 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN "capacity_group" text;

@@ -15,6 +15,16 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+export interface AgentConcurrencySettings {
+  maxActiveRuns: number | null;
+  groups: Array<{ name: string; maxActiveRuns: number }>;
+}
+
+export const DEFAULT_AGENT_CONCURRENCY: AgentConcurrencySettings = {
+  maxActiveRuns: null,
+  groups: [],
+};
+
 /**
  * Instance-wide execution policy.
  *
@@ -33,6 +43,7 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  agentConcurrency: AgentConcurrencySettings;
   /**
    * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.

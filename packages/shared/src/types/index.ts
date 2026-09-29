@@ -104,6 +104,7 @@ export type {
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
+  AgentConcurrencySettings,
   InstanceSettings,
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,

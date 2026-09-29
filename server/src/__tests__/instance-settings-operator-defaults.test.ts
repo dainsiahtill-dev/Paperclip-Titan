@@ -59,6 +59,21 @@ describe("getOperatorSettingDefaults", () => {
 });
 
 describe("instanceSettingsService operator setting defaults", () => {
+  it("persists an explicit shared Agent capacity alongside legacy General settings", async () => {
+    const { db, persistedSets } = stubDb(settingsRow({ keyboardShortcuts: true }));
+    const svc = instanceSettingsService(db, { runtimeEnv: {} });
+    expect((await svc.getGeneral()).agentConcurrency).toEqual({ maxActiveRuns: null, groups: [] });
+
+    const agentConcurrency = {
+      maxActiveRuns: 8,
+      groups: [{ name: "minimax", maxActiveRuns: 6 }],
+    };
+    const updated = await svc.updateGeneral({ agentConcurrency });
+    expect(updated.general.agentConcurrency).toEqual(agentConcurrency);
+    expect(updated.general.keyboardShortcuts).toBe(true);
+    expect((persistedSets[0]!.general as Record<string, unknown>).agentConcurrency).toEqual(agentConcurrency);
+  });
+
   it("substitutes the operator value where the schema default holds", async () => {
     const { db } = stubDb(settingsRow({}));
     const svc = instanceSettingsService(db, { runtimeEnv: defaultsEnv() });

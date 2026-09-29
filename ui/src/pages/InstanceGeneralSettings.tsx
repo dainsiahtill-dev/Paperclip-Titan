@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PatchInstanceGeneralSettings, BackupRetentionPolicy } from "@paperclipai/shared";
+import type { PatchInstanceGeneralSettings, BackupRetentionPolicy, AgentConcurrencySettings } from "@paperclipai/shared";
 import {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_AGENT_CONCURRENCY,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
 import { healthApi } from "@/api/health";
@@ -79,6 +80,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const agentConcurrency = generalQuery.data?.agentConcurrency ?? DEFAULT_AGENT_CONCURRENCY;
   const hiddenSettings = new Set(healthQuery.data?.hiddenSettings ?? []);
   const showDeploymentStatus = !hiddenSettings.has("instance.general.deploymentStatus");
   const showCensorUsernameInLogs = !hiddenSettings.has("instance.general.censorUsernameInLogs");
@@ -87,6 +89,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const showFeedbackDataSharing = !hiddenSettings.has("instance.general.feedbackDataSharingPreference");
   const showSignOut = !hiddenSettings.has("instance.general.signOut");
   const visibleTopics = [
+    "agent concurrency",
     ...(showCensorUsernameInLogs ? ["log display"] : []),
     ...(showKeyboardShortcuts ? ["keyboard shortcuts"] : []),
     ...(showBackupRetention ? ["backup retention"] : []),
@@ -156,6 +159,13 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
         </div>
       </section>
       )}
+
+      <AgentConcurrencyControls
+        key={JSON.stringify(agentConcurrency)}
+        value={agentConcurrency}
+        disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+        onSave={(next) => updateGeneralMutation.mutate({ agentConcurrency: next })}
+      />
 
       {showCensorUsernameInLogs && (
       <section>
@@ -406,6 +416,128 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       </section>
       )}
     </div>
+  );
+}
+
+function AgentConcurrencyControls({
+  value,
+  disabled,
+  onSave,
+}: {
+  value: AgentConcurrencySettings;
+  disabled: boolean;
+  onSave: (next: AgentConcurrencySettings) => void;
+}) {
+  const [totalDraft, setTotalDraft] = useState(value.maxActiveRuns?.toString() ?? "");
+  const [groupDrafts, setGroupDrafts] = useState(
+    value.groups.map((group) => ({ name: group.name, limit: String(group.maxActiveRuns) })),
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const updateGroup = (index: number, patch: Partial<{ name: string; limit: string }>) => {
+    setGroupDrafts((current) => current.map((group, row) => row === index ? { ...group, ...patch } : group));
+    setError(null);
+  };
+  const save = () => {
+    const total = totalDraft.trim() === "" ? null : Number(totalDraft);
+    if (total !== null && (!Number.isInteger(total) || total < 1 || total > 100)) {
+      setError("Instance limit must be a whole number from 1 to 100, or blank for no limit.");
+      return;
+    }
+    const names = new Set<string>();
+    const groups: AgentConcurrencySettings["groups"] = [];
+    for (const draft of groupDrafts) {
+      const name = draft.name.trim();
+      const limit = Number(draft.limit);
+      if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name) || names.has(name)) {
+        setError("Group names must be unique lowercase slugs (letters, digits, _ or -).");
+        return;
+      }
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+        setError("Each group limit must be a whole number from 1 to 50.");
+        return;
+      }
+      names.add(name);
+      groups.push({ name, maxActiveRuns: limit });
+    }
+    setError(null);
+    onSave({ maxActiveRuns: total, groups });
+  };
+
+  return (
+    <section aria-labelledby="agent-capacity-heading" className="space-y-4">
+      <div className="space-y-1.5">
+        <h2 id="agent-capacity-heading" className="text-sm font-semibold">Agent concurrency</h2>
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          Set an instance ceiling and shared subscription groups. Extra Agent runs wait in the queue.
+          Workspace and task dependencies can reduce actual parallel work below these limits.
+        </p>
+      </div>
+      <label className="block max-w-xs space-y-1.5 text-sm">
+        <span className="font-medium">Maximum active Agent runs</span>
+        <input
+          aria-label="Maximum active Agent runs"
+          type="number"
+          min={1}
+          max={100}
+          value={totalDraft}
+          onChange={(event) => { setTotalDraft(event.target.value); setError(null); }}
+          disabled={disabled}
+          placeholder="No instance limit"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-foreground"
+        />
+      </label>
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium">Shared subscription groups</h3>
+        {groupDrafts.map((group, index) => (
+          <div key={index} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-end">
+            <label className="space-y-1 text-sm">
+              <span className="font-medium">Group name</span>
+              <input
+                aria-label={`Concurrency group name ${index + 1}`}
+                value={group.name}
+                onChange={(event) => updateGroup(index, { name: event.target.value })}
+                disabled={disabled}
+                placeholder="minimax"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-foreground"
+              />
+            </label>
+            <label className="space-y-1 text-sm">
+              <span className="font-medium">Max active</span>
+              <input
+                aria-label={`Concurrency group limit ${index + 1}`}
+                type="number"
+                min={1}
+                max={50}
+                value={group.limit}
+                onChange={(event) => updateGroup(index, { limit: event.target.value })}
+                disabled={disabled}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-foreground"
+              />
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={disabled}
+              aria-label={`Remove concurrency group ${index + 1}`}
+              onClick={() => { setGroupDrafts((current) => current.filter((_, row) => row !== index)); setError(null); }}
+            >
+              Remove
+            </Button>
+          </div>
+        ))}
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled || groupDrafts.length >= 32}
+          onClick={() => setGroupDrafts((current) => [...current, { name: "", limit: "6" }])}
+        >
+          Add concurrency group
+        </Button>
+      </div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      <Button type="button" disabled={disabled} onClick={save}>Save capacity limits</Button>
+    </section>
   );
 }
 

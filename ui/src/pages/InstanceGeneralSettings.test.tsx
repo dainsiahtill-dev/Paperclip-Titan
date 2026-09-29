@@ -45,6 +45,11 @@ const CLOUD_HEALTH = {
   },
 };
 
+function setNativeValue(element: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, value);
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 describe("InstanceGeneralSettings sign-out", () => {
   let container: HTMLDivElement;
   let root: Root | null;
@@ -91,6 +96,35 @@ describe("InstanceGeneralSettings sign-out", () => {
     return Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "Sign out");
   }
+
+  it("saves an instance ceiling and a MiniMax shared group limit", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const total = container.querySelector<HTMLInputElement>('[aria-label="Maximum active Agent runs"]');
+    expect(total).not.toBeNull();
+    flushSync(() => setNativeValue(total!, "8"));
+    const add = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Add concurrency group");
+    flushSync(() => add?.click());
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Concurrency group name 1"]');
+    const limit = container.querySelector<HTMLInputElement>('[aria-label="Concurrency group limit 1"]');
+    expect(name).not.toBeNull();
+    expect(limit).not.toBeNull();
+    flushSync(() => {
+      setNativeValue(name!, "minimax");
+      setNativeValue(limit!, "6");
+    });
+    const save = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save capacity limits");
+    flushSync(() => save?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral.mock.calls[0]?.[0]).toEqual({
+      agentConcurrency: {
+        maxActiveRuns: 8,
+        groups: [{ name: "minimax", maxActiveRuns: 6 }],
+      },
+    }));
+  });
 
   it("uses the Cloud-managed top-level logout without calling local auth", async () => {
     await renderPage(CLOUD_HEALTH);

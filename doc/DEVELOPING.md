@@ -41,6 +41,22 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
+## Agent concurrency
+
+In **Settings > General > Agent concurrency**, set an optional instance-wide
+maximum and create shared subscription groups. For a MiniMax subscription that
+permits six simultaneous sessions, add group `minimax` with limit `6`. In each
+Agent's **Advanced Run Policy**, choose `minimax` only if that Agent uses the
+same subscription, including Claude CLI Agents routed through CC-Switch.
+Paperclip cannot infer a CC-Switch provider change outside its own settings.
+
+These are ceilings across running Paperclip Agent tasks. A seventh run waits
+in the queue and is reconsidered by the normal scheduler (every 30 seconds
+by default). Workspace serialization, dependencies, pauses, and budgets can
+reduce actual parallelism further. CLI sessions started outside Paperclip do
+not consume a Paperclip slot, so leave capacity headroom if they share the
+subscription.
+
 ## Start Dev
 
 From repo root:

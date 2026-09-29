@@ -26,6 +26,8 @@ export const heartbeatRuns = pgTable(
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
+    // Null is a historical run; empty string means explicitly ungrouped.
+    capacityGroup: text("capacity_group"),
     responsibleUserId: text("responsible_user_id"),
     // The service validates the company/run boundary; avoid a cyclic schema import.
     activeIdentityContextId: uuid("active_identity_context_id"),

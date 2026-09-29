@@ -235,6 +235,7 @@ This is the full adapter contract. `invoke` starts the agent, `status` lets Pape
 ### What Paperclip Controls
 
 - **When** to fire the heartbeat (schedule/frequency, per-agent)
+- **How many** Agent cycles may run at once (per-Agent, instance, and explicit shared-subscription groups); excess work remains queued
 - **How** to fire it (adapter selection + config)
 - **What context** to include (thin ping vs. fat payload, per-agent)
 

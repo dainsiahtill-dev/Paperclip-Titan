@@ -14,6 +14,7 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_AGENT_CONCURRENCY,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -207,6 +208,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
+      agentConcurrency: parsed.data.agentConcurrency ?? DEFAULT_AGENT_CONCURRENCY,
       // Absent => unrestricted; only carry through an explicit policy.
       ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
     };
@@ -216,6 +218,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
+    agentConcurrency: DEFAULT_AGENT_CONCURRENCY,
   };
 }
 

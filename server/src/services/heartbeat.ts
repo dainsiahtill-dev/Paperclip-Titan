@@ -7,6 +7,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
+import { admitQueuedRunCapacity } from "./run-capacity.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
@@ -8192,6 +8193,8 @@ type HeartbeatRunRuntimeStatusRunLike = {
   agentId?: string | null;
   issueId?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
+  executionStage?: string | null;
+  resultJson?: Record<string, unknown> | null;
 };
 
 function readRuntimeStatusIssueIdCandidate(
@@ -8238,10 +8241,14 @@ function decorateHeartbeatRunRuntimeStatus<
           ...(issueId !== undefined ? { issueId } : {}),
         })
       : null;
+  const capacityWaitMessage =
+    run.status === "queued" && run.executionStage === "waiting_capacity"
+      ? readNonEmptyString(parseObject(parseObject(run.resultJson).capacityWait).reason)
+      : null;
 
   return {
     ...run,
-    currentStatusMessage: currentStatus?.message ?? null,
+    currentStatusMessage: currentStatus?.message ?? capacityWaitMessage,
     currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
     currentToolName: currentStatus?.currentToolName ?? null,
     lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
@@ -17375,6 +17382,9 @@ export function heartbeatService(
                 return { kind: "stale" as const, run: null };
               }
 
+              const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id);
+              if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
+
               if (lockedRun.invocationSource === "automation") {
                 const admission = readChatControlRecoveryAdmission(lockedRun);
                 if (admission === "invalid")
@@ -17475,6 +17485,8 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
+                    capacityGroup: capacity.group ?? "",
+                    executionStage: null,
                     runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
@@ -17573,6 +17585,8 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
+                  capacityGroup: capacity.group ?? "",
+                  executionStage: null,
                   runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
@@ -17638,29 +17652,33 @@ export function heartbeatService(
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
-          const wakeReason = readNonEmptyString(context.wakeReason);
-          if (issueId && (wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON || wakeReason === "issue_children_completed")) {
-            staleIssueWakeReason = await issueAutomationWakeClaimHold(tx, run, issueId, wakeReason);
-            if (staleIssueWakeReason) return null;
-          }
-          return tx
-            .update(heartbeatRuns)
-            .set({
-              status: "running",
-              runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
-                    ...legacyControllerClaim(run.runtimeMode),
-              responsibleUserId,
-              startedAt: run.startedAt ?? claimedAt,
-              updatedAt: claimedAt,
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, run.id),
-                eq(heartbeatRuns.status, "queued"),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
+          const claimWithinTransaction = async (claimDb: Db) => {
+            const wakeReason = readNonEmptyString(context.wakeReason);
+            if (issueId && (wakeReason === ISSUE_BLOCKERS_RESOLVED_WAKE_REASON || wakeReason === "issue_children_completed")) {
+              staleIssueWakeReason = await issueAutomationWakeClaimHold(claimDb, run, issueId, wakeReason);
+              if (staleIssueWakeReason) return null;
+            }
+            const capacity = await admitQueuedRunCapacity(claimDb, agent, run.id);
+            if (!capacity.allowed) return null;
+            return claimDb
+              .update(heartbeatRuns)
+              .set({
+                status: "running",
+                capacityGroup: capacity.group ?? "",
+                executionStage: null,
+                runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                ...legacyControllerClaim(run.runtimeMode),
+                responsibleUserId,
+                startedAt: run.startedAt ?? claimedAt,
+                updatedAt: claimedAt,
+              })
+              .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+          };
+          return tx === db
+            ? db.transaction((claimTx) => claimWithinTransaction(claimTx as unknown as Db))
+            : claimWithinTransaction(tx);
         });
     if (!claimed && staleIssueWakeReason && issueId) {
       await cancelQueuedRunForBlockedDependencies(run, issueId, [], {

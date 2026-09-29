@@ -1266,6 +1266,25 @@ Per-agent schedule fields in `adapter_config`:
 - `intervalSec` integer (minimum 30)
 - `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
 
+Instance General settings may set `agentConcurrency.maxActiveRuns` to an integer
+`1..100` or `null` for no instance ceiling. They may also define up to 32
+named shared concurrency groups, each with an integer `maxActiveRuns` of
+`1..50`. An Agent opts into a group with
+`runtimeConfig.heartbeat.concurrencyGroup`; this explicit name works for local
+CLI subscriptions whose actual provider is selected outside Paperclip (for
+example, Claude with CC-Switch). A configured group is an instance-wide shared
+slot pool across Agents and companies, distinct from the existing per-Agent
+`maxConcurrentRuns`. A missing or invalid selected group blocks new execution
+instead of silently removing its ceiling.
+
+Queued-to-running admission checks the instance and selected group ceilings
+under a database lock before starting adapter work. When full, a run remains
+queued with a capacity-wait reason and the normal queued-run scheduler retries
+it on the next tick; it does not create a chain of cancelled retries. A limit
+reduction does not terminate already-running work. Capacity is an upper bound:
+workspace serialization, dependencies, agent state, and budgets can further
+reduce actual parallelism.
+
 Scheduler must skip invocation when:
 
 - agent is paused/terminated

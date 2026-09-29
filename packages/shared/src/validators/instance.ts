@@ -5,6 +5,7 @@ import {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_AGENT_CONCURRENCY,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
@@ -22,6 +23,22 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+export const agentConcurrencySettingsSchema = z.object({
+  maxActiveRuns: z.number().int().min(1).max(100).nullable(),
+  groups: z.array(z.object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+    maxActiveRuns: z.number().int().min(1).max(50),
+  }).strict()).max(32).superRefine((groups, context) => {
+    const names = new Set<string>();
+    for (const [index, group] of groups.entries()) {
+      if (names.has(group.name)) {
+        context.addIssue({ code: "custom", path: [index, "name"], message: "group names must be unique" });
+      }
+      names.add(group.name);
+    }
+  }),
+}).strict();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -29,6 +46,7 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  agentConcurrency: agentConcurrencySettingsSchema.default(DEFAULT_AGENT_CONCURRENCY),
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),

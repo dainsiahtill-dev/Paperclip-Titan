@@ -40,6 +40,7 @@ export {
 export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
+  agentConcurrencySettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,

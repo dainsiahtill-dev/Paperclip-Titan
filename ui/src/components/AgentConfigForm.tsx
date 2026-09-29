@@ -593,6 +593,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
+  const configuredConcurrencyGroups = generalSettings?.agentConcurrency?.groups ?? [];
+  const concurrencyGroup = eff(
+    "heartbeat",
+    "concurrencyGroup",
+    typeof heartbeat.concurrencyGroup === "string" ? heartbeat.concurrencyGroup : "",
+  );
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
 
   const adapterType = isCreate
@@ -2097,6 +2103,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   immediate
                   className={inputClass}
                 />
+              </Field>
+              <Field
+                label="Shared concurrency group"
+                hint="Agents using one subscription should choose the same group. Set its total limit in Instance Settings > General."
+              >
+                <select
+                  aria-label="Shared concurrency group"
+                  value={concurrencyGroup}
+                  onChange={(event) => mark("heartbeat", "concurrencyGroup", event.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">No shared group</option>
+                  {concurrencyGroup && !configuredConcurrencyGroups.some((group) => group.name === concurrencyGroup) && (
+                    <option value={concurrencyGroup}>{concurrencyGroup} (not configured)</option>
+                  )}
+                  {configuredConcurrencyGroups.map((group) => (
+                    <option key={group.name} value={group.name}>
+                      {group.name} (max {group.maxActiveRuns})
+                    </option>
+                  ))}
+                </select>
               </Field>
               <div className="rounded-md border border-border/70 px-3 py-2">
                 <ToggleField

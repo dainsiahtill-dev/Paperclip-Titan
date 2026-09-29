@@ -910,6 +910,7 @@ export type {
   InstanceExperimentalSettings,
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
+  AgentConcurrencySettings,
   InstanceSettings,
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
@@ -1753,6 +1754,7 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_AGENT_CONCURRENCY,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1789,6 +1791,7 @@ export {
 export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
+  agentConcurrencySettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
