@@ -134,6 +134,29 @@ describe("detectClaudeLoginRequired", () => {
     expect(isClaudeTransientUpstreamError(input)).toBe(true);
   });
 
+  it("keeps an explicit 529 on the transient lane despite earlier login prose", () => {
+    const input = {
+      parsed: {
+        is_error: true,
+        subtype: "success",
+        api_error_status: 529,
+        result: "API Error: 529 service cluster overloaded",
+      },
+      stdout: '{"type":"assistant","message":{"content":[{"type":"text","text":"The old task said not logged in."}]}}',
+      stderr: "",
+    };
+    expect(detectClaudeLoginRequired(input).requiresLogin).toBe(false);
+    expect(isClaudeTransientUpstreamError(input)).toBe(true);
+  });
+
+  it("does not turn a successful answer mentioning a login prompt into auth required", () => {
+    expect(detectClaudeLoginRequired({
+      parsed: { is_error: false, subtype: "success", result: "The report says not logged in." },
+      stdout: "",
+      stderr: "",
+    }).requiresLogin).toBe(false);
+  });
+
   it("does not treat a bare token phrase in raw stdout with no parsed result as login required", () => {
     // Untrusted stdout alone must not satisfy a token-failure marker. Only the
     // parsed terminal result fields of a failed run can trip the token markers.

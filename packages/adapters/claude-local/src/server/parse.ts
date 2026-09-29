@@ -211,22 +211,34 @@ export function detectClaudeLoginRequired(input: {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
+  const terminalStatus = parsed === null
+    ? 0
+    : asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
+  const explicitNonAuthFailure = terminalStatus >= 400 && terminalStatus !== 401 && terminalStatus !== 403;
+  const failedTerminal = parsed === null || claudeResultIndicatesAuthFailure(parsed);
+
+  // With a parsed terminal result, earlier stdout may contain assistant or
+  // tool prose about login. Only terminal fields and CLI stderr can identify
+  // that run's auth outcome. Preserve raw stdout for an unparsed CLI prompt.
+  const promptLines = (parsed === null
+    ? [input.stdout, input.stderr]
+    : [resultText, ...extractClaudeErrorMessages(parsed), input.stderr])
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
+  const loginPrompt =
+    !explicitNonAuthFailure &&
+    failedTerminal &&
+    promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
   // The token-failure markers match only against the parsed terminal fields of
   // a failed run. The raw stdout is untrusted, so a model that prints a token
   // phrase, or a successful run that repeats one, does not flip the classifier.
   const tokenFailure =
     parsed !== null &&
-    claudeResultIndicatesAuthFailure(parsed) &&
+    !explicitNonAuthFailure &&
+    failedTerminal &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
   return {

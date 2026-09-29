@@ -54,3 +54,19 @@
 - [ ] Verify `/api/health` reports the new commit and startup recovery ready.
 - [ ] Verify an actual own-task timer write or equivalent live task-bound continuation, plus no stranded runnable issues.
 - [ ] Report remaining genuine blockers with their owner and next action.
+
+### Task 4: Quiet optional Plan document loading
+
+**Files:** `ui/src/hooks/useIssuePlanDocument.ts`, `ui/src/hooks/useIssuePlanDocument.test.tsx`.
+
+- [ ] Prove a task with no Plan uses the shared document-list query without a 404 request, and a newly added Plan appears after document invalidation.
+- [ ] Use the existing full-document list cache to select the optional Plan; preserve null and refetch behavior.
+- [ ] Run the focused UI test, UI typecheck, and build.
+
+### Task 5: Classify MiniMax overload without false login prompts
+
+**Files:** `packages/adapters/claude-local/src/server/parse.ts`, `packages/adapters/claude-local/src/server/parse.test.ts`.
+
+- [ ] Reproduce a parsed HTTP 529 terminal result with earlier assistant text mentioning login; it must remain transient, not auth-required.
+- [ ] Prefer the terminal error status over untrusted prior stdout for login classification, preserving real 401/403 and unparsed CLI login prompts.
+- [ ] Run adapter tests and typecheck; verify an actual failed run is no longer classified as login-required on 529 after deployment.
