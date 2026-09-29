@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetIssueAssigneeAgentId: string | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -20,6 +21,15 @@ function counterDb(
           if (Object.keys(selection).includes("count")) {
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+            };
+          }
+          if (Object.keys(selection).includes("assigneeAgentId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) => resolve(
+                targetIssueAssigneeAgentId === null
+                  ? []
+                  : [{ assigneeAgentId: targetIssueAssigneeAgentId }],
+              ),
             };
           }
           return {
@@ -159,6 +169,38 @@ describe("cross-issue influence limit rollout", () => {
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "comment",
     })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows a validated timer run to update its own assigned task", async () => {
+    const fake = counterDb(0, { contextSnapshot: { wakeReason: "heartbeat_timer" } },
+      "33333333-3333-4333-8333-333333333333");
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it.each([
+    ["another agent's task", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    ["unassigned task", null],
+  ] as const)("rejects an unbound timer run writing %s", async (_label, assigneeAgentId) => {
+    const fake = counterDb(0, { contextSnapshot: { wakeReason: "heartbeat_timer" } },
+      assigneeAgentId);
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
     expect(fake.inserted).toEqual([]);
   });
 
