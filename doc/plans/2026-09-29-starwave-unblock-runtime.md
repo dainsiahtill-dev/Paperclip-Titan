@@ -70,3 +70,11 @@
 - [ ] Reproduce a parsed HTTP 529 terminal result with earlier assistant text mentioning login; it must remain transient, not auth-required.
 - [ ] Prefer the terminal error status over untrusted prior stdout for login classification, preserving real 401/403 and unparsed CLI login prompts.
 - [ ] Run adapter tests and typecheck; verify an actual failed run is no longer classified as login-required on 529 after deployment.
+
+### Task 6: Reveal task history while a retry is scheduled
+
+**Files:** `ui/src/components/TaskChatThread.tsx`, `ui/src/components/TaskChatThread.test.tsx`.
+
+- [ ] Reproduce a task with a `scheduled_retry` run whose log cannot be hydrated; its history must still appear.
+- [ ] Wait for persisted log hydration only for running or terminal runs, matching the log reader's readable statuses.
+- [ ] Verify task thread tests and a real SOU-16 browser view no longer retain the skeleton.

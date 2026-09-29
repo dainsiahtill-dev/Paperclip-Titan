@@ -166,6 +166,29 @@ it("coordinates first reveal while keeping the composer and visible history moun
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
 });
 
+it("reveals history when a scheduled retry has no persisted log to hydrate", async () => {
+  transcriptState.isInitialHydrating = true;
+  render(<TaskChatThread
+    issueId="retry-issue"
+    comments={[]}
+    onAdd={async () => {}}
+    linkedRuns={[{
+      runId: "scheduled-retry-1",
+      runtimeMode: "legacy",
+      status: "scheduled_retry",
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      createdAt: "2026-09-29T07:48:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    }]}
+  />);
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+});
+
 it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
   const comment = {
     companyId: "company",

@@ -2676,6 +2676,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     initialHistoryPending ||
     planLoading ||
     initialRuns.some((run) => {
+      // Queued and scheduled-retry runs have no readable persisted log yet.
+      // The transcript hooks do not hydrate them, so waiting here would leave
+      // the entire task history concealed indefinitely.
+      if (run.status !== "running" && !isTerminalRunStatus(run.status))
+        return false;
       if (
         run.runtimeMode === "native" &&
         (hydratedNativeRunIds
@@ -2688,7 +2693,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0
       )
         return false;
-      return run.status !== "queued" && hydratedLogRunIds
+      return hydratedLogRunIds
         ? !hydratedLogRunIds.has(run.id)
         : logsAreInitiallyHydrating;
     });
