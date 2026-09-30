@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 import { codexReasoningEffortOptions } from "./codex-reasoning-effort";
 
 describe("codexReasoningEffortOptions", () => {
+  it("offers all native GPT-6.1-Sol reasoning levels", () => {
+    expect(codexReasoningEffortOptions("gpt-6.1-sol").map((option) => option.value)).toEqual([
+      "", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]);
+  });
   it("exposes only the supported GPT-6 Astra reasoning efforts", () => {
     expect(codexReasoningEffortOptions("gpt-6-astra")).toEqual([
       { value: "", label: "Default" },

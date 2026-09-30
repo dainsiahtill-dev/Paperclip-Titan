@@ -289,8 +289,8 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("codex_local ACP lane", () => {
-  it("uses CLI by default for GPT-6 Sol and Luna while respecting explicit ACP", async () => {
-    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+  it("uses CLI by default for GPT-6.1 Sol and GPT-6 Sol/Luna while respecting explicit ACP", async () => {
+    for (const model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
       expect(resolveCodexExecutionEngine({ model })).toEqual({ engine: "cli", explicit: false });
       await expect(resolveCodexExecutionEngineForRun({
         config: { model, engine: "auto" },

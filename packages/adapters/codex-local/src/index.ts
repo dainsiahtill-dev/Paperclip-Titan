@@ -13,6 +13,7 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
+  "gpt-6.1-sol",
   "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -41,7 +42,7 @@ const CODEX_LOCAL_DEFAULT_REASONING_EFFORTS = [
   "xhigh",
 ] as const;
 
-const CODEX_LOCAL_ASTRA_REASONING_EFFORTS = [
+const CODEX_LOCAL_EXTENDED_REASONING_EFFORTS = [
   "low",
   "medium",
   "high",
@@ -64,7 +65,7 @@ const CODEX_LOCAL_LUNA_REASONING_EFFORTS = ["xhigh", "max"] as const;
 
 export type CodexLocalReasoningEffort =
   | (typeof CODEX_LOCAL_DEFAULT_REASONING_EFFORTS)[number]
-  | (typeof CODEX_LOCAL_ASTRA_REASONING_EFFORTS)[number]
+  | (typeof CODEX_LOCAL_EXTENDED_REASONING_EFFORTS)[number]
   | (typeof CODEX_LOCAL_SOL_REASONING_EFFORTS)[number]
   | (typeof CODEX_LOCAL_LUNA_REASONING_EFFORTS)[number];
 
@@ -77,7 +78,7 @@ export function codexLocalReasoningEffortsForModel(
   model: string | null | undefined,
 ): readonly CodexLocalReasoningEffort[] {
   const normalized = normalizeCodexModel(model);
-  if (normalized === "gpt-6-astra") return CODEX_LOCAL_ASTRA_REASONING_EFFORTS;
+  if (normalized === "gpt-6-astra" || normalized === "gpt-6.1-sol") return CODEX_LOCAL_EXTENDED_REASONING_EFFORTS;
   if (normalized === "gpt-6-sol") return CODEX_LOCAL_SOL_REASONING_EFFORTS;
   if (normalized === "gpt-6-luna") return CODEX_LOCAL_LUNA_REASONING_EFFORTS;
   return CODEX_LOCAL_DEFAULT_REASONING_EFFORTS;
@@ -118,6 +119,7 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 export const models = [
   // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, so it doubles as the first (default) 5.6 entry.
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-6.1-sol", label: "GPT-6.1-Sol" },
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },
   { id: "gpt-6-luna", label: "gpt-6-luna" },
@@ -139,14 +141,14 @@ export const agentConfigurationDoc = `# codex_local agent configuration
 Adapter: codex_local
 
 Core fields:
-- engine (string, optional): auto selects CLI for GPT-6 Sol/Luna on this local deployment and ACP for other models; explicit "cli" or "acp" stays selected. Missing prerequisites and execution failures fail the run without switching engines.
+- engine (string, optional): auto selects CLI for GPT-6.1 Sol and GPT-6 Sol/Luna on this local deployment and ACP for other models; explicit "cli" or "acp" stays selected. Missing prerequisites and execution failures fail the run without switching engines.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
-- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6 Astra supports low|medium|high|xhigh|max|ultra, Sol supports low|medium|high|xhigh|max, and this deployment keeps Luna at xhigh|max
+- modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6.1 Sol and GPT-6 Astra support low|medium|high|xhigh|max|ultra, GPT-6 Sol supports low|medium|high|xhigh|max, and this deployment keeps Luna at xhigh|max
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 Astra, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6.1 Sol, GPT-6 Astra, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args

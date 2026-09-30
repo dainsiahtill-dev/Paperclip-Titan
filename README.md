@@ -1,3 +1,9 @@
+# Paperclip-Titan
+
+A maintained fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip), with local Codex and Claude model controls, shared subscription concurrency limits, and scheduler recovery improvements.
+
+Codex includes **GPT-6.1-Sol** with Low through Ultra reasoning and Fast mode. See [Titan maintenance notes](doc/PAPERCLIP-TITAN.md) for the local extensions and [Developing](doc/DEVELOPING.md) for setup.
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
