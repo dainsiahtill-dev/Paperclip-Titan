@@ -92,7 +92,7 @@ describe("collectLiveIssueIds", () => {
     expect([...collectLiveIssueIds(liveRuns)]).toEqual(["issue-1", "issue-2"]);
   });
 
-  it("suppresses live ids for terminal issues while keeping non-terminal issues live", () => {
+  it("suppresses live ids for terminal issues and queued work", () => {
     const liveRuns: LiveRunForIssue[] = [
       {
         id: "run-terminal",
@@ -125,7 +125,18 @@ describe("collectLiveIssueIds", () => {
     expect([...collectLiveIssueIds(liveRuns, [
       { id: "issue-done", status: "done" },
       { id: "issue-open", status: "in_progress" },
-    ])]).toEqual(["issue-open"]);
+    ])]).toEqual([]);
+  });
+
+  it("counts only confirmed working projections as live", () => {
+    const phases = ["working", "reconnecting", "retry_scheduled", "finishing", "waiting_for_answer", "waiting_for_access", "queued"] as const;
+    const runs = phases.map((phase) => liveRun({
+      id: phase,
+      issueId: phase,
+      execution: { phase } as NonNullable<LiveRunForIssue["execution"]>,
+    }));
+    runs.push(liveRun({ id: "unstarted", issueId: "unstarted", status: "queued" }));
+    expect([...collectLiveIssueIds(runs)]).toEqual(["working"]);
   });
 
   it("keeps newer terminal snapshots authoritative when stale non-terminal snapshots appear later", () => {

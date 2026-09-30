@@ -490,7 +490,7 @@ function AgentConcurrencyControls({
       <div className="space-y-3">
         <h3 className="text-sm font-medium">Shared subscription groups</h3>
         {groupDrafts.map((group, index) => (
-          <div key={index} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-[minmax(0,1fr)_8rem_auto] sm:items-end">
+          <div key={index} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-(--grid-provider-concurrency) sm:items-end">
             <label className="space-y-1 text-sm">
               <span className="font-medium">Group name</span>
               <input

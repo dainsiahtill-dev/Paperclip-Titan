@@ -91,9 +91,9 @@ describe("TaskChatRunnerTurn", () => {
     },
   });
 
-  it("shows a stable Working header with Thinking at the turn tail", () => {
+  it("shows a Queued header and waiting tail before execution starts", () => {
     render([], "queued");
-    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).not.toContain("Thinking");
     expect(container.textContent).toContain("Runner");
     expect(
       container.querySelector(
@@ -109,7 +109,7 @@ describe("TaskChatRunnerTurn", () => {
       container.querySelector(
         '[data-testid="task-chat-current-activity-label"]',
       )?.textContent,
-    ).toBe("Thinking");
+    ).toBe("Waiting to start...");
     expect(
       container.querySelector('[data-testid="task-chat-current-activity"]')
         ?.tagName,
@@ -117,7 +117,7 @@ describe("TaskChatRunnerTurn", () => {
     expect(
       container.querySelector('[data-testid="task-chat-turn-status-header"]')
         ?.textContent,
-    ).toContain("Working for");
+    ).toContain("Queued for");
     expect(container.textContent).not.toContain("Waiting for transcript");
     const identity = container.querySelector(
       '[data-testid="task-chat-agent-identity"]',
@@ -145,14 +145,14 @@ describe("TaskChatRunnerTurn", () => {
   });
 
   it.each(["reconnecting", "retry_scheduled"] as const)(
-    "keeps the active turn and Thinking tail visible with a %s projection",
+    "uses the %s projection for both header and empty activity tail",
     (phase) => {
       const execution = { phase } as ExecutionProjection;
       render([], "running", "run-1", undefined, false, false, execution);
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
-        .toContain("Working for");
+        .toContain(phase === "reconnecting" ? "Reconnecting" : "Retry scheduled");
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent)
-        .toBe("Thinking");
+        .toBe(phase === "reconnecting" ? "Reconnecting" : "Retry scheduled");
       render([], "succeeded", "run-1", undefined, false, false, execution);
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
         .toContain("Worked");

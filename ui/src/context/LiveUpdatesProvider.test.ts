@@ -16,6 +16,53 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it.each(["queued", "reconnecting"])("revalidates stale %s execution authority when output arrives", (phase) => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.liveRuns("company-1"), [{
+      id: "run-1", status: "running", execution: { phase },
+    }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.applyRunLiveStatusPatchToCaches(client, "company-1", "/PAP/dashboard", {
+      runId: "run-1", agentId: "agent-1", issueId: null,
+      message: "Receiving agent output", lastEventAt: "2026-09-30T14:23:00Z",
+    });
+    expect(invalidate).toHaveBeenCalledWith(
+      { queryKey: queryKeys.liveRuns("company-1") }, { cancelRefetch: false },
+    );
+    client.clear();
+  });
+
+  it("does not refetch execution authority on every working output event", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.liveRuns("company-1"), [{
+      id: "run-1", status: "running", execution: { phase: "working" },
+    }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.applyRunLiveStatusPatchToCaches(client, "company-1", "/PAP/dashboard", {
+      runId: "run-1", agentId: "agent-1", issueId: null,
+      message: "Receiving agent output", lastEventAt: "2026-09-30T14:23:00Z",
+    });
+    expect(invalidate).not.toHaveBeenCalledWith(
+      { queryKey: queryKeys.liveRuns("company-1") }, { cancelRefetch: false },
+    );
+    client.clear();
+  });
+
+  it("revalidates the issue's own startup projection even when the company already reports working", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.liveRuns("company-1"), [{ id: "run-1", status: "running", execution: { phase: "working" } }]);
+    const run = { id: "run-1", status: "running", execution: { phase: "queued" } };
+    client.setQueryData(queryKeys.issues.activeRun("issue-1"), run);
+    client.setQueryData(queryKeys.issues.liveRuns("issue-1"), [run]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.applyRunLiveStatusPatchToCaches(client, "company-1", "/PAP/dashboard", {
+      runId: "run-1", agentId: "agent-1", issueId: "issue-1", message: "Receiving agent output",
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.activeRun("issue-1") }, { cancelRefetch: false });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.liveRuns("issue-1") }, { cancelRefetch: false });
+    client.clear();
+  });
+
   it.each(["issue.attachment_added", "issue.attachment_removed", "issue.work_product_created", "issue.work_product_updated"])("refreshes visible delivered files for %s", action => {
     const client = new QueryClient();
     client.setQueryData(queryKeys.issues.detail("issue-1"), { id: "issue-1", companyId: "company-1", identifier: "PAP-1" });

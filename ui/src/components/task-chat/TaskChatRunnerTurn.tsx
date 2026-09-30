@@ -2,6 +2,7 @@ import { useRef } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
+import { isRunWorking, runActivityLabel } from "@/lib/run-execution-status";
 import type {
   TaskChatItem,
   TaskChatMessageItem,
@@ -63,11 +64,13 @@ function terminalStatusFailed(status: string): boolean {
 
 function RunnerTurnStatus({
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
+  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -84,7 +87,7 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
+  const label = terminal ? (failed ? "Stopped" : "Worked") : runActivityLabel({ status, execution });
   const semanticLabel = terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
@@ -107,10 +110,11 @@ function RunnerTurnStatus({
   );
 }
 
-function RunnerCurrentActivityTail({ status }: { status: string }) {
+function RunnerCurrentActivityTail({ status, execution }: { status: string; execution?: ExecutionProjection | null }) {
   if (isTerminalRunStatus(status)) return null;
+  const label = status === "queued" ? "Waiting to start..." : isRunWorking({ status, execution }) ? "Thinking" : runActivityLabel({ status, execution });
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
-    <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">Thinking</span>
+    <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">{label}</span>
   </div>;
 }
 
@@ -120,6 +124,7 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -217,6 +222,7 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
+          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
@@ -278,7 +284,7 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} /> : null}
+      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} execution={execution} /> : null}
     </div>
   );
 }

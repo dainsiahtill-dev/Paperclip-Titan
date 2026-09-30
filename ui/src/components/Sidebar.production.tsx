@@ -43,6 +43,7 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu.production";
+import { isRunWorking } from "../lib/run-execution-status";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
@@ -77,7 +78,7 @@ export function Sidebar() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = liveRuns?.filter(isRunWorking).length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showApps = experimentalSettings?.enableApps === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;

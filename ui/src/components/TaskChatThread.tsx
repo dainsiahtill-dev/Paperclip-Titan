@@ -2193,8 +2193,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailStatus = liveRun
     ? liveRun.status
     : (runs.find((run) => run.id === settlingRun?.id)?.status ?? "succeeded");
+  const processStartedAtMs = liveRun?.status === "running" && liveRun.processStartedAt
+    ? toMs(liveRun.processStartedAt)
+    : null;
   const tailStartedAtMs =
-    tailSegmentStartMs ??
+    processStartedAtMs !== null
+      ? Math.max(processStartedAtMs, tailSegmentStartMs ?? processStartedAtMs)
+      : tailSegmentStartMs ??
     (liveRun
       ? ((liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
         toMs(liveRun.createdAt))

@@ -27,6 +27,7 @@ export interface ActiveRunForIssue {
   contextCommentId?: string | null;
   contextWakeCommentId?: string | null;
   startedAt: string | Date | null;
+  processStartedAt?: string | Date | null;
   finishedAt: string | Date | null;
   createdAt: string | Date;
   agentId: string;
@@ -58,6 +59,7 @@ export interface LiveRunForIssue {
   contextCommentId?: string | null;
   contextWakeCommentId?: string | null;
   startedAt: string | null;
+  processStartedAt?: string | null;
   finishedAt: string | null;
   createdAt: string;
   agentId: string;

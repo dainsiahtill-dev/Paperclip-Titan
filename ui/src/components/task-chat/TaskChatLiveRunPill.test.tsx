@@ -73,8 +73,17 @@ describe("TaskChatLiveRunPill", () => {
     expect(pill?.textContent).toContain("called 3 tools");
   });
 
+  it("labels queued time as waiting rather than working", () => {
+    act(() => root.render(
+      <TaskChatLiveRunPill status="queued" startedAtMs={Date.now() - 180_000} toolSummary={null} />,
+    ));
+    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).toContain("for 3 minutes");
+    expect(container.textContent).not.toContain("Working");
+  });
+
   it.each(["reconnecting", "retry_scheduled"] as const)(
-    "keeps Working animated and the timer advancing with a %s projection",
+    "shows the actual %s projection rather than Working",
     (phase) => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-09-11T12:00:00Z"));
@@ -86,7 +95,8 @@ describe("TaskChatLiveRunPill", () => {
           toolSummary="called 2 tools" />,
       ));
       render("running");
-      expect(container.querySelector(".shimmer-text")?.textContent).toBe("Working");
+      expect(container.textContent).toContain(phase === "reconnecting" ? "Reconnecting" : "Retry scheduled");
+      expect(container.textContent).not.toContain("Working");
       expect(container.querySelector(".animate-spin")).not.toBeNull();
       expect(container.textContent).toContain("for 6 seconds");
       expect(container.textContent).toContain("called 2 tools");

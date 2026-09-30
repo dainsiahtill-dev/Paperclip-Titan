@@ -49,6 +49,8 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
+import { isRunWorking } from "../lib/run-execution-status";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
 
 export function Sidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
@@ -85,10 +87,8 @@ export function Sidebar({ children }: { children?: ReactNode }) {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveRunCount = liveRuns?.length ?? 0;
-  const liveIssueIds = new Set(
-    (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
-  );
+  const liveRunCount = liveRuns?.filter(isRunWorking).length ?? 0;
+  const liveIssueIds = collectLiveIssueIds(liveRuns);
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
   const showStatusCards = experimentalSettings?.enableStatusCards === true;

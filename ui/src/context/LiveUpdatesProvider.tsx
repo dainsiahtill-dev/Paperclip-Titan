@@ -643,6 +643,16 @@ function applyRunLiveStatusPatchToCaches(
   options?: VisibleRouteOptions,
 ): boolean {
   let changed = false;
+  const needsProjectionRefresh = (run: ActiveRunForIssue | LiveRunForIssue | null | undefined) =>
+    run?.id === patch.runId && run.status === "running" && !!run.execution && run.execution.phase !== "working";
+  const companyRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.liveRuns(companyId));
+  const changingRun = companyRuns?.find((run) => run.id === patch.runId);
+  if (needsProjectionRefresh(changingRun)) {
+    // A status-only lifecycle patch can retain the queued projection. Confirm
+    // provider authority on startup output; do not cancel an in-flight read or
+    // refetch the company list on every output from already working runs.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) }, { cancelRefetch: false });
+  }
   queryClient.setQueryData(
     queryKeys.liveRuns(companyId),
     (current: LiveRunForIssue[] | undefined) => {
@@ -681,6 +691,14 @@ function applyRunLiveStatusPatchToCaches(
   }
 
   for (const issueRef of issueRefs) {
+    const activeKey = queryKeys.issues.activeRun(issueRef);
+    const liveKey = queryKeys.issues.liveRuns(issueRef);
+    if (needsProjectionRefresh(queryClient.getQueryData<ActiveRunForIssue | null>(activeKey))) {
+      void queryClient.invalidateQueries({ queryKey: activeKey }, { cancelRefetch: false });
+    }
+    if (queryClient.getQueryData<LiveRunForIssue[]>(liveKey)?.some(needsProjectionRefresh)) {
+      void queryClient.invalidateQueries({ queryKey: liveKey }, { cancelRefetch: false });
+    }
     queryClient.setQueryData(
       queryKeys.issues.activeRun(issueRef),
       (current: ActiveRunForIssue | null | undefined) => {

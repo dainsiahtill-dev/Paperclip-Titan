@@ -1,5 +1,6 @@
 import type { IssueStatus } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
+import { isRunWorking } from "./run-execution-status";
 
 function isLiveRunStatus(status: string): boolean {
   return status === "queued" || status === "running";
@@ -65,7 +66,7 @@ export function collectLiveIssueIds(
   const ids = new Set<string>();
   const statusByIssueId = collectIssueStatusById(issues);
   for (const run of liveRuns ?? []) {
-    if (run.issueId && isLiveIssueRun(run, statusByIssueId.get(run.issueId))) ids.add(run.issueId);
+    if (run.issueId && isRunWorking(run) && isLiveIssueRun(run, statusByIssueId.get(run.issueId))) ids.add(run.issueId);
   }
   return ids;
 }
@@ -81,7 +82,7 @@ export interface SubtreeLiveNode {
 
 /**
  * Derive, for every issue in the already-loaded tree, how many of its
- * descendants currently have their own live (queued/running) run.
+ * descendants currently have their own confirmed working run.
  *
  * The count is strictly over descendants — an issue's own live run never
  * contributes to its own entry. Ancestors are walked through the loaded set

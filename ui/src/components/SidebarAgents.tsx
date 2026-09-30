@@ -25,6 +25,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
+import { isRunWorking } from "../lib/run-execution-status";
 import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import {
@@ -358,6 +359,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
     for (const run of liveRuns ?? []) {
+      if (!isRunWorking(run)) continue;
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
