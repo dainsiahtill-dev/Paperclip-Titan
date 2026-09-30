@@ -335,6 +335,7 @@ import {
   readChatControlRecoveryAdmission,
   readChatControlNativeParent,
   readChatControlRecoveryStop,
+  type ChatControlRecoveryStop,
 } from "./chat-control-recovery-stop.js";
 import {
   classifyRunLiveness,
@@ -17000,7 +17001,7 @@ export function heartbeatService(
         // Those fields do not prove this run's turn was dispatched.
         // Exact admitted/historical recovery retains its existing ownership;
         // a marked, unadmitted bootstrap must earn admission even after crash.
-        const proof =
+        const proof: ChatControlRecoveryStop =
           admission === "invalid" || admissionLost
             ? { kind: "unresolved" as const }
             : await readChatControlRecoveryStop(
@@ -17035,7 +17036,7 @@ export function heartbeatService(
               .where(eq(heartbeatRuns.id, current.id));
           return onClear(tx as unknown as Db);
         }
-        if (proof.kind === "unresolved" && stage === "claim") return null;
+        if (proof.kind === "unresolved" && stage === "claim" && proof.reason !== "ancestry_limit") return null;
         const now = new Date();
         const stopped = proof.kind === "stopped";
         const code = stopped
@@ -17043,6 +17044,8 @@ export function heartbeatService(
           : CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
         const error = stopped
           ? "Automatic continuation stopped by the committed chat conversation close. Send a new request in chat or on the Board to start fresh work."
+          : proof.kind === "unresolved" && proof.reason === "ancestry_limit"
+          ? "Automatic continuation history exceeded the verification limit. Send a fresh request on the Board to resume this task; this attempt will not automatically retry."
           : "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.";
         [terminal] = await tx
           .update(heartbeatRuns)
@@ -17056,6 +17059,7 @@ export function heartbeatService(
               automaticRecovery: {
                 code,
                 providerDispatched: false,
+                ...(proof.kind === "unresolved" && proof.reason ? { reason: proof.reason } : {}),
                 ...(stopped
                   ? {
                       sourceRunId: proof.sourceRunId,
@@ -17738,6 +17742,13 @@ export function heartbeatService(
       // Fire-and-forget: nothing else in this path depends on the emission,
       // so it must not delay the return.
       void emitAgentTaskRun(db, queuedCommentClaim.run);
+      return null;
+    }
+    if (queuedCommentClaim?.kind === "stale") {
+      // A permanent ancestry limit is not transient queue contention. Use the
+      // same terminal admission path as non-comment runs; other unresolved
+      // proofs retain their existing deferred behaviour.
+      await withChatControlRecoveryGate(run, "claim", async () => null);
       return null;
     }
     let staleIssueWakeReason: string | null = null;

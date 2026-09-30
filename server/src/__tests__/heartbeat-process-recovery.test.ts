@@ -11786,6 +11786,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("settles an overlong automatic queue instead of waiting forever (comments=%s)", async (comments) => {
+    const source = await seedCommittedChatControlStop();
+    let parentId = source.runId;
+    for (let index = 0; index < 64; index++) {
+      const parent = await seedChatAutomaticChild(source, { parentId, status: "succeeded" });
+      parentId = parent.runId;
+    }
+    const child = await seedChatAutomaticChild(source, { parentId, comments });
+    await db.update(heartbeatRuns).set({ scheduledRetryAttempt: 64 }).where(eq(heartbeatRuns.id, child.runId));
+    await db.update(issues).set({ executionRunId: child.runId }).where(eq(issues.id, source.issueId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(child.runId)).toMatchObject({
+      status: "failed",
+      errorCode: CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
+      error: expect.stringContaining("history exceeded the verification limit"),
+      startedAt: null,
+      resultJson: { automaticRecovery: { providerDispatched: false, reason: "ancestry_limit" } },
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, source.issueId)))[0]?.executionRunId).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("does not confuse inherited warm-runner metadata with dispatch of the new child", async () => {
     const source = await seedCommittedChatControlStop();
     await db
@@ -12173,7 +12199,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
-  it("defers exhausted automatic ancestry without claiming a close or launching work", async () => {
+  it("settles exhausted automatic ancestry without claiming a close or launching work", async () => {
     const source = await seedCommittedChatControlStop();
     let parentId = source.runId;
     for (let index = 0; index < 64; index++)
@@ -12183,10 +12209,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           status: index === 63 ? "queued" : "succeeded",
         })
       ).runId;
-    expect(
-      (await readChatControlRecoveryStop(db, chatStopScope(source, parentId)))
-        .kind,
-    ).toBe("unresolved");
+    expect(await readChatControlRecoveryStop(db, chatStopScope(source, parentId))).toEqual({
+      kind: "unresolved", reason: "ancestry_limit",
+    });
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     expect(
@@ -12196,7 +12221,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, parentId))
       )[0],
-    ).toMatchObject({ status: "queued", startedAt: null, errorCode: null });
+    ).toMatchObject({ status: "failed", startedAt: null, errorCode: CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 

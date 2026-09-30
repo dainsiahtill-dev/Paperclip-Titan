@@ -83,7 +83,7 @@ export type ChatControlRecoveryScope = {
 };
 export type ChatControlRecoveryStop =
   | { kind: "clear" }
-  | { kind: "unresolved" }
+  | { kind: "unresolved"; reason?: "ancestry_limit" }
   | {
       kind: "stopped";
       conversationId: string;
@@ -636,5 +636,5 @@ export async function readChatControlRecoveryStop(
     }
     return { kind: publications.length > 50 ? "unresolved" : "clear" };
   }
-  return { kind: "unresolved" };
+  return { kind: "unresolved", reason: "ancestry_limit" };
 }
