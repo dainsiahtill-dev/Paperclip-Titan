@@ -954,6 +954,8 @@ async function startServerWithDatabaseTeardown(
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
 
   let startupListenerBound = false;
+  let retentionSweepAbortController: AbortController | null = null;
+  const abortRetentionSweep = () => retentionSweepAbortController?.abort();
   try {
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
@@ -1603,10 +1605,11 @@ async function startServerWithDatabaseTeardown(
     // restart, so a leaked sandbox does not stay allocated across the restart.
     await runEnvironmentLeaseCleanupSweep(0);
 
-    const runRetentionSweep = async () => {
+    const runRetentionSweep = async (signal: AbortSignal) => {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
       for (const company of activeCompanies) {
+        if (signal.aborted) return;
         // Cursor pagination rebuilds the whole feed for every page; one
         // unscoped all-items build keeps this sweep at a single feed build
         // per company per tick.
@@ -1615,12 +1618,33 @@ async function startServerWithDatabaseTeardown(
           all: true,
           allowUnscopedAll: true,
         });
-        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
+        if (signal.aborted) return;
+        const archive = retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
+        trackHeartbeatSchedulerWork(archive);
+        archived += await archive;
       }
-      const notifications = await retentionExecutor.deliverNotifications();
+      if (signal.aborted) return;
+      const delivery = retentionExecutor.deliverNotifications();
+      trackHeartbeatSchedulerWork(delivery);
+      const notifications = await delivery;
       return { archived, ...notifications };
     };
-    await runRetentionSweep();
+    const scheduleRetentionSweep = () => {
+      if (heartbeatSchedulerStopped || retentionSweepAbortController) return;
+      const controller = new AbortController();
+      retentionSweepAbortController = controller;
+      // Attention-feed construction may perform slow workspace reads. It must
+      // not delay Agent timers, queue recovery, or shutdown. Only mutations are
+      // tracked in the scheduler ledger; shutdown aborts the remaining reads.
+      void runRetentionSweep(controller.signal)
+        .catch((err: unknown) => {
+          if (!controller.signal.aborted) logger.error({ err }, "decision retention sweep failed");
+        })
+        .finally(() => {
+          if (retentionSweepAbortController === controller) retentionSweepAbortController = null;
+        });
+    };
+    scheduleRetentionSweep();
 
     startHeartbeatSchedulerInterval(() => {
       // Track the outer async callback as well as the work it starts. Shutdown
@@ -1631,9 +1655,7 @@ async function startServerWithDatabaseTeardown(
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
-        trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
-          logger.error({ err }, "decision retention sweep failed");
-        }));
+        scheduleRetentionSweep();
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
@@ -1916,6 +1938,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    abortRetentionSweep();
     clearInterval(executionControlInterval);
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
@@ -2029,6 +2052,7 @@ async function startServerWithDatabaseTeardown(
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
+    abortRetentionSweep();
     if (startupListenerBound) {
       await new Promise<void>((resolveClose) => {
         try {

@@ -53,6 +53,9 @@ const {
   }));
   const heartbeatServiceMock = {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    drainRunningRunsForShutdown: vi.fn(async () => ({ interrupted: 0, retryRunIds: [] })),
+    drainActiveRunExecutions: vi.fn(async () => undefined),
+    prepareHotRestartShutdown: vi.fn(async () => ({ skipDrain: false })),
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
       restartKind: "hard",
       dispositions: [],
@@ -410,6 +413,7 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { attentionService, decisionRetentionService } from "../services/index.js";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
 
@@ -553,6 +557,95 @@ describe("startServer feedback export wiring", () => {
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("keeps startup, task ticks and shutdown live while retention reads are pending", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    createDbMock.mockReturnValueOnce({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => [{ id: "company-retention" }]) })),
+      })),
+    } as never);
+    let releaseFeed!: () => void;
+    const feed = new Promise<{ items: never[]; nextCursor: null }>((resolve) => {
+      releaseFeed = () => resolve({ items: [], nextCursor: null });
+    });
+    const list = vi.fn(() => feed);
+    const autoArchive = vi.fn(async () => 0);
+    const deliverNotifications = vi.fn(async () => ({ notifiedAgents: 0, delivered: 0 }));
+    vi.mocked(attentionService).mockReturnValueOnce({ list } as never);
+    vi.mocked(decisionRetentionService).mockReturnValueOnce({ autoArchive, deliverNotifications } as never);
+    let tick: (() => void) | undefined;
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      callback: () => void, interval: number,
+    ) => {
+      if (interval === 30000) tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    const startup = startServer();
+    let stopped = false;
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(list).toHaveBeenCalledTimes(1);
+      expect(tick).toBeDefined();
+      const started = await startup;
+      const resumedBefore = heartbeatServiceMock.resumeQueuedRuns.mock.calls.length;
+      tick?.();
+      tick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.resumeQueuedRuns.mock.calls.length).toBeGreaterThan(resumedBefore);
+      expect(list).toHaveBeenCalledTimes(1);
+      const shutdown = started.shutdown().then(() => { stopped = true; });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(true);
+      releaseFeed();
+      await shutdown;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(autoArchive).not.toHaveBeenCalled();
+      expect(deliverNotifications).not.toHaveBeenCalled();
+    } finally {
+      releaseFeed();
+      const started = await startup;
+      if (!stopped) await started.shutdown();
+      intervalSpy.mockRestore();
+    }
+  });
+
+  it("waits for a started retention mutation before shutdown and skips its later notification", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    createDbMock.mockReturnValueOnce({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => [{ id: "company-retention" }]) })),
+      })),
+    } as never);
+    vi.mocked(attentionService).mockReturnValueOnce({
+      list: vi.fn(async () => ({ items: [], nextCursor: null })),
+    } as never);
+    let releaseArchive!: () => void;
+    const archive = new Promise<number>((resolve) => { releaseArchive = () => resolve(0); });
+    const autoArchive = vi.fn(() => archive);
+    const deliverNotifications = vi.fn(async () => ({ notifiedAgents: 0, delivered: 0 }));
+    vi.mocked(decisionRetentionService).mockReturnValueOnce({ autoArchive, deliverNotifications } as never);
+    const intervalSpy = vi.spyOn(globalThis, "setInterval").mockReturnValue(1 as unknown as ReturnType<typeof setInterval>);
+    const started = await startServer();
+    let stopped = false;
+    const shutdown = started.shutdown().then(() => { stopped = true; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(autoArchive).toHaveBeenCalledTimes(1);
+      expect(stopped).toBe(false);
+      releaseArchive();
+      await shutdown;
+      expect(stopped).toBe(true);
+      expect(deliverNotifications).not.toHaveBeenCalled();
+    } finally {
+      releaseArchive();
+      await shutdown;
+      intervalSpy.mockRestore();
     }
   });
 
