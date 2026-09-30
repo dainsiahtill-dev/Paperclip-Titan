@@ -9446,7 +9446,15 @@ export function heartbeatService(
       return result.checks.some(check => check.code.includes("auth_required") || check.code === "quota_probe_environment_unsupported") ? "error" : "unavailable";
     },
     onRecovered: async (agent, responsibleUserId, scope, now) => {
-      await db.update(heartbeatRuns).set({ scheduledRetryAt: now, updatedAt: now }).where(and(
+      await db.update(heartbeatRuns).set({
+        scheduledRetryAt: now, updatedAt: now,
+        contextSnapshot: sql`((case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end)
+          - 'resumeSessionParams' - 'resumeSessionDisplayId' - 'codexTransientFallbackMode'
+          - 'providerQuotaRetryNotBefore' - 'transientRetryNotBefore')
+          || jsonb_build_object('forceFreshSession', true, 'quotaFallbackHandoff',
+            jsonb_build_object('sourceRunId', ${heartbeatRuns.retryOfRunId}, 'adapterType', ${agent.adapterType}::text,
+              'model', ${typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null}::text, 'reason', 'primary_recovered'))`,
+      }).where(and(
         eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.companyId, agent.companyId),
         eq(heartbeatRuns.status, "scheduled_retry"),
         responsibleUserId === null ? isNull(heartbeatRuns.responsibleUserId) : eq(heartbeatRuns.responsibleUserId, responsibleUserId),

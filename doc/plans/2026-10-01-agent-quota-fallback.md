@@ -95,3 +95,13 @@ shared validation and integration; UI worker owns UI and CreateConfigValues only
   the responsible-user dependency-wake cancellation assertion and all seven
   Claude/Codex execute-suite failures (43/50 passed). These failures predate quota
   fallback. Broad regression has additional failures; it is not a green gate.
+- Integration refinement: primary recovery advances a deferred quota retry and
+  clears its backup resume token/old quota wait, with an explicit fresh primary
+  handoff. The regression reproduced RED before the context update.
+- Final stable source verification: all 134 affected tests across nine files
+  pass; retry/handoff suite 47/47. The diagnostic full run began before the
+  review fixes and reused imported module transforms, reproducing the exact old
+  five failures subsequently fixed. It was interrupted (exit 130) rather than
+  graded as the final revision. Serialized remaining suites were not completed;
+  no whole-repository green claim is made. The original-commit comparison above
+  independently verifies the eight known baseline failures.

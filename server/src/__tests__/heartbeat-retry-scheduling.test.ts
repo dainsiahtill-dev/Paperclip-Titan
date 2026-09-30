@@ -433,6 +433,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     } finally { unregisterServerAdapter("codex_local"); }
   });
 
+  it("clears deferred backup session and quota waits when primary availability returns", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID(); const now = new Date();
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType: "claude_local", errorCode: "provider_quota", errorFamily: "provider_quota" });
+    await db.update(agents).set({ adapterConfig: { model: "MiniMax-M3.1-Flash-Preview", engine: "cli" }, runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 }, quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 300 },
+    } }).where(eq(agents.id, agentId));
+    const first = await heartbeat.scheduleBoundedRetry(runId, { now });
+    if (first.outcome !== "scheduled") throw new Error("Expected initial backup continuation");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const state = (agent!.metadata!.quotaFallbackState as { fingerprint: string });
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now, errorCode: "provider_quota", resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, runnerProfileJson: { quotaFallback: { version: 1, fingerprint: state.fingerprint, usingBackup: true, primaryAdapterType: "claude_local", adapterType: "codex_local", model: "gpt-6.1-sol" } } }).where(eq(heartbeatRuns.id, first.run.id));
+    const second = await heartbeat.scheduleBoundedRetry(first.run.id, { now });
+    if (second.outcome !== "scheduled") throw new Error("Expected delayed backup retry");
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...second.run.contextSnapshot, forceFreshSession: false, resumeSessionParams: { sessionId: "backup-old-session" }, resumeSessionDisplayId: "backup-old-session", providerQuotaRetryNotBefore: new Date(now.getTime() + 3_600_000).toISOString() } }).where(eq(heartbeatRuns.id, second.run.id));
+    registerServerAdapter({ type: "claude_local", execute: async () => ({ exitCode: 0, signal: null, timedOut: false }), testEnvironment: async () => ({ adapterType: "claude_local", status: "pass", testedAt: now.toISOString(), checks: [{ code: "claude_hello_probe_passed", level: "info", message: "hello" }] }) });
+    try {
+      expect(await heartbeat.checkQuotaFallbackPrimary(agentId, "responsible-user")).toMatchObject({ usingBackup: false, lastPrimaryCheckResult: "available" });
+      const resumed = await heartbeat.getRun(second.run.id);
+      expect(resumed?.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(resumed?.contextSnapshot?.forceFreshSession).toBe(true);
+      expect(resumed?.contextSnapshot?.resumeSessionParams).toBeUndefined();
+      expect(resumed?.contextSnapshot?.providerQuotaRetryNotBefore).toBeUndefined();
+    } finally { unregisterServerAdapter("claude_local"); }
+  });
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;
