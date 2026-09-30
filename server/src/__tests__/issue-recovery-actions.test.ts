@@ -31,6 +31,7 @@ import { deliverReconciledExecutions } from "../services/execution-recovery-reso
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
+import { admitQueuedRunCapacity } from "../services/run-capacity.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1704,6 +1705,65 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       executionReconciliation: { runId, transferToAssigneeAgentId: managerId },
       continuationDelivery: "pending",
     });
+  });
+
+  it.each([
+    { condition: "stopped Local provider", driver: "local", liveProcess: false, liveController: false, expectedStatus: 200 },
+    { condition: "live Local provider", driver: "local", liveProcess: true, liveController: false, expectedStatus: 409 },
+    { condition: "live controller lease", driver: "local", liveProcess: false, liveController: true, expectedStatus: 409 },
+    { condition: "unreleased remote environment", driver: "ssh", liveProcess: false, liveController: false, expectedStatus: 409 },
+  ])("reconciles retained capacity with a $condition", async ({ driver, liveProcess, liveController, expectedStatus }) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "interrupted" });
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy", capacityGroup: "", capacityReleasedAt: null,
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() + (liveController ? 60_000 : -60_000)),
+      processPid: liveProcess ? process.pid : 2_147_483_647,
+      processGroupId: 2_147_483_647,
+      errorCode: "orphaned_running_run",
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(environments).values({ name: "Recovery environment", driver }).onConflictDoNothing();
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, driver));
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId, environmentId: environment!.id, heartbeatRunId: runId,
+      status: "active", provider: driver, metadata: { driver },
+    }).returning();
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId, kind: "active_run_watchdog", status: "active",
+      ownerType: "board", returnOwnerAgentId: coderId, cause: "legacy_execution_requires_reconciliation", fingerprint: runId,
+      nextAction: "Inspect the stopped execution before continuing.", evidence: { runId },
+    }).returning();
+    const queuedId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: queuedId, status: "queued" });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, coderId));
+    const admit = () => db.transaction(tx => admitQueuedRunCapacity(tx as unknown as typeof db, agent!, queuedId, 1));
+    expect(await admit()).toMatchObject({ allowed: false });
+
+    const response = await request(createApp()).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send({
+      actionId: action!.id, outcome: "restored", sourceIssueStatus: "todo",
+      executionReconciliation: { runId, providerStopped: true, actionOutcome: "mixed",
+        outcomeEvidence: "The stopped provider's existing files and action receipts were inspected. Preserve completed work and continue only the unfinished task." },
+    });
+    expect(response.status).toBe(expectedStatus);
+    const [retainedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [retainedLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+    const [receipt] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    if (expectedStatus === 200) {
+      expect(retainedRun!.capacityReleasedAt).toBeInstanceOf(Date);
+      expect(retainedRun!.status).toBe("interrupted");
+      expect(retainedRun!.processPid).toBe(2_147_483_647);
+      expect(retainedLease).toMatchObject({ status: "released", cleanupStatus: "success" });
+      expect(retainedLease!.releasedAt).toBeInstanceOf(Date);
+      expect(receipt!.evidence).toMatchObject({ executionReconciliation: { runId, providerStopped: true }, continuationDelivery: "pending" });
+      expect(await admit()).toMatchObject({ allowed: true });
+    } else {
+      expect(retainedRun!.capacityReleasedAt).toBeNull();
+      expect(retainedLease!.releasedAt).toBeNull();
+      expect(receipt!.status).toBe("active");
+      expect(await admit()).toMatchObject({ allowed: false });
+    }
   });
 
   async function seedReconciledDelivery() {

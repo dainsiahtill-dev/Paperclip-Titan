@@ -3,10 +3,11 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
+  environments,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
@@ -21,6 +22,42 @@ import {
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
+
+function assertRecordedProviderStopped(run: typeof heartbeatRuns.$inferSelect) {
+  if (run.runtimeMode === "legacy" && run.controllerBootId &&
+      (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt.getTime() > Date.now())) {
+    throw conflict("The previous execution controller still owns this run.");
+  }
+  for (const pid of [run.processPid, run.processGroupId ? -run.processGroupId : null]) {
+    if (!pid) continue;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
+      throw conflict("The previous provider's process ownership cannot be verified.");
+    }
+    throw conflict("The previous provider is still running. Stop it before continuing.");
+  }
+}
+
+async function releasableReconciliationLeases(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  const leases = await db.select({ lease: environmentLeases, driver: environments.driver })
+    .from(environmentLeases)
+    .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
+    .where(and(
+      eq(environmentLeases.companyId, run.companyId),
+      eq(environmentLeases.heartbeatRunId, run.id),
+      isNull(environmentLeases.releasedAt),
+    ));
+  // Only an explicit reconciliation may retire a stale Local bookkeeping lease.
+  // A remote/native lease still requires its physical owner's release path.
+  if (leases.some(({ lease, driver }) => run.runtimeMode !== "legacy" ||
+      driver !== "local" || lease.metadata?.driver !== "local" ||
+      (lease.provider !== null && lease.provider !== "local") || lease.providerLeaseId !== null)) {
+    throw conflict("The previous execution environment has not finished releasing its authority.");
+  }
+  return leases.map(({ lease }) => lease.id);
+}
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -73,23 +110,7 @@ export async function validateExecutionReconciliation(input: {
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
     );
   }
-  for (const pid of [
-    run.processPid,
-    run.processGroupId ? -run.processGroupId : null,
-  ]) {
-    if (!pid) continue;
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
-      throw conflict(
-        "The previous provider's process ownership cannot be verified.",
-      );
-    }
-    throw conflict(
-      "The previous provider is still running. Stop it before continuing.",
-    );
-  }
+  assertRecordedProviderStopped(run);
   const [coordinator] = await db
     .select()
     .from(nativeRunFinalizations)
@@ -103,21 +124,7 @@ export async function validateExecutionReconciliation(input: {
     throw conflict(
       "This execution still has a coordinator or a linked continuation. Inspect that run first.",
     );
-  const leases = await db
-    .select({ id: environmentLeases.id })
-    .from(environmentLeases)
-    .where(
-      and(
-        eq(environmentLeases.companyId, companyId),
-        eq(environmentLeases.heartbeatRunId, run.id),
-        isNull(environmentLeases.releasedAt),
-      ),
-    )
-    .limit(1);
-  if (leases.length)
-    throw conflict(
-      "The previous execution environment has not finished releasing its authority.",
-    );
+  await releasableReconciliationLeases(db, run);
   await buildExecutionContinuation({
     db,
     companyId,
@@ -174,6 +181,35 @@ export async function markExecutionReconciliation(
         eq(nativeRunFinalizations.runId, decision.runId),
       ),
     );
+  // The route owns the issue-resolution transaction. Keep resource release and
+  // the outcome receipt atomic, and recheck the source under its row lock.
+  const [legacyRun] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, action.companyId),
+    eq(heartbeatRuns.id, decision.runId),
+    eq(heartbeatRuns.runtimeMode, "legacy"),
+  )).for("update");
+  if (legacyRun) {
+    if (!["failed", "interrupted", "timed_out", "cancelled"].includes(legacyRun.status)) {
+      throw conflict("The recovery source changed before its capacity could be released.");
+    }
+    assertRecordedProviderStopped(legacyRun);
+    const localLeaseIds = await releasableReconciliationLeases(db, legacyRun);
+    const releasedAt = new Date();
+    if (localLeaseIds.length) await db.update(environmentLeases).set({
+      status: "released", cleanupStatus: "success", releasedAt, updatedAt: releasedAt,
+    }).where(and(
+      eq(environmentLeases.companyId, action.companyId),
+      eq(environmentLeases.heartbeatRunId, legacyRun.id),
+      inArray(environmentLeases.id, localLeaseIds),
+      isNull(environmentLeases.releasedAt),
+    ));
+    await db.update(heartbeatRuns).set({ capacityReleasedAt: releasedAt }).where(and(
+      eq(heartbeatRuns.companyId, action.companyId),
+      eq(heartbeatRuns.id, legacyRun.id),
+      isNotNull(heartbeatRuns.capacityGroup),
+      isNull(heartbeatRuns.capacityReleasedAt),
+    ));
+  }
   await db
     .update(issueRecoveryActions)
     .set({
