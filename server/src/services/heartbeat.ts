@@ -496,6 +496,7 @@ import {
 import { withRecoveryContext } from "./recovery/status-only-context.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
   recoveryService,
 } from "./recovery/service.js";
 import {
@@ -15173,7 +15174,12 @@ export function heartbeatService(
       transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
-    const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    // Subscription quotas without a provider reset time must not enter the
+    // short transient retry ladder. Use the same fallback wait as recovery.
+    const transientRetryNotBefore = transientRecovery?.retryNotBefore ??
+      (transientRecovery?.errorFamily === "provider_quota"
+        ? new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS)
+        : null);
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 

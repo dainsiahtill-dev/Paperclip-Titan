@@ -364,6 +364,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .toEqual({ status: "idle", errorReason: null });
   });
 
+  it("waits an hour before retrying provider quota without a reset time", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      adapterType: "claude_local",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.dueAt.toISOString()).toBe("2026-04-20T13:00:00.000Z");
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    expect(scheduled.run.contextSnapshot).toMatchObject({ errorFamily: "provider_quota" });
+  });
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;

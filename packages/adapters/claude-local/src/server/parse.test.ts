@@ -234,6 +234,24 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies a MiniMax Token Plan 2067 limit as provider quota", () => {
+    const input = {
+      parsed: {
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 429,
+        result:
+          "API Error: Request rejected (429) · 当前已达到 Token Plan 用量上限。为避免调用中断，请升级 Token Plan 套餐，或购买积分补充用量并开启积分自动消耗。 (2067)",
+      },
+      stdout: "",
+      stderr: "",
+    };
+
+    expect(isClaudeProviderQuotaError(input)).toBe(true);
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
