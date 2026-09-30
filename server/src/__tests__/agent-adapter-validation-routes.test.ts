@@ -53,6 +53,9 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForAgent: vi.fn(),
+  getQuotaFallbackStatus: vi.fn(),
+  checkQuotaFallbackPrimary: vi.fn(),
+  testQuotaFallbackBackup: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -239,6 +242,33 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent routes adapter validation", () => {
+  it("returns responsible-user quota state and audits a manual primary check", async () => {
+    const app = await createApp();
+    const status = { enabled: true, usingBackup: true, primaryModel: "MiniMax-M3.1-Flash-Preview", backupModel: "gpt-6.1-sol" };
+    mockHeartbeatService.getQuotaFallbackStatus.mockResolvedValue(status);
+    mockHeartbeatService.checkQuotaFallbackPrimary.mockResolvedValue({ ...status, usingBackup: false });
+    const read = await requestApp(app, base => request(base).get("/api/agents/11111111-1111-4111-8111-111111111111/quota-fallback"));
+    expect(read.status).toBe(200); expect(read.body).toEqual(status);
+    expect(mockHeartbeatService.getQuotaFallbackStatus).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", "local-board");
+    const check = await requestApp(app, base => request(base).post("/api/agents/11111111-1111-4111-8111-111111111111/quota-fallback/check-primary").send({}));
+    expect(check.status).toBe(200); expect(check.body.usingBackup).toBe(false);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.quota_fallback.primary_check_requested", companyId: "company-1" }));
+  });
+
+  it("rejects raw backup credentials before calling a provider", async () => {
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).post("/api/agents/11111111-1111-4111-8111-111111111111/quota-fallback/test-backup").send({ backup: { adapterType: "codex_local", model: "gpt-6.1-sol", env: { OPENAI_API_KEY: "forged" } } }));
+    expect(response.status).toBe(400);
+    expect(mockHeartbeatService.testQuotaFallbackBackup).not.toHaveBeenCalled();
+  });
+
+  it("rejects enabling fallback on a non-conversation harness", async () => {
+    const app = await createApp();
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "process" });
+    const response = await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ runtimeConfig: { quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" } } } }));
+    expect(response.status).toBe(422); expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");

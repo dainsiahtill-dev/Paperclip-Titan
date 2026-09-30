@@ -1,5 +1,13 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  agentQuotaFallbackConfigSchema,
+  quotaFallbackBackupSchema,
+  type AgentQuotaFallbackConfig,
+  type AgentQuotaFallbackStatus,
+  type QuotaFallbackBackup,
+} from "./quota-fallback.js";
+
+export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
   runnerGoalAvailabilitySchema,
   runnerGoalCapabilityActionSchema,

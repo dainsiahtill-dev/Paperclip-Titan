@@ -20,6 +20,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
+  agentQuotaFallbackConfigSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -31,6 +32,22 @@ import {
   normalizePaperclipRunnerAdapterConfig,
 } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { QUOTA_FALLBACK_METADATA_KEY } from "./agent-quota-fallback-policy.js";
+
+function clientAgentMetadata(metadata: unknown): Record<string, unknown> | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const cleaned = { ...(metadata as Record<string, unknown>) };
+  delete cleaned[QUOTA_FALLBACK_METADATA_KEY];
+  return cleaned;
+}
+
+function assertQuotaFallbackRuntime(adapterType: string, runtimeConfig: unknown) {
+  const config = isPlainRecord(runtimeConfig) ? runtimeConfig.quotaFallback : undefined;
+  if (config === undefined) return;
+  const parsed = agentQuotaFallbackConfigSchema.safeParse(config);
+  if (!parsed.success) throw unprocessable("Invalid quota fallback configuration");
+  if (parsed.data.enabled && !["claude_local", "codex_local"].includes(adapterType)) throw unprocessable("Quota fallback requires a local Claude or Codex harness");
+}
 import {
   collectSecretRefs,
   collectUserSecretRefs,
@@ -125,6 +142,7 @@ interface UpdateAgentOptions {
 
 interface CreateAgentOptions {
   aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
+  additionalAiConnectionInstalls?: { connectionId: string; createdByUserId: string | null }[];
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -739,6 +757,7 @@ export function agentService(db: Db) {
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    assertQuotaFallbackRuntime(normalizedPatch.adapterType ?? existing.adapterType, normalizedPatch.runtimeConfig ?? existing.runtimeConfig);
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
@@ -781,9 +800,18 @@ export function agentService(db: Db) {
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      // Use the row's current state, not the earlier read: a concurrent quota
+      // probe may have committed while config normalization was in progress.
+      const clientMetadata = clientAgentMetadata(normalizedPatch.metadata);
+      const metadataPatch = Object.prototype.hasOwnProperty.call(normalizedPatch, "metadata") ? {
+        metadata: sql`case when ${agents.metadata} ? ${QUOTA_FALLBACK_METADATA_KEY}
+          then ${JSON.stringify(clientMetadata ?? {})}::jsonb
+            || jsonb_build_object(${QUOTA_FALLBACK_METADATA_KEY}::text, ${agents.metadata}->${QUOTA_FALLBACK_METADATA_KEY})
+          else ${clientMetadata === null ? null : JSON.stringify(clientMetadata)}::jsonb end`,
+      } : {};
       const updated = await txDb
         .update(agents)
-        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .set({ ...normalizedPatch, ...metadataPatch, updatedAt: new Date() })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -884,6 +912,7 @@ export function agentService(db: Db) {
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
+      assertQuotaFallbackRuntime(adapterType, runtimeConfig);
       const rawAdapterConfig = isPlainRecord(data.adapterConfig)
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
@@ -912,6 +941,7 @@ export function agentService(db: Db) {
           .insert(agents)
           .values({
             ...data,
+            metadata: clientAgentMetadata(data.metadata),
             name: uniqueName,
             companyId,
             role,
@@ -922,11 +952,11 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
-        if (options?.aiConnectionInstall) {
+        for (const install of [...(options?.aiConnectionInstall ? [options.aiConnectionInstall] : []), ...(options?.additionalAiConnectionInstalls ?? [])]) {
           await tx.insert(toolConnectionInstalls).values({
-            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            companyId, connectionId: install.connectionId,
             targetType: "agent", targetId: created.id,
-            createdByUserId: options.aiConnectionInstall.createdByUserId,
+            createdByUserId: install.createdByUserId,
           }).onConflictDoNothing();
         }
         await syncAgentSecretBindings(created, txDb);

@@ -31,6 +31,9 @@ const mockAgentsApi = vi.hoisted(() => ({
   completeClaudeSetupTokenLogin: vi.fn(),
   cancelClaudeSetupTokenLogin: vi.fn(),
   getClaudeOAuthTokenStatus: vi.fn(),
+  quotaFallbackStatus: vi.fn(),
+  checkQuotaFallbackPrimary: vi.fn(),
+  testQuotaFallbackBackup: vi.fn(),
 }));
 
 // The default resume read for a test that does not exercise resume: no active
@@ -282,14 +285,14 @@ async function renderForm(
     },
   });
 
-  await act(async () => {
+  const renderAgent = (agent: Agent) => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <TooltipProvider>
             <AgentConfigForm
               mode="edit"
-              agent={makeAgent(agentOverrides)}
+              agent={agent}
               onSave={onSave}
               hidePromptTemplate
               content={options.content}
@@ -305,10 +308,11 @@ async function renderForm(
         </ToastProvider>
       </QueryClientProvider>,
     );
-  });
+  };
+  await act(async () => renderAgent(makeAgent(agentOverrides)));
 
   await flushReact();
-  return { container, root, onSave };
+  return { container, root, onSave, renderAgent };
 }
 
 async function renderCreateForm(
@@ -650,6 +654,7 @@ describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
+    mockAgentsApi.quotaFallbackStatus.mockResolvedValue({ enabled: false, usingBackup: false, primaryAdapterType: "codex_local", primaryModel: null, backupAdapterType: null, backupModel: null, lastQuotaAt: null, lastPrimaryCheckAt: null, lastPrimaryCheckResult: null, nextPrimaryCheckAt: null, checkingPrimary: false });
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -726,6 +731,98 @@ describe("AgentConfigForm environment selector", () => {
     // Default: the owner has no stored Claude login. A test that needs a stored
     // value overrides this with a status body.
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+  });
+
+  it("keeps unsaved identity edits across metadata-only Agent refresh", async () => {
+    const agent = makeAgent();
+    const result = await renderForm([], agent);
+    roots.push(result.root);
+    const name = result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')
+      ?? result.container.querySelector<HTMLInputElement>('input');
+    await act(async () => setInputValue(name!, "Pending rename"));
+    await act(async () => result.renderAgent({ ...agent, updatedAt: new Date(1000), metadata: { quotaFallbackState: {} } }));
+    await flushReact();
+    expect(name!.value).toBe("Pending rename");
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ name: "Pending rename" }));
+  });
+
+  it("shows the next dispatch route and checks the saved primary without cancelling running turns", async () => {
+    const status = { enabled: true, usingBackup: true, primaryAdapterType: "claude_local", primaryModel: "MiniMax-M3.1-Flash-Preview", backupAdapterType: "codex_local", backupModel: "gpt-6.1-sol", lastQuotaAt: "2026-10-01T00:00:00Z", lastPrimaryCheckAt: "2026-10-01T00:01:00Z", lastPrimaryCheckResult: "unavailable", nextPrimaryCheckAt: "2026-10-01T00:16:00Z", checkingPrimary: false };
+    mockAgentsApi.quotaFallbackStatus.mockResolvedValue(status);
+    mockAgentsApi.checkQuotaFallbackPrimary.mockResolvedValue({ ...status, usingBackup: false, lastPrimaryCheckResult: "available", nextPrimaryCheckAt: null });
+    const result = await renderForm([], { adapterType: "claude_local", runtimeConfig: { quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } });
+    roots.push(result.root);
+    const nextRoute = result.container.querySelector('[aria-label="Next run model"]');
+    expect(nextRoute?.textContent).toContain("gpt-6.1-sol");
+    await clickByText(result.container, "Check primary now");
+    expect(nextRoute?.textContent).toContain("MiniMax-M3.1-Flash-Preview");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("tests an unsaved custom Claude backup with only the typed backup profile", async () => {
+    mockAgentsApi.testQuotaFallbackBackup.mockResolvedValue({ adapterType: "claude_local", status: "pass", checks: [{ code: "hello_probe_passed", level: "info", message: "Backup answered hello" }], testedAt: "2026-10-01T00:00:00Z" });
+    const result = await renderForm([], { runtimeConfig: { quotaFallback: { enabled: true, backup: { adapterType: "claude_local", model: "MiniMax-old" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } });
+    roots.push(result.root);
+    const model = result.container.querySelector<HTMLInputElement>('[aria-label="Backup model ID"]');
+    await act(async () => setInputValue(model!, "MiniMax-M3.1-Flash-Preview"));
+    await clickByText(result.container, "Test backup connection");
+    expect(mockAgentsApi.testQuotaFallbackBackup).toHaveBeenCalledWith("agent-1", { adapterType: "claude_local", model: "MiniMax-M3.1-Flash-Preview" }, "company-1");
+    expect(result.container.textContent).toContain("Backup answered hello");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("prevents saving an invalid primary check interval", async () => {
+    const result = await renderForm([], { runtimeConfig: { quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } });
+    roots.push(result.root);
+    const interval = result.container.querySelector<HTMLInputElement>('[aria-label="Primary check interval (seconds)"]');
+    await act(async () => setInputValue(interval!, "30"));
+    await clickByText(result.container, "Save");
+    expect(result.onSave).not.toHaveBeenCalled();
+    expect(result.container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  it("keeps backup connection choice controlled by Save and Discard", async () => {
+    let cancel: (() => void) | null = null;
+    const result = await renderForm([], { runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "anthropic", method: "subscription" }, quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } }, { onCancelActionChange: (action) => { cancel = action; } });
+    roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Use a managed backup connection"]'));
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: expect.objectContaining({
+      aiConnection: { mode: "responsible_user", provider: "anthropic", method: "subscription" },
+      quotaFallback: expect.objectContaining({ backup: expect.objectContaining({ aiConnection: { mode: "responsible_user", provider: "openai", method: "subscription" } }) }),
+    }) }));
+    await act(async () => cancel?.());
+    await flushReact();
+    expect(result.container.querySelector<HTMLInputElement>('[aria-label="Use a managed backup connection"]')!.checked).toBe(false);
+  });
+
+  it("does not probe the host account when the Agent selects a remote environment", async () => {
+    const result = await renderForm([makeEnvironment({ id: "sandbox-1", driver: "sandbox", config: { provider: "docker" } })], { defaultEnvironmentId: "sandbox-1", runtimeConfig: { quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } });
+    roots.push(result.root);
+    expect(findButton(result.container, "Test backup connection")!.disabled).toBe(true);
+  });
+
+  it("saves quota backup settings and discards a subsequent draft", async () => {
+    let cancel: (() => void) | null = null;
+    const result = await renderForm([], {}, { onCancelActionChange: (action) => { cancel = action; } });
+    roots.push(result.root);
+    const enabled = result.container.querySelector<HTMLInputElement>('[aria-label="Enable quota fallback"]');
+    expect(enabled).not.toBeNull();
+    expect(enabled!.checked).toBe(false);
+    await clickElement(enabled);
+    const model = result.container.querySelector<HTMLInputElement>('[aria-label="Backup model ID"]');
+    expect(model!.value).toBe("gpt-6.1-sol");
+    await act(async () => setInputValue(model!, "gpt-6-luna"));
+    const effort = result.container.querySelector<HTMLSelectElement>('[aria-label="Backup thinking effort"]');
+    expect(effort!.value).toBe("xhigh");
+    expect([...effort!.options].map((option) => option.value)).not.toContain("high");
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: expect.objectContaining({
+      quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6-luna", thinkingEffort: "xhigh" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 },
+    }) }));
+    await act(async () => cancel?.());
+    expect(result.container.querySelector<HTMLInputElement>('[aria-label="Enable quota fallback"]')!.checked).toBe(false);
   });
 
   it("assigns an Agent to a configured shared subscription group", async () => {

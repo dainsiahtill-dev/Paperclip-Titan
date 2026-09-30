@@ -389,6 +389,50 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled.run.contextSnapshot).toMatchObject({ errorFamily: "provider_quota" });
   });
 
+  it("switches a configured quota backup immediately rather than waiting for the primary reset", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType: "claude_local", errorCode: "provider_quota", errorFamily: "provider_quota", retryNotBefore: "2026-04-20T18:00:00.000Z" });
+    await db.update(agents).set({ adapterConfig: { model: "MiniMax-M3.1-Flash-Preview" }, runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1, concurrencyGroup: "minimax" },
+      quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol", thinkingEffort: "high" }, primaryCheckIntervalSec: 300, recoveryEnabled: true },
+    } }).where(eq(agents.id, agentId));
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.dueAt.getTime()).toBeLessThanOrEqual(now.getTime() + 1000);
+    expect(scheduled.run.contextSnapshot).toMatchObject({ forceFreshSession: true, quotaFallbackHandoff: { sourceRunId: runId, adapterType: "codex_local", model: "gpt-6.1-sol" } });
+    const [updated] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(updated?.adapterType).toBe("claude_local");
+    expect(updated?.adapterConfig).toMatchObject({ model: "MiniMax-M3.1-Flash-Preview" });
+    expect(JSON.stringify(updated?.metadata)).toContain("quotaFallbackState");
+  });
+
+  it("executes the admitted backup with its own model and retains immutable run identity", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date();
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType: "claude_local", errorCode: "provider_quota", errorFamily: "provider_quota" });
+    await db.update(agents).set({ adapterConfig: { model: "MiniMax-M3.1-Flash-Preview", env: { ANTHROPIC_BASE_URL: "https://primary.invalid" } }, runtimeConfig: {
+      heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      quotaFallback: { enabled: true, backup: { adapterType: "codex_local", model: "gpt-6.1-sol", thinkingEffort: "high" }, primaryCheckIntervalSec: 300, recoveryEnabled: true },
+    } }).where(eq(agents.id, agentId));
+    const execute = vi.fn(async (_context: unknown) => ({ exitCode: 0, signal: null, timedOut: false, summary: "continued" }));
+    registerServerAdapter({ type: "codex_local", execute, testEnvironment: async () => ({ adapterType: "codex_local", status: "pass", checks: [], testedAt: now.toISOString() }) });
+    try {
+      await heartbeat.scheduleBoundedRetry(runId, { now });
+      const run = await heartbeat.invoke(agentId, "on_demand", { responsibleUserId: "responsible-user", forceFreshSession: true }, "manual", { actorType: "user", actorId: "responsible-user" });
+      expect(run).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, run!.id);
+      expect(finished?.status).toBe("succeeded");
+      expect(execute).toHaveBeenCalledOnce();
+      const invocation = execute.mock.calls[0]?.[0] as unknown as { config: Record<string, unknown>; agent: { id: string; adapterType: string } };
+      expect(invocation.agent).toMatchObject({ id: agentId, adapterType: "codex_local" });
+      expect(invocation.config).toMatchObject({ model: "gpt-6.1-sol", thinkingEffort: "high", dangerouslyBypassSandbox: true });
+      expect((invocation.config.env as Record<string, unknown>).ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(finished?.runnerProfileJson).toMatchObject({ adapterDispatch: { adapterType: "codex_local" }, quotaFallback: { usingBackup: true, model: "gpt-6.1-sol" } });
+    } finally { unregisterServerAdapter("codex_local"); }
+  });
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;

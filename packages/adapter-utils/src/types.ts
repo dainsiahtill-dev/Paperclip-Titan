@@ -669,6 +669,7 @@ export interface CLIAdapterModule {
 
 export interface CreateConfigValues {
   adapterType: string;
+  quotaFallback?: import("@paperclipai/shared").AgentQuotaFallbackConfig;
   codexPermissionMode?: "never" | "on-request" | "untrusted";
   paperclipRunnerLifecycleMode?: "per_turn" | "warm";
   paperclipRunnerIdleTimeoutMs?: number;

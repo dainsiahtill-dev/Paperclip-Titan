@@ -1,4 +1,5 @@
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { runAdapterType } from "../lib/run-adapter";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
@@ -2005,6 +2006,7 @@ export function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      queryClient.invalidateQueries({ queryKey: ["agents", agent.id, "quota-fallback"] });
       if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
@@ -2075,7 +2077,7 @@ export function ConfigurationTab({
         sectionLayout="cards"
         environmentVariablesPlacement="configuration"
         compactTestFeedback
-        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
+        sectionOrder={["identity", "adapter", "configuration", "quota-fallback", "environment", "environment-variables", "run-policy"]}
         sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
@@ -3193,7 +3195,7 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
+function RunDetail({ run: initialRun, agentRouteId, adapterType: primaryAdapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3205,6 +3207,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ),
   });
   const run = hydratedRun ?? initialRun;
+  const adapterType = runAdapterType(run, primaryAdapterType);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -3799,7 +3802,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
 /* ---- Log Viewer ---- */
 
-export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType: primaryAdapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const adapterType = runAdapterType(run, primaryAdapterType);
   const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);

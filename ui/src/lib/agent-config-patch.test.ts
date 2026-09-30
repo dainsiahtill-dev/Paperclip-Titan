@@ -174,3 +174,51 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 });
+
+describe("buildAgentUpdatePatch runtime settings", () => {
+  it("merges quota fallback with simultaneous heartbeat and debug edits", () => {
+    const agent: Pick<Agent, "adapterConfig" | "runtimeConfig"> = {
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { enabled: false, maxConcurrentRuns: 1 },
+        debug: { providerTrace: "raw", unrelated: true },
+        aiConnection: { mode: "responsible_user", method: "subscription", provider: "openai" },
+      },
+    };
+    const overlay: AgentConfigOverlay = {
+      identity: {}, adapterConfig: {},
+      heartbeat: { enabled: true },
+      debug: { providerTrace: undefined },
+      runtime: { runtimeConfig: { quotaFallback: {
+        enabled: true,
+        backup: { adapterType: "codex_local", model: "gpt-6.1-sol", thinkingEffort: "high" },
+        recoveryEnabled: true,
+        primaryCheckIntervalSec: 900,
+      } } },
+    };
+    expect(buildAgentUpdatePatch(agent, overlay)).toEqual({
+      runtimeConfig: {
+        heartbeat: { enabled: true, maxConcurrentRuns: 1 },
+        debug: { unrelated: true },
+        aiConnection: { mode: "responsible_user", method: "subscription", provider: "openai" },
+        quotaFallback: {
+          enabled: true,
+          backup: { adapterType: "codex_local", model: "gpt-6.1-sol", thinkingEffort: "high" },
+          recoveryEnabled: true,
+          primaryCheckIntervalSec: 900,
+        },
+      },
+    });
+  });
+
+  it("retains saved runtime settings when only a connection draft changes", () => {
+    const agent: Pick<Agent, "adapterConfig" | "runtimeConfig"> = { adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: true }, quotaFallback: { enabled: false, recoveryEnabled: true, primaryCheckIntervalSec: 900 } } };
+    expect(buildAgentUpdatePatch(agent, {
+      identity: {}, adapterConfig: {}, heartbeat: {}, debug: {},
+      runtime: { runtimeConfig: { aiConnection: { mode: "responsible_user" } } },
+    })).toEqual({ runtimeConfig: {
+      heartbeat: { enabled: true }, quotaFallback: { enabled: false, recoveryEnabled: true, primaryCheckIntervalSec: 900 },
+      aiConnection: { mode: "responsible_user" },
+    } });
+  });
+});

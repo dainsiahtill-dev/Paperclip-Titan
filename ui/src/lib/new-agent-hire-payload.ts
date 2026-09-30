@@ -35,6 +35,7 @@ export function buildNewAgentHirePayload(input: {
     runtimeConfig: buildNewAgentRuntimeConfig({
       heartbeatEnabled: configValues.heartbeatEnabled,
       intervalSec: configValues.intervalSec,
+      quotaFallback: configValues.quotaFallback,
     }),
     budgetMonthlyCents: 0,
     ...(permissions ? { permissions } : {}),

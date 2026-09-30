@@ -25,6 +25,7 @@ export interface AgentPermissions extends Record<string, unknown> {
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
   aiConnection?: import("../ai-connections.js").AiConnectionBinding;
+  quotaFallback?: import("../quota-fallback.js").AgentQuotaFallbackConfig;
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";

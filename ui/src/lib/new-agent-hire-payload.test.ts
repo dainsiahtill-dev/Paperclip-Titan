@@ -4,6 +4,11 @@ import { buildNewAgentHirePayload } from "./new-agent-hire-payload";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 
 describe("buildNewAgentHirePayload", () => {
+  it("includes the explicitly enabled quota policy when creating an Agent", () => {
+    const quotaFallback = { enabled: true, backup: { adapterType: "codex_local" as const, model: "gpt-6.1-sol" }, recoveryEnabled: true, primaryCheckIntervalSec: 900 };
+    expect(buildNewAgentHirePayload({ name: "Primary Claude", effectiveRole: "engineer", configValues: { ...defaultCreateValues, quotaFallback }, adapterConfig: {} }))
+      .toMatchObject({ runtimeConfig: { quotaFallback } });
+  });
   it("persists the selected default environment id", () => {
     expect(
       buildNewAgentHirePayload({

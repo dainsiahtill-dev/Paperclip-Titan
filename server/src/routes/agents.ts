@@ -1,6 +1,9 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { withCompanyClaudeModelSuggestions } from "../services/claude-model-suggestions.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
+import { buildQuotaBackupConfig } from "../services/agent-quota-fallback-policy.js";
+import { z } from "zod";
+import { agentQuotaFallbackConfigSchema, quotaFallbackBackupSchema } from "@paperclipai/shared";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -3347,6 +3350,44 @@ export function agentRoutes(
     return selection.connection.id;
   }
 
+  async function validateQuotaFallbackBinding(req: Request, agent: { id: string; companyId: string; adapterType: string; adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown>; defaultEnvironmentId?: string | null }, newAgent = false) {
+    if (!agent.runtimeConfig.quotaFallback) return;
+    const policy = agentQuotaFallbackConfigSchema.parse(agent.runtimeConfig.quotaFallback);
+    if (!policy.enabled || !policy.backup) return;
+    if (!["claude_local", "codex_local"].includes(agent.adapterType)) throw unprocessable("Quota fallback requires a local Claude or Codex primary harness");
+    await assertSelectableAdapterType(policy.backup.adapterType);
+    await assertAgentDefaultEnvironmentSelection(agent.companyId, agent.defaultEnvironmentId, { allowedDrivers: ["local"] });
+    if (policy.backup.aiConnection) {
+      return validateManagedAgentBinding(req, agent.companyId, agent.id, policy.backup.adapterType, buildQuotaBackupConfig({ ...agent, metadata: null }, policy.backup), policy.backup.aiConnection, agent.defaultEnvironmentId, false, newAgent);
+    }
+  }
+
+  router.get("/agents/:id/quota-fallback", async (req, res) => {
+    const agent = await getAccessibleAgent(req, res, req.params.id as string);
+    if (!agent) return;
+    res.json(await heartbeat.getQuotaFallbackStatus(agent.id, responsibleUserForAiRequest(req)));
+  });
+
+  router.post("/agents/:id/quota-fallback/check-primary", validate(z.object({}).strict()), async (req, res) => {
+    const agent = await getAccessibleAgent(req, res, req.params.id as string);
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId, action: "agent.quota_fallback.primary_check_requested", entityType: "agent", entityId: agent.id });
+    res.json(await heartbeat.checkQuotaFallbackPrimary(agent.id, responsibleUserForAiRequest(req)));
+  });
+
+  router.post("/agents/:id/quota-fallback/test-backup", validate(z.object({ backup: quotaFallbackBackupSchema }).strict()), async (req, res) => {
+    const agent = await getAccessibleAgent(req, res, req.params.id as string);
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const backup = req.body.backup;
+    await validateQuotaFallbackBinding(req, { ...agent, runtimeConfig: { quotaFallback: { enabled: true, backup } } });
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId, action: "agent.quota_fallback.backup_test_requested", entityType: "agent", entityId: agent.id, details: { adapterType: backup.adapterType, model: backup.model } });
+    res.json(await heartbeat.testQuotaFallbackBackup(agent.id, responsibleUserForAiRequest(req), backup));
+  });
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),
@@ -4522,6 +4563,7 @@ export function agentRoutes(
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
       const managedHireConnectionId = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
+      const backupHireConnectionId = await validateQuotaFallbackBinding(req, { id: hiredAgentId, companyId, ...normalizedHireInput }, true);
       const createdAgent = await svc.create(
         companyId,
         {
@@ -4533,6 +4575,7 @@ export function agentRoutes(
         },
         {
           aiConnectionInstall: managedHireConnectionId ? { connectionId: managedHireConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
+          additionalAiConnectionInstalls: backupHireConnectionId ? [{ connectionId: backupHireConnectionId, createdByUserId: responsibleUserForAiRequest(req) }] : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
             ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -4770,6 +4813,7 @@ export function agentRoutes(
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
     const managedConnectionId = managedBinding ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const backupConnectionId = await validateQuotaFallbackBinding(req, { id: agentId, companyId, adapterType: createInput.adapterType, adapterConfig: normalizedAdapterConfig, runtimeConfig: normalizedRuntimeConfig, defaultEnvironmentId: createInput.defaultEnvironmentId }, true);
     const createdAgent = await svc.create(
       companyId,
       {
@@ -4783,6 +4827,7 @@ export function agentRoutes(
       },
       {
         aiConnectionInstall: managedConnectionId ? { connectionId: managedConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
+        additionalAiConnectionInstalls: backupConnectionId ? [{ connectionId: backupConnectionId, createdByUserId: responsibleUserForAiRequest(req) }] : undefined,
         claudeLogin: {
           storedSessionId: createStoredSessionId ?? null,
           ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -5296,6 +5341,12 @@ export function agentRoutes(
       if (changed) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+    await validateQuotaFallbackBinding(req, {
+      ...existing, adapterType: requestedAdapterType,
+      adapterConfig: (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>,
+      runtimeConfig: requestedRuntimeConfig ?? existing.runtimeConfig,
+      defaultEnvironmentId: (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+    });
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
@@ -6606,7 +6657,7 @@ export function agentRoutes(
       createdAt: heartbeatRuns.createdAt,
       agentId: heartbeatRuns.agentId,
       agentName: agentsTable.name,
-      adapterType: agentsTable.adapterType,
+      adapterType: sql<string>`coalesce(${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}', ${agentsTable.adapterType})`,
       logBytes: heartbeatRuns.logBytes,
       livenessState: heartbeatRuns.livenessState,
       livenessReason: heartbeatRuns.livenessReason,
@@ -7237,7 +7288,7 @@ export function agentRoutes(
         createdAt: heartbeatRuns.createdAt,
         agentId: heartbeatRuns.agentId,
         agentName: agentsTable.name,
-        adapterType: agentsTable.adapterType,
+        adapterType: sql<string>`coalesce(${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}', ${agentsTable.adapterType})`,
         logBytes: heartbeatRuns.logBytes,
         livenessState: heartbeatRuns.livenessState,
         livenessReason: heartbeatRuns.livenessReason,
@@ -7326,7 +7377,7 @@ export function agentRoutes(
       execution: await executionProjectionForRun(db, issue.companyId, run.id),
       agentId: agent.id,
       agentName: agent.name,
-      adapterType: agent.adapterType,
+      adapterType: run.adapterType ?? agent.adapterType,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     });
   });

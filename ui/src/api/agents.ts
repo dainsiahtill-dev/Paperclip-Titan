@@ -28,6 +28,8 @@ import type {
   AgentConfigRevision,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
+  AgentQuotaFallbackStatus,
+  QuotaFallbackBackup,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -196,6 +198,12 @@ export const agentsApi = {
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
   runtimeState: (id: string, companyId?: string) =>
     api.get<AgentRuntimeState>(agentPath(id, companyId, "/runtime-state")),
+  quotaFallbackStatus: (id: string, companyId?: string) =>
+    api.get<AgentQuotaFallbackStatus>(agentPath(id, companyId, "/quota-fallback"), { cache: "no-store" }),
+  checkQuotaFallbackPrimary: (id: string, companyId?: string) =>
+    api.post<AgentQuotaFallbackStatus>(agentPath(id, companyId, "/quota-fallback/check-primary"), {}),
+  testQuotaFallbackBackup: (id: string, backup: QuotaFallbackBackup, companyId?: string) =>
+    api.post<AdapterEnvironmentTestResult>(agentPath(id, companyId, "/quota-fallback/test-backup"), { backup }),
   taskSessions: (id: string, companyId?: string) =>
     api.get<AgentTaskSession[]>(agentPath(id, companyId, "/task-sessions")),
   resetSession: (id: string, taskKey?: string | null, companyId?: string) =>

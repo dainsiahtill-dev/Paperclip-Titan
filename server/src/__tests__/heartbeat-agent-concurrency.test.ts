@@ -121,6 +121,20 @@ describePostgres("shared Agent run capacity", () => {
     return await heartbeat.getRun(runId);
   }
 
+  it("counts a primary recovery probe against the provider concurrency limit", async () => {
+    await instanceSettingsService(database).updateGeneral({ agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 2 }] } });
+    const { companyId, holderId, candidateId } = await seed("minimax", "minimax");
+    await database.update(agents).set({ metadata: { quotaFallbackState: { version: 1, fingerprint: "lease", scopes: {
+      board: { probeToken: randomUUID(), probeGroup: "minimax", probeUntil: new Date(Date.now() + 60_000).toISOString() },
+    } } } }).where(eq(agents.id, holderId));
+    const runId = randomUUID();
+    await database.insert(heartbeatRuns).values({ id: runId, companyId, agentId: candidateId, invocationSource: "on_demand", status: "queued", contextSnapshot: {} });
+    const [candidate] = await database.select().from(agents).where(eq(agents.id, candidateId));
+    const result = await database.transaction(tx => admitQueuedRunCapacity(tx as unknown as Db, candidate!, runId, 1));
+    expect(result).toEqual({ allowed: false, reason: 'Waiting for concurrency group "minimax" (2/2)' });
+    expect(dispatched).toEqual([]);
+  });
+
   async function waitForCapacityRelease(runId: string) {
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const row = await heartbeat.getRun(runId);

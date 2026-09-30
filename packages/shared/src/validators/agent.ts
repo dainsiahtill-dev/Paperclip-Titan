@@ -11,6 +11,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { agentQuotaFallbackConfigSchema } from "../quota-fallback.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -62,6 +63,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
+  quotaFallback: agentQuotaFallbackConfigSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

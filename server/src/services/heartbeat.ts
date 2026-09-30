@@ -8,6 +8,10 @@ import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAs
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { admitQueuedRunCapacity } from "./run-capacity.js";
+import { agentQuotaFallbackService } from "./agent-quota-fallback.js";
+import { buildQuotaBackupConfig, quotaBackupSharedOverrides, quotaFallbackPolicy, readQuotaFallbackPin, selectQuotaFallbackAgent, stripQuotaAuthEnvironment } from "./agent-quota-fallback-policy.js";
+import { quotaFallbackBackupSchema } from "@paperclipai/shared";
+import { probeQuotaModel, quotaProbeAvailable } from "./quota-model-probe.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
@@ -3459,6 +3463,7 @@ const heartbeatRunLogAccessColumns = {
 
 const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
+  adapterType: sql<string | null>`${heartbeatRuns.runnerProfileJson} #>> '{adapterDispatch,adapterType}'`,
   runtimeMode: heartbeatRuns.runtimeMode,
   status: heartbeatRuns.status,
   executionStage: heartbeatRuns.executionStage,
@@ -9428,6 +9433,32 @@ export function heartbeatService(
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const quotaFallbacks = agentQuotaFallbackService(db, {
+    canCheck: async (agent) => {
+      if (getTaskDrainStatus().draining) return false;
+      if ((await getSchedulingSuppression()).suppressed) return false;
+      if (!(await getAgentInvokability(agent)).invokable) return false;
+      return !(await budgets.getInvocationBlock(agent.companyId, agent.id));
+    },
+    probePrimary: async (agent, responsibleUserId, scope) => {
+      const result = await probeQuotaModel(db, agent, responsibleUserId, { sourceRunId: scope.primaryQuotaRunId });
+      if (quotaProbeAvailable(result)) return "available";
+      return result.checks.some(check => check.code.includes("auth_required") || check.code === "quota_probe_environment_unsupported") ? "error" : "unavailable";
+    },
+    onRecovered: async (agent, responsibleUserId, scope, now) => {
+      await db.update(heartbeatRuns).set({ scheduledRetryAt: now, updatedAt: now }).where(and(
+        eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.companyId, agent.companyId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        responsibleUserId === null ? isNull(heartbeatRuns.responsibleUserId) : eq(heartbeatRuns.responsibleUserId, responsibleUserId),
+        sql`${heartbeatRuns.retryOfRunId} in (select id from heartbeat_runs where agent_id = ${agent.id} and (error_code = 'provider_quota' or result_json ->> 'errorFamily' = 'provider_quota'))`,
+      ));
+      const sourceId = scope.backupQuotaRunId ?? scope.primaryQuotaRunId;
+      const source = sourceId ? await getRun(sourceId) : null;
+      if (source?.status === "failed" && source.companyId === agent.companyId && source.agentId === agent.id && readHeartbeatRunErrorFamily(source) === "provider_quota") {
+        await scheduleBoundedRetryForRun(source, agent, { now, delayMs: 500, maxAttempts: executionFailureRetryCount(source) + 1 });
+      }
+    },
+  });
   const recovery = recoveryService(db, {
     enqueueWakeup,
     liveRunExecutions,
@@ -15131,7 +15162,7 @@ export function heartbeatService(
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(
+    let maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
@@ -15143,15 +15174,23 @@ export function heartbeatService(
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
         ? (run.scheduledRetryAttempt ?? 0)
         : executionFailureRetryCount(run)) + 1;
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const transientRecovery = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON ? readTransientRecoveryContractFromRun(run) : null;
+    const quotaResponsibleUserId = transientRecovery?.errorFamily === "provider_quota"
+      ? await resolveResponsibleUserIdForRunContext(run, contextSnapshot) : null;
+    const quotaHandoff = transientRecovery?.errorFamily === "provider_quota" &&
+      !legacyExecutionNeedsReconciliation(run) && (await getAgentInvokability(agent)).invokable
+      ? await quotaFallbacks.registerQuotaFailure(run, quotaResponsibleUserId, now) : null;
+    if (quotaHandoff) maxAttempts = Math.max(maxAttempts, nextAttempt);
     const computedBaseSchedule =
-      opts?.delayMs != null
+      quotaHandoff || opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
-              baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-              delayMs: Math.max(0, Math.floor(opts.delayMs)),
+              baseDelayMs: quotaHandoff ? 500 : Math.max(0, Math.floor(opts!.delayMs!)),
+              delayMs: quotaHandoff ? 500 : Math.max(0, Math.floor(opts!.delayMs!)),
               dueAt: new Date(
-                now.getTime() + Math.max(0, Math.floor(opts.delayMs)),
+                now.getTime() + (quotaHandoff ? 500 : Math.max(0, Math.floor(opts!.delayMs!))),
               ),
               maxAttempts,
             }
@@ -15166,10 +15205,6 @@ export function heartbeatService(
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" &&
       transientRecovery?.errorFamily === "transient_upstream"
@@ -15177,11 +15212,10 @@ export function heartbeatService(
         : null;
     // Subscription quotas without a provider reset time must not enter the
     // short transient retry ladder. Use the same fallback wait as recovery.
-    const transientRetryNotBefore = transientRecovery?.retryNotBefore ??
+    const transientRetryNotBefore = quotaHandoff ? null : transientRecovery?.retryNotBefore ??
       (transientRecovery?.errorFamily === "provider_quota"
         ? new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS)
         : null);
-    const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
     if (!baseSchedule) {
@@ -15379,9 +15413,17 @@ export function heartbeatService(
             }
           : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(quotaHandoff ? { forceFreshSession: true, quotaFallbackHandoff: quotaHandoff } : {}),
       },
       "normal_model",
     );
+    if (quotaHandoff) {
+      delete retryContextSnapshot.resumeSessionParams;
+      delete retryContextSnapshot.resumeSessionDisplayId;
+      delete retryContextSnapshot.codexTransientFallbackMode;
+      delete retryContextSnapshot.providerQuotaRetryNotBefore;
+      delete retryContextSnapshot.transientRetryNotBefore;
+    }
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -17262,7 +17304,7 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
-    const agent = await getAgent(run.agentId);
+    let agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
         run.id,
@@ -17409,6 +17451,9 @@ export function heartbeatService(
         responsibleUserId: null,
       },
     });
+    const quotaSelection = selectQuotaFallbackAgent(agent, responsibleUserId);
+    agent = quotaSelection.agent;
+    const claimedAdapterMetadata = { adapterDispatch: { adapterType: agent.adapterType }, ...(quotaSelection.pin ? { quotaFallback: quotaSelection.pin } : {}) };
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
     if (
       issueId &&
@@ -17580,7 +17625,7 @@ export function heartbeatService(
                     capacityGroup: capacity.group ?? "",
                     capacityReleasedAt: null,
                     executionStage: null,
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`((case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) - 'quotaFallback') || ${JSON.stringify(claimedAdapterMetadata)}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17683,7 +17728,7 @@ export function heartbeatService(
                   capacityGroup: capacity.group ?? "",
                   capacityReleasedAt: null,
                   executionStage: null,
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`((case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) - 'quotaFallback') || ${JSON.stringify(claimedAdapterMetadata)}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -17770,7 +17815,7 @@ export function heartbeatService(
                 capacityGroup: capacity.group ?? "",
                 capacityReleasedAt: null,
                 executionStage: null,
-                runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                runnerProfileJson: sql`((case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) - 'quotaFallback') || ${JSON.stringify(claimedAdapterMetadata)}::jsonb`,
                 ...legacyControllerClaim(run.runtimeMode),
                 responsibleUserId,
                 startedAt: run.startedAt ?? claimedAt,
@@ -20098,8 +20143,8 @@ export function heartbeatService(
     let providerTraceFinalized = false;
 
     try {
-      const agent = await getAgent(run.agentId);
-      if (!agent) {
+      const primaryAgent = await getAgent(run.agentId);
+      if (!primaryAgent) {
         await setRunStatus(runId, "failed", {
           error: "Agent not found",
           errorCode: "agent_not_found",
@@ -20113,6 +20158,10 @@ export function heartbeatService(
         if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
         return;
       }
+      const quotaFallbackPin = readQuotaFallbackPin(parseObject(run.runnerProfileJson).quotaFallback);
+      const agent = quotaFallbackPin
+        ? selectQuotaFallbackAgent(primaryAgent, run.responsibleUserId, quotaFallbackPin).agent
+        : primaryAgent;
 
       // The claimed adapter identity is immutable recovery evidence. Do not
       // execute a newly selected adapter under a previous adapter's claim.
@@ -21121,6 +21170,12 @@ export function heartbeatService(
           );
         }
       }
+      const quotaHandoff = parseObject(context.quotaFallbackHandoff);
+      if (quotaFallbackPin && readNonEmptyString(quotaHandoff.sourceRunId)) {
+        const note = `Provider continuation: the previous run ${quotaHandoff.sourceRunId} stopped after a quota failure. This turn uses ${agent.adapterType}/${quotaFallbackPin.model ?? "configured model"}. Continue the same issue from its saved summary, existing files and Git changes; preserve completed work and avoid repeating completed external actions.`;
+        context.paperclipTaskMarkdown = `${typeof context.paperclipTaskMarkdown === "string" ? context.paperclipTaskMarkdown : ""}\n\n${note}`;
+        if (typeof context.paperclipTaskMarkdownCompact === "string") context.paperclipTaskMarkdownCompact += `\n\n${note}`;
+      }
       const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,
         projectPolicy: projectExecutionWorkspacePolicy,
@@ -21131,7 +21186,7 @@ export function heartbeatService(
       });
       const mergedConfig = {
         ...workspaceManagedConfig,
-        ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+        ...(quotaFallbackPin?.usingBackup ? quotaBackupSharedOverrides(issueAssigneeOverrides?.adapterConfig) : issueAssigneeOverrides?.adapterConfig ?? {}),
       };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
@@ -21176,14 +21231,14 @@ export function heartbeatService(
           issueId,
           heartbeatRunId: run.id,
           environmentId: selectedEnvironmentForConfig?.id ?? null,
-          environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
+          environmentEnv: quotaFallbackPin?.usingBackup ? stripQuotaAuthEnvironment(selectedEnvironmentForConfig?.envVars) : aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
           environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
           projectId: projectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
-          executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
-          routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+          executionRunConfig: quotaFallbackPin?.usingBackup ? { ...executionRunConfig, env: stripQuotaAuthEnvironment(executionRunConfig.env) } : aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+          projectEnv: quotaFallbackPin?.usingBackup ? stripQuotaAuthEnvironment(projectContext?.env) : aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          routineEnv: quotaFallbackPin?.usingBackup ? stripQuotaAuthEnvironment(routineEnvContext.env) : aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
         });
@@ -23623,6 +23678,9 @@ export function heartbeatService(
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
                 then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson} ? 'quotaFallback'
+                then jsonb_build_object('quotaFallback', ${heartbeatRuns.runnerProfileJson}->'quotaFallback')
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
               updatedAt: new Date(),
             })
@@ -29437,6 +29495,19 @@ export function heartbeatService(
     reconcileTaskWatchdogs,
 
     buildRunOutputSilence,
+
+    getQuotaFallbackStatus: (agentId: string, responsibleUserId: string | null) => quotaFallbacks.getStatus(agentId, responsibleUserId),
+    checkQuotaFallbackPrimary: (agentId: string, responsibleUserId: string | null) => quotaFallbacks.checkPrimary(agentId, responsibleUserId, { force: true }),
+    tickQuotaFallbackChecks: async (now = new Date()) => (await getSchedulingSuppression()).suppressed ? { checked: 0 } : quotaFallbacks.tick(now),
+    testQuotaFallbackBackup: async (agentId: string, responsibleUserId: string | null, input: unknown) => {
+      const primary = await getAgent(agentId);
+      if (!primary) throw new Error("Agent not found");
+      const backup = quotaFallbackBackupSchema.parse(input);
+      const group = backup.concurrencyGroup ?? (backup.adapterType === "claude_local" && /^minimax/i.test(backup.model) ? "minimax" : "");
+      const effective = { ...primary, adapterType: backup.adapterType, adapterConfig: buildQuotaBackupConfig(primary, backup), runtimeConfig: { ...primary.runtimeConfig, aiConnection: backup.aiConnection, heartbeat: { ...parseObject(primary.runtimeConfig.heartbeat), concurrencyGroup: group } } };
+      const probe = await quotaFallbacks.withProbeSlot(agentId, responsibleUserId, effective, () => probeQuotaModel(db, effective, responsibleUserId, { isolatedBackupAuth: true }));
+      return probe.busy ? { adapterType: backup.adapterType, status: "warn" as const, testedAt: new Date().toISOString(), checks: [{ code: "quota_probe_capacity_busy", level: "warn" as const, message: "A provider slot is unavailable, or this Agent is paused/budget-blocked. Try the connection test later." }] } : probe.result;
+    },
 
     tickTimers: async (now = new Date()) => {
       if ((await getSchedulingSuppression()).suppressed) {

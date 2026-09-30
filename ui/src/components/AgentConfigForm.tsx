@@ -1,5 +1,5 @@
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, agentQuotaFallbackConfigSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
@@ -93,6 +93,7 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
+import { AgentQuotaFallbackSettings } from "./AgentQuotaFallbackSettings";
 
 /* ---- Create mode values ---- */
 
@@ -485,7 +486,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
   const backgroundSaveInFlightRef = useRef(false);
 
-  // Clear overlay when agent data refreshes (after save)
+  // Operational metadata polls must not clear configuration drafts.
   useEffect(() => {
     if (!isCreate) {
       if (
@@ -493,11 +494,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         props.agent !== agentRef.current &&
         !backgroundSaveInFlightRef.current
       ) {
+        const previous = agentRef.current;
+        const configKeys = ["id", "name", "role", "title", "icon", "reportsTo", "capabilities", "adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId", "budgetMonthlyCents", "permissions"] as const;
+        const configChanged = configKeys.some((key) => !overlayValuesEqual(previous[key], props.agent[key]));
         const persisted = backgroundSaveOverlayRef.current;
-        backgroundSaveOverlayRef.current = null;
-        setOverlay((prev) =>
-          persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
-        );
+        if (persisted || configChanged) {
+          backgroundSaveOverlayRef.current = null;
+          setOverlay((prev) => persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay });
+        }
       }
       agentRef.current = props.agent;
     }
@@ -519,6 +523,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setOverlay((prev) => ({
       ...prev,
       [group]: { ...prev[group], [field]: value },
+    }));
+  }
+
+  function markRuntimeConfig(field: string, value: unknown) {
+    setOverlay((prev) => ({
+      ...prev,
+      runtime: { ...prev.runtime, runtimeConfig: { ...asObject(prev.runtime.runtimeConfig), [field]: value } },
     }));
   }
 
@@ -569,6 +580,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         }
       : overlay;
     if (!isOverlayDirty(nextOverlay)) return;
+    const quotaFallback = asObject(nextOverlay.runtime.runtimeConfig).quotaFallback;
+    if (quotaFallback !== undefined && !agentQuotaFallbackConfigSchema.safeParse(quotaFallback).success) return;
     await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
   }, [isCreate, isDirty, overlay, props]);
 
@@ -1689,7 +1702,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
             value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
-            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
+            onChange={binding => markRuntimeConfig("aiConnection", binding)} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1982,6 +1995,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Run Policy ---- */}
+      {(adapterType === "claude_local" || adapterType === "codex_local") && (
+        <div data-config-section="quota-fallback" className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="mb-3 text-sm font-medium">Quota fallback</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Quota fallback</div>}
+          <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+            <AgentQuotaFallbackSettings
+              companyId={selectedCompanyId ?? undefined}
+              agent={isCreate ? undefined : props.agent}
+              agentName={isCreate ? "New Agent" : props.agent.name}
+              value={isCreate ? val!.quotaFallback : asObject(overlay.runtime.runtimeConfig).quotaFallback ?? runtimeConfig.quotaFallback}
+              onChange={(policy) => isCreate ? set!({ quotaFallback: policy }) : markRuntimeConfig("quotaFallback", policy)}
+              concurrencyGroups={configuredConcurrencyGroups.map((group) => group.name)}
+              environmentId={effectiveLoginEnvironment?.driver === "local" ? undefined : effectiveLoginEnvironment?.id ?? (currentDefaultEnvironmentId || undefined)}
+            />
+          </div>
+        </div>
+      )}
       {isCreate && showCreateRunPolicySection ? (
         <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards

@@ -189,6 +189,8 @@ export interface HeartbeatRun {
   exitCode: number | null;
   signal: string | null;
   usageJson: Record<string, unknown> | null;
+  /** Server-owned admission evidence, including the adapter used by this run. */
+  runnerProfileJson?: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   sessionIdBefore: string | null;
   sessionIdAfter: string | null;

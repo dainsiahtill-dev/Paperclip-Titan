@@ -1665,6 +1665,9 @@ async function startServerWithDatabaseTeardown(
         }
 
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+          trackHeartbeatSchedulerWork(heartbeat.tickQuotaFallbackChecks(new Date()).catch((err: unknown) => {
+            logger.error({ err }, "Agent primary quota recovery check failed");
+          }));
           trackHeartbeatSchedulerWork(heartbeat
             .tickTimers(new Date())
             .then((result) => {

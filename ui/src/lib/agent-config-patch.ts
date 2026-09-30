@@ -15,7 +15,7 @@ export function omitUndefinedEntries(value: Record<string, unknown>) {
   );
 }
 
-export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay) {
+export function buildAgentUpdatePatch(agent: Pick<Agent, "adapterConfig" | "runtimeConfig">, overlay: AgentConfigOverlay) {
   const patch: Record<string, unknown> = {};
 
   if (Object.keys(overlay.identity).length > 0) {
@@ -50,10 +50,16 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
   if (
     Object.keys(overlay.heartbeat).length > 0
     || Object.keys(overlay.debug).length > 0
+    || Object.prototype.hasOwnProperty.call(overlay.runtime, "runtimeConfig")
   ) {
-    const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
-    const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
-      ?? { ...existingRc };
+    const runtimeDraft = overlay.runtime.runtimeConfig;
+    const existingRc: Record<string, unknown> = {
+      ...agent.runtimeConfig,
+      ...(runtimeDraft && typeof runtimeDraft === "object" && !Array.isArray(runtimeDraft)
+        ? runtimeDraft as Record<string, unknown>
+        : {}),
+    };
+    const nextRuntimeConfig = { ...existingRc };
 
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
@@ -74,7 +80,8 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
   }
 
   if (Object.keys(overlay.runtime).length > 0) {
-    Object.assign(patch, overlay.runtime);
+    const { runtimeConfig: _runtimeConfig, ...runtimeFields } = overlay.runtime;
+    Object.assign(patch, runtimeFields);
   }
 
   return patch;
