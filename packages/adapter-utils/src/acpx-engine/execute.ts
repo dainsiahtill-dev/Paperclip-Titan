@@ -118,6 +118,7 @@ import type {
   TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
+import { createLiveAcpSteering, type SteerableAcpTurn } from "./live-steering.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import {
   runAttempt,
@@ -4587,6 +4588,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           prepared,
           onLog: ctx.onLog,
         });
+        const agentMode = prepared.acpxAgent === "claude" && ctx.config.dangerouslySkipPermissions === true
+          ? "bypassPermissions"
+          : prepared.acpxAgent === "codex" && (
+              ctx.config.dangerouslyBypassApprovalsAndSandbox === true ||
+              ctx.config.dangerouslyBypassSandbox === true
+            ) ? "agent-full-access" : null;
+        if (agentMode) {
+          if (!runtime.setMode) throw new Error("ACP runtime cannot apply the configured permission mode");
+          await runtime.setMode({ handle: sessionHandle, mode: agentMode });
+        }
         await emitPhase("configure_session", configureSessionStart, "ok");
       } catch (err) {
         // Record a direct close that drops the matching warm entry for the
@@ -4663,6 +4674,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
       // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
+      let liveSteering: ReturnType<typeof createLiveAcpSteering> | null = null;
+      let liveSteeringRegistered = false;
+      let steeringWasReady = false;
       let preTurnStatus: AcpRuntimeStatus | null = null;
       // Phase-timing markers for the prepare_turn and turn phases. The prepare
       // phase covers the prompt build and the pre-turn usage snapshot; the turn
@@ -4749,6 +4763,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal,
         });
         activeTurn = turn;
+        liveSteering = createLiveAcpSteering(turn as SteerableAcpTurn);
         // A latched sandbox duplex-channel loss otherwise has no way to reach
         // this turn: the bridge only exposes a pull read, and the engine
         // pulls it at the terminal-finalization boundary, which runs only
@@ -4819,6 +4834,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const toolTitles = new Map<string, string>();
         const drainEvents = (async (): Promise<void> => {
           for await (const event of turn.events) {
+            if (liveSteering && ctx.onSteeringReady) {
+              liveSteering.observe(event);
+              const state = await liveSteering.control.state();
+              const ready = state.supported && state.active && !state.busy;
+              if (state.supported && (!liveSteeringRegistered || ready && !steeringWasReady)) {
+                await ctx.onSteeringReady(liveSteering.control);
+                liveSteeringRegistered = true;
+              }
+              steeringWasReady = ready;
+            }
             // ACPX currently flattens client-side filesystem/terminal receipts
             // into status text. They cannot establish complete action outcomes.
             if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
@@ -5145,6 +5170,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         });
       } finally {
         // End the agent turn span exactly once, on every return and on a throw.
+        await ctx.onSteeringReady?.(null);
         // `runFailed` is `false` only on a completed, non-timed-out turn, so the
         // span status is correct for success, error, and timeout.
         turnSpan.end(runFailed);

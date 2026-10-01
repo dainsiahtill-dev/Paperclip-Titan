@@ -182,6 +182,7 @@ import {
 } from "../services/runner-goals.js";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { deliverLegacySteering, getLiveAdapterSteeringState } from '../services/live-adapter-steering.js';
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
 import {
   createQueuedCommentQueue,
@@ -7043,7 +7044,9 @@ export function issueRoutes(
       queuedCommentCount: comments.length,
     });
     const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-      input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
+      input.issue.conversationAgentId ? "unsupported" :
+      steering.protocol === 'legacy' && queueState?.state === 'deferred' && input.activeRun && comments.length > 0
+        ? await getLiveAdapterSteeringState(input.activeRun.id) : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
@@ -15527,6 +15530,17 @@ export function issueRoutes(
       if (!issue) return;
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       const actor = getActorInfo(req);
+      const [legacyTarget] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, req.body.targetRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+      if (legacyTarget?.runtimeMode === 'legacy') {
+        const access = await decideIssueAccess(req, issue, 'issue:comment');
+        if (!access.allowed) throw forbidden(access.explanation, authorizationDeniedDetails(access));
+        const delivered = await deliverLegacySteering(db, { runId: req.body.targetRunId, issueId: issue.id, queueId: req.body.queueId, commentId, revision: req.body.revision });
+        if (!delivered) throw conflict('The provider is waiting for a safe tool boundary or cannot accept steering now', { code: 'steering_temporarily_unavailable' });
+        await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId, commentId, protocol: 'acp' } });
+        const queue = await buildQueuedCommentQueue({ executor: db, issue, activeRun: await resolveActiveIssueRun(issue), actor });
+        res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+        return;
+      }
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,

@@ -7,10 +7,12 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { adoptDeferredCommentsForLegacyRetry } from "./retry-comment-queue.js";
+import { scheduleLegacySteering, scheduleLegacySteeringForAgent } from './live-adapter-steering.js';
 import { connectionIntentService } from "./connection-intents.js";
 import { admitQueuedRunCapacity } from "./run-capacity.js";
 import { agentQuotaFallbackService } from "./agent-quota-fallback.js";
 import { buildQuotaBackupConfig, quotaBackupSharedOverrides, quotaFallbackPolicy, readQuotaFallbackPin, selectQuotaFallbackAgent, stripQuotaAuthEnvironment } from "./agent-quota-fallback-policy.js";
+import { preserveQueuedSteeringAcknowledgements } from "./queued-steering-result.js";
 import { quotaFallbackBackupSchema } from "@paperclipai/shared";
 import { probeQuotaModel, quotaProbeAvailable } from "./quota-model-probe.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -12714,6 +12716,9 @@ export function heartbeatService(
             .set({
               status,
               ...patch,
+              ...(patch?.resultJson !== undefined
+                ? { resultJson: preserveQueuedSteeringAcknowledgements(patch.resultJson) }
+                : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -12799,6 +12804,9 @@ export function heartbeatService(
             .set({
               status,
               ...patch,
+              ...(patch?.resultJson !== undefined
+                ? { resultJson: preserveQueuedSteeringAcknowledgements(patch.resultJson) }
+                : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -24351,6 +24359,11 @@ export function heartbeatService(
                         executionControl.controller.abort(new Error("Run stopped before provider startup"));
                       }
                     },
+                    onSteeringReady: async (control) => {
+                      if (adapterExecutionControls.get(run.id) !== executionControl) return;
+                      executionControl.steering = control;
+                      if (control && !executionControl.controller.signal.aborted) scheduleLegacySteering(db, run.id);
+                    },
                     onSpawn: async (meta) => {
                       markDispatchStarted();
                       await persistRunProcessMetadata(run.id, {
@@ -28025,6 +28038,7 @@ export function heartbeatService(
         return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
       }
       if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+        if (outcome.kind === 'deferred') await scheduleLegacySteeringForAgent(db, agent.id);
         return null;
       }
       if (outcome.kind === "coalesced") {

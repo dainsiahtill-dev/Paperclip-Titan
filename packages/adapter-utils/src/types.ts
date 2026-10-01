@@ -194,11 +194,20 @@ export interface AdapterRuntimeEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface AdapterLiveSteeringControl {
+  state: () => Promise<{ supported: boolean; active: boolean; busy: boolean }>;
+  send: (input: { text: string; correlationId: string }) => Promise<
+    { outcome: 'injected' } | { outcome: 'deferred'; reason: string }
+  >;
+}
+
 export interface AdapterExecutionContext {
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
   onCancellationReady?: () => Promise<void>;
+  /** Registered only for the owning active turn; null removes the control. */
+  onSteeringReady?: (control: AdapterLiveSteeringControl | null) => Promise<void>;
   /** Host-owned stop of this run's sandbox during setup. Resolves only after
    * provider termination is verified; never accepts an agent-selected lease. */
   stopRemoteStartup?: () => Promise<void>;

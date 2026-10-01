@@ -293,6 +293,16 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
+  it('uses same-turn steering for a capable legacy provider', async () => {
+    const onSteer = vi.fn().mockResolvedValue(undefined);
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({ queue: { ...queue, protocol: 'legacy', steeringDisposition: 'available' }, onSteer, onInterrupt });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.click(); });
+    expect(onSteer).toHaveBeenCalledWith('comment-1', 'rev-1');
+    expect(onInterrupt).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+  });
+
   it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({

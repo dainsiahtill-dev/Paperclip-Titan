@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
@@ -21,6 +21,9 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
+import { deliverLegacySteering, scheduleLegacySteering } from '../services/live-adapter-steering.js';
+import { preserveQueuedSteeringAcknowledgements } from '../services/queued-steering-result.js';
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -54,6 +57,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   }, 30_000);
 
   afterEach(async () => {
+    adapterExecutionControls.clear();
     // Each case owns the entire disposable database. Clear the full company
     // graph, including attribution rows and constraints added by migrations.
     await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
@@ -174,6 +178,85 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     })));
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
+
+  it('steers a capable legacy provider in the same run and preserves queued author history', async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: 'claude_local' }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: 'legacy' }).where(eq(heartbeatRuns.id, seeded.runId));
+    const sent: Array<{ text: string; correlationId: string }> = [];
+    const control = createAdapterExecutionControl();
+    control.steering = { state: async () => ({ supported: true, active: true, busy: false }), send: async (input) => { sent.push(input); return { outcome: 'injected' }; } };
+    adapterExecutionControls.set(seeded.runId, control);
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.steeringDisposition).toBe('available');
+    const input = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision };
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ correlationId: seeded.commentIds[0] });
+    expect(sent[0]!.text).toContain('First queued message');
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe('running');
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0])))[0]).toMatchObject({ authorUserId: 'queue-owner', body: 'First queued message', deletedAt: null });
+    const remaining = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(remaining.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+  });
+
+  it('automatically delivers Agent handoffs after an observed tool boundary without a user click', async () => {
+    const seeded = await seedQueue();
+    const senderId = randomUUID();
+    await db.insert(agents).values({ id: senderId, companyId: seeded.companyId, name: 'Manager', role: 'ceo', adapterType: 'claude_local', status: 'idle' });
+    await db.update(agents).set({ adapterType: 'claude_local' }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: 'legacy' }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issueComments).set({ authorType: 'agent', authorAgentId: senderId, authorUserId: null }).where(inArray(issueComments.id, seeded.commentIds));
+    let busy = true;
+    const sent: string[] = [];
+    const owner = createAdapterExecutionControl();
+    owner.steering = { state: async () => ({ supported: true, active: true, busy }), send: async ({ text }) => { sent.push(text); return { outcome: 'injected' }; } };
+    adapterExecutionControls.set(seeded.runId, owner);
+    scheduleLegacySteering(db, seeded.runId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(sent).toEqual([]);
+    busy = false;
+    scheduleLegacySteering(db, seeded.runId);
+    await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 5000 });
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0]?.status).toBe('coalesced'));
+    expect(sent[0]).toContain(`original author: Agent ${senderId}`);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0])))[0]).toMatchObject({ authorType: 'agent', authorAgentId: senderId, deletedAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe('running');
+  });
+
+  it('retains live handoff acknowledgements when the adapter writes its final result', async () => {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ resultJson: { queuedSteeringAcknowledgements: { [seeded.commentIds[0]!]: { status: 'acknowledged' } } } }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(heartbeatRuns).set({ status: 'succeeded', resultJson: preserveQueuedSteeringAcknowledgements({ summary: 'finished original task' }) }).where(eq(heartbeatRuns.id, seeded.runId));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.resultJson).toEqual({ summary: 'finished original task', queuedSteeringAcknowledgements: { [seeded.commentIds[0]!]: { status: 'acknowledged' } } });
+  });
+
+  it.each(['busy', 'idle', 'unsupported', 'stopped', 'paused', 'different issue', 'stale revision', 'uncertain'] as const)('retains an undelivered legacy queue: %s', async (scenario) => {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ runtimeMode: 'legacy' }).where(eq(heartbeatRuns.id, seeded.runId));
+    const owner = createAdapterExecutionControl();
+    const send = vi.fn(async () => {
+      if (scenario === 'uncertain') throw new Error('provider transport closed');
+      return { outcome: 'injected' as const };
+    });
+    owner.steering = { state: async () => ({ supported: scenario !== 'unsupported', active: scenario !== 'idle', busy: scenario === 'busy' }), send };
+    adapterExecutionControls.set(seeded.runId, owner);
+    if (scenario === 'stopped') owner.controller.abort();
+    if (scenario === 'paused') await db.update(agents).set({ status: 'paused' }).where(eq(agents.id, seeded.agentId));
+    const input = { runId: seeded.runId, issueId: scenario === 'different issue' ? randomUUID() : seeded.issueId, ...(scenario === 'stale revision' ? { revision: 'stale' } : {}) };
+    if (scenario === 'stale revision') await expect(deliverLegacySteering(db, input)).rejects.toThrow('The queued message changed');
+    else expect(await deliverLegacySteering(db, input)).toBe(0);
+    if (scenario === 'uncertain') {
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(await deliverLegacySteering(db, input)).toBe(0);
+      expect(send).toHaveBeenCalledTimes(1);
+    } else expect(send).not.toHaveBeenCalled();
+    const wake = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0]!;
+    expect(wake.status).toBe('deferred_issue_execution');
+    expect((wake.payload as { _paperclipWakeContext: { wakeCommentIds: string[] } })._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
+  });
 
   it.each(["stale revision", "native run", "different issue"] as const)(
     "rejects queued interruption for a %s without stopping the run",

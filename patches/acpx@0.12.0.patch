@@ -1,5 +1,5 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e9f5a3dac 100644
+index 243c9d13..94e5ee39 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -96,7 +96,27 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -6070,6 +6090,27 @@ async function withConnectedSession(options) {
+@@ -4389,6 +4409,19 @@ var AcpClient = class {
+ 		await this.cancel(active.sessionId);
+ 		return true;
+ 	}
++	steeringState() {
++		return { supported: this.initializeResult?._meta?.steering?.supported === true, active: this.hasActivePrompt() };
++	}
++	async steerPrompt(sessionId, text) {
++		const state = this.steeringState();
++		if (!state.supported) throw new Error("ACP same-turn steering is unsupported");
++		if (!state.active) return { outcome: "promptRequired", reason: "noRunningTurn" };
++		const result = await this.runConnectionRequest(() => this.getConnection().extMethod("_session/steering", {
++			sessionId, prompt: [{ type: "text", text }], _meta: { steering: { idleBehavior: "promptRequired" } }
++		}));
++		if (result?.outcome !== "injected" && result?.outcome !== "promptRequired") throw new Error("ACP returned an unexpected steering outcome");
++		return result;
++	}
+ 	async cancelActivePrompt(waitMs = 2500) {
+ 		const active = this.activePrompt;
+ 		if (!active) return;
+@@ -6070,6 +6103,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -124,7 +144,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6120,9 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6133,9 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -134,23 +154,8 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..643315c1e9b529768695c863eae7a29e
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
-diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..a04948e2b1ab8e169778e0d839ab5bf680573266 100644
---- a/dist/runtime.d.ts
-+++ b/dist/runtime.d.ts
-@@ -266,6 +266,10 @@ type AcpRuntimeOptions = {
-   timeoutMs?: number;
-   probeAgent?: string;
-   verbose?: boolean;
-+  onAgentStderr?: (chunk: string) => void;
-+  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
-+  spawnCwd?: string;
-+  inheritProcessEnv?: boolean;
-   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
-     signal: AbortSignal;
-   }) => Promise<AcpPermissionDecision | undefined>;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c184c49bd 100644
+index 6c9cc999..bbff1881 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
@@ -163,18 +168,92 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..7ec28ecf778623c6e63a2149a599172c
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
-diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f884bae49 100644
---- a/dist/session-options-jkYbBxGE.d.ts
-+++ b/dist/session-options-jkYbBxGE.d.ts
-@@ -84,6 +84,10 @@ type AcpClientOptions = {
-   terminal?: boolean;
-   suppressSdkConsoleErrors?: boolean;
+@@ -906,6 +907,7 @@ var AcpRuntimeManager = class {
+ 		const sessionReady = createDeferred();
+ 		sessionReady.promise.catch(() => {});
+ 		let resultSettled = false;
++		const steeringRequests = new Map();
+ 		const state = {
+ 			pendingCancel: false,
+ 			turnActive: true,
+@@ -962,6 +964,25 @@ var AcpRuntimeManager = class {
+ 			requestId: input.requestId,
+ 			events: queue.iterate(),
+ 			result: result.promise,
++			steeringState: async () => {
++				await sessionReady.promise;
++				return state.activeController?.steeringState() ?? { supported: false, active: false };
++			},
++			steer: async (message) => {
++				if (!message?.correlationId || !message?.text?.trim()) throw new Error("Steering requires a correlation ID and text");
++				const prior = steeringRequests.get(message.correlationId);
++				if (prior) {
++					if (prior.text !== message.text) throw new Error("Steering correlation ID was reused with different text");
++					return prior.result;
++				}
++				await sessionReady.promise;
++				if (!state.turnActive || !state.activeController?.hasActivePrompt()) return { outcome: "promptRequired", reason: "noRunningTurn" };
++				const pending = state.activeController.steer(message.text);
++				steeringRequests.set(message.correlationId, { text: message.text, result: pending });
++				const response = await pending;
++				if (response.outcome !== "injected") steeringRequests.delete(message.correlationId);
++				return response;
++			},
+ 			cancel: async () => {
+ 				await requestCancel();
+ 			},
+@@ -1050,6 +1071,8 @@ var AcpRuntimeManager = class {
+ 	buildRuntimeTurnController(task, turn) {
+ 		return {
+ 			hasActivePrompt: () => turn.client.hasActivePrompt(),
++			steeringState: () => turn.client.steeringState(),
++			steer: async (text) => await turn.client.steerPrompt(turn.activeSessionId, text),
+ 			requestCancelActivePrompt: async () => await this.requestRuntimeTurnCancel(task, turn),
+ 			setSessionMode: async (modeId) => {
+ 				await this.waitForRuntimeControlSession(task, turn);
+@@ -1601,6 +1624,12 @@ var AcpxRuntime = class {
+ 			get result() {
+ 				return turnPromise.then((turn) => turn.result);
+ 			},
++			steeringState() {
++				return turnPromise.then((turn) => turn.steeringState());
++			},
++			steer(input) {
++				return turnPromise.then((turn) => turn.steer(input));
++			},
+ 			cancel(inputArgs) {
+ 				return turnPromise.then((turn) => turn.cancel(inputArgs));
+ 			},
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index ccdbe5b0..b76790dc 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -204,6 +204,8 @@ interface AcpRuntimeTurn {
+   readonly requestId: string;
+   readonly events: AsyncIterable<AcpRuntimeEvent>;
+   readonly result: Promise<AcpRuntimeTurnResult>;
++  steeringState?: () => Promise<{ supported: boolean; active: boolean }>;
++  steer?: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
+   cancel(input?: {
+     reason?: string;
+   }): Promise<void>;
+@@ -266,6 +268,10 @@ type AcpRuntimeOptions = {
+   timeoutMs?: number;
+   probeAgent?: string;
    verbose?: boolean;
 +  onAgentStderr?: (chunk: string) => void;
 +  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
 +  spawnCwd?: string;
 +  inheritProcessEnv?: boolean;
-   sessionOptions?: {
-     model?: string;
-     allowedTools?: string[];
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
+@@ -418,6 +424,8 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+       [Symbol.asyncIterator](): AsyncGenerator<AcpRuntimeEvent, void, any>;
+     };
+     readonly result: Promise<AcpRuntimeTurnResult>;
++    steeringState: () => Promise<{ supported: boolean; active: boolean }>;
++    steer: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
+     cancel(inputArgs?: {
+       reason?: string;
+     }): Promise<void>;

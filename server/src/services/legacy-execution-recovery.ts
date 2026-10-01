@@ -7,6 +7,7 @@ import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
+import { preserveQueuedSteeringAcknowledgements } from "./queued-steering-result.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -80,6 +81,9 @@ export async function terminalizeLegacyExecution(input: {
       .set({
         status,
         ...patch,
+        ...(patch?.resultJson !== undefined
+          ? { resultJson: preserveQueuedSteeringAcknowledgements(patch.resultJson) }
+          : {}),
         executionStatusDeliveryId: randomUUID(),
         updatedAt: new Date(),
       })

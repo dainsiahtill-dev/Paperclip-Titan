@@ -121,7 +121,7 @@ export function buildQuotaBackupConfig(primary: QuotaFallbackAgent, backup: Quot
     ...config,
     model: backup.model,
     ...(backup.thinkingEffort ? { thinkingEffort: backup.thinkingEffort, effort: backup.thinkingEffort } : {}),
-    engine: "cli",
+    engine: primary.adapterConfig.engine === "acp" ? "acp" : "cli",
     ...(backup.adapterType === "codex_local" ? { dangerouslyBypassSandbox: true, fastMode: backup.fastMode === true } : { dangerouslySkipPermissions: true, permissionMode: "approve-all" }),
   };
 }

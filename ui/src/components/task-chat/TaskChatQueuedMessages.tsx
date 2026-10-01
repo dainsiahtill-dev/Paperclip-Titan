@@ -142,7 +142,7 @@ function SortableQueuedMessage({
         {entry.comment.body}
       </span>
 
-      {queue.protocol === "legacy" ? (
+      {queue.protocol === "legacy" && queue.steeringDisposition !== "available" ? (
         <button
           type="button"
           onClick={onInterrupt}

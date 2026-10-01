@@ -1,3 +1,5 @@
+import type { AdapterLiveSteeringControl } from '@paperclipai/adapter-utils';
+
 /** Live adapter ownership shared by routes and scheduler service instances. */
 export function createAdapterExecutionControl() {
   const controller = new AbortController();
@@ -5,7 +7,7 @@ export function createAdapterExecutionControl() {
   const settled = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { controller, settled, finish };
+  return { controller, settled, finish, steering: null as AdapterLiveSteeringControl | null };
 }
 
 export const adapterExecutionControls = new Map<
