@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { admitQueuedRunCapacity } from "../services/run-capacity.ts";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.ts";
+import { recordLegacyLocalProcessStop } from "../services/legacy-process-capacity.ts";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -20,6 +23,7 @@ describePostgres("shared Agent run capacity", () => {
   const dispatched: string[] = [];
   const releases = new Map<string, () => void>();
   let blockAdapter = false;
+  let stopAwareAdapter = false;
   let secondHeartbeat: ReturnType<typeof heartbeatService> | null = null;
 
   beforeAll(async () => {
@@ -29,7 +33,15 @@ describePostgres("shared Agent run capacity", () => {
     registerServerAdapter({
       type: ADAPTER,
       execute: async (context) => {
+        if (stopAwareAdapter) await context.onCancellationReady?.();
         dispatched.push(context.runId);
+        if (stopAwareAdapter) {
+          await new Promise<void>(resolve => {
+            if (context.signal?.aborted) resolve();
+            else context.signal?.addEventListener("abort", () => resolve(), { once: true });
+            releases.set(context.runId, resolve);
+          });
+        }
         if (blockAdapter) {
           await new Promise<void>((resolve) => releases.set(context.runId, resolve));
         }
@@ -46,6 +58,7 @@ describePostgres("shared Agent run capacity", () => {
 
   afterEach(async () => {
     blockAdapter = false;
+    stopAwareAdapter = false;
     for (const release of releases.values()) release();
     releases.clear();
     await heartbeat.drainActiveRunExecutions();
@@ -374,6 +387,199 @@ describePostgres("shared Agent run capacity", () => {
     await heartbeat.resumeQueuedRuns();
     expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
     expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+  }, 30_000);
+
+  it.each(["succeeded", "failed", "cancelled", "interrupted"])("releases a former controller's stopped %s run and dispatches the queue once", async (status) => {
+    const { holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await database.update(heartbeatRuns).set({
+        controllerBootId: randomUUID(),
+        capacityGroup: "minimax",
+      }).where(eq(heartbeatRuns.id, holderRunId));
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(),
+      });
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+      // Simulate the next service boot after shutdown lost the executor's finally.
+      await database.update(heartbeatRuns).set({
+        status, finishedAt: new Date(),
+        controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+      }).where(eq(heartbeatRuns.id, holderRunId));
+      await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
+      await instanceSettingsService(database).updateGeneral({
+        agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+      });
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).not.toBeNull();
+      expect((await waitForTerminal(candidate!.id))?.status).toBe("succeeded");
+      await heartbeat.resumeQueuedRuns();
+      expect(dispatched.filter(id => id === candidate!.id)).toHaveLength(1);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  it("refuses local PID recovery for another host namespace", async () => {
+    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({
+      controllerBootId: randomUUID(), capacityGroup: "minimax",
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(),
+      });
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+      await database.update(heartbeatRunEvents).set({ payload: sql`jsonb_set(payload, '{localNamespace}', '"another-host"'::jsonb)` })
+        .where(eq(heartbeatRunEvents.runId, holderRunId));
+      await database.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, holderRunId));
+      await instanceSettingsService(database).updateGeneral({
+        agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+      });
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+      expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  it("invalidates a stop receipt when the same run records a later process", async () => {
+    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({
+      controllerBootId: legacyControllerBootId, capacityGroup: "minimax",
+      status: "interrupted", finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    expect(await recordLegacyLocalProcessStop(database, (await heartbeat.getRun(holderRunId))!)).toBe(true);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(),
+      });
+      await instanceSettingsService(database).updateGeneral({
+        agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+      });
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+      expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+    } finally {
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+    }
+  }, 30_000);
+
+  it("does not stamp local stop authority onto a remote environment's process IDs", async () => {
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
+    await database.insert(environmentLeases).values({
+      companyId, heartbeatRunId: holderRunId, provider: "daytona", status: "active",
+    });
+    await database.update(heartbeatRuns).set({
+      controllerBootId: randomUUID(), capacityGroup: "minimax",
+      controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+    }).where(eq(heartbeatRuns.id, holderRunId));
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(),
+      });
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+      await database.update(heartbeatRuns).set({ status: "interrupted", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, holderRunId));
+      await instanceSettingsService(database).updateGeneral({
+        agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+      });
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+      expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  it("stops an opted-in adapter on graceful shutdown and releases its reservation", async () => {
+    const { holderRunId, holderId } = await seed("minimax", "minimax");
+    await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, holderRunId));
+    await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
+    await instanceSettingsService(database).updateGeneral({
+      agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+    });
+    stopAwareAdapter = true;
+    const run = await heartbeat.invoke(holderId, "on_demand", {}, "manual");
+    await waitForDispatchCount(1);
+    await heartbeat.drainRunningRunsForShutdown("SIGTERM");
+    await waitForCapacityRelease(run!.id);
+    expect((await heartbeat.getRun(run!.id))?.status).toBe("interrupted");
+  }, 30_000);
+
+  it("does not issue local stop proof for a remote SSH PID without an environment lease", async () => {
+    const { holderRunId } = await seed("", "");
+    await database.update(heartbeatRuns).set({ controllerBootId: legacyControllerBootId })
+      .where(eq(heartbeatRuns.id, holderRunId));
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(), localProcess: false,
+      });
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+      expect(await recordLegacyLocalProcessStop(database, (await heartbeat.getRun(holderRunId))!)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  it("retains a same-host former controller's slot until its real process group exits", async () => {
+    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    try {
+      await database.update(heartbeatRuns).set({
+        controllerBootId: randomUUID(), capacityGroup: "minimax",
+        controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
+      }).where(eq(heartbeatRuns.id, holderRunId));
+      await persistHeartbeatRunProcessMetadata(database, holderRunId, {
+        pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString(),
+      });
+      await database.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, holderRunId));
+      await instanceSettingsService(database).updateGeneral({
+        agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
+      });
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
+      expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+      await heartbeat.resumeQueuedRuns();
+      expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).not.toBeNull();
+      expect((await waitForTerminal(candidate!.id))?.status).toBe("succeeded");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
   }, 30_000);
 
   it("keeps a native retryable failure reserved for same-run recovery", async () => {

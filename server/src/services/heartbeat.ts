@@ -10,6 +10,7 @@ import { adoptDeferredCommentsForLegacyRetry } from "./retry-comment-queue.js";
 import { scheduleLegacySteering, scheduleLegacySteeringForAgent } from './live-adapter-steering.js';
 import { connectionIntentService } from "./connection-intents.js";
 import { admitQueuedRunCapacity } from "./run-capacity.js";
+import { legacyProcessStopConfirmed, recordLegacyLocalProcessStop, recordLegacyProcessIdentity } from "./legacy-process-capacity.js";
 import { agentQuotaFallbackService } from "./agent-quota-fallback.js";
 import { buildQuotaBackupConfig, quotaBackupSharedOverrides, quotaFallbackPolicy, readQuotaFallbackPin, selectQuotaFallbackAgent, stripQuotaAuthEnvironment } from "./agent-quota-fallback-policy.js";
 import { preserveQueuedSteeringAcknowledgements } from "./queued-steering-result.js";
@@ -8802,7 +8803,7 @@ function isProcessAlive(pid: number | null | undefined) {
 export async function persistHeartbeatRunProcessMetadata(
   db: Db,
   runId: string,
-  meta: { pid: number; processGroupId: number | null; startedAt: string },
+  meta: { pid: number; processGroupId: number | null; startedAt: string; localProcess?: boolean },
 ) {
   const observedStartedAt = await readProcessStartedAt(meta.pid).catch(
     () => null,
@@ -8827,6 +8828,7 @@ export async function persistHeartbeatRunProcessMetadata(
       eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info",
       message: "Process identity recorded; prior stop evidence no longer applies.",
     });
+    if (run?.runtimeMode === "legacy") await recordLegacyProcessIdentity(tx as unknown as Db, run, meta.localProcess !== false);
     return run;
   });
 }
@@ -13751,7 +13753,7 @@ export function heartbeatService(
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; processGroupId: number | null; startedAt: string },
+    meta: { pid: number; processGroupId: number | null; startedAt: string; localProcess?: boolean },
   ) {
     return persistHeartbeatRunProcessMetadata(db, runId, meta);
   }
@@ -15073,6 +15075,12 @@ export function heartbeatService(
         runningProcesses.delete(run.id);
       }
 
+      // Preserve verified termination even if shutdown exits before the adapter's
+      // executor finally gets to release its reservation.
+      if (run.runtimeMode === "legacy" && (run.processPid || run.processGroupId)) {
+        await recordLegacyLocalProcessStop(db, (await getRun(run.id)) ?? run);
+      }
+
       const persistedCancellationResult =
         run.runtimeMode === "native"
           ? await getRun(run.id).then((current) =>
@@ -15096,6 +15104,13 @@ export function heartbeatService(
           }),
         },
       );
+      // ACP adapters own their processes through this control rather than the
+      // legacy runningProcesses map. Let their finally terminate and settle
+      // before the server's finalizer drain exits. Preserve interruption/retry
+      // status first, so a quick cancellation result cannot replace it.
+      if (run.runtimeMode === "legacy") {
+        adapterExecutionControls.get(run.id)?.controller.abort(new Error(message));
+      }
       if (!interruptedStatus.updated || !interruptedStatus.run) continue;
       let interrupted = interruptedStatus.run;
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
@@ -16887,26 +16902,32 @@ export function heartbeatService(
       !isHeartbeatRunTerminalStatus(current.status)
     ) return false;
     if (activeRunExecutions.has(runId)) return false;
+    const tracked = runningProcesses.get(runId);
+    if (tracked && tracked.child.exitCode === null && tracked.child.signalCode === null) return false;
+    const legacyStopped = current.runtimeMode === "legacy" &&
+      (await legacyProcessStopConfirmed(db, current) || await recordLegacyLocalProcessStop(db, current));
     if (
       current.runtimeMode === "legacy" &&
       current.controllerBootId &&
       current.controllerBootId !== legacyControllerBootId &&
-      !options.reaperConfirmedStop
+      !options.reaperConfirmedStop && !legacyStopped
     ) return false;
-    const tracked = runningProcesses.get(runId);
-    if (tracked && tracked.child.exitCode === null && tracked.child.signalCode === null) return false;
     if (current.runtimeMode === "native") {
       if (!(await nativeCapacityReleaseAllowed(current))) return false;
-    } else if (
+    } else if (!legacyStopped && (
       (current.processPid && isProcessAlive(current.processPid)) ||
       (current.processGroupId && isProcessGroupAlive(current.processGroupId))
-    ) return false;
+    )) return false;
     const [released] = await db.update(heartbeatRuns).set({ capacityReleasedAt: new Date() })
       .where(and(
         eq(heartbeatRuns.id, runId),
         isNotNull(heartbeatRuns.capacityGroup),
         isNull(heartbeatRuns.capacityReleasedAt),
         inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        current.controllerBootId === null ? isNull(heartbeatRuns.controllerBootId) : eq(heartbeatRuns.controllerBootId, current.controllerBootId),
+        current.processPid === null ? isNull(heartbeatRuns.processPid) : eq(heartbeatRuns.processPid, current.processPid),
+        current.processGroupId === null ? isNull(heartbeatRuns.processGroupId) : eq(heartbeatRuns.processGroupId, current.processGroupId),
+        current.processStartedAt === null ? isNull(heartbeatRuns.processStartedAt) : eq(heartbeatRuns.processStartedAt, current.processStartedAt),
       ))
       .returning({ id: heartbeatRuns.id });
     return Boolean(released);
@@ -19380,8 +19401,8 @@ export function heartbeatService(
         const recovery = parseObject(parseObject(run.resultJson).executionRecovery);
         // A terminal status does not prove a foreign controller has stopped
         // its child. A PID is only meaningful on the controller's own host.
-        if (run.processPid || run.processGroupId || recovery.providerWorkStarted !== false) continue;
-        reaperConfirmedStop = true;
+        reaperConfirmedStop = !run.processPid && !run.processGroupId && recovery.providerWorkStarted === false;
+        // Other terminal runs go through host-bound stop verification below.
       }
       await releaseRunCapacityIfStopped(run.id, { reaperConfirmedStop }).catch((error) => {
         logger.warn({ err: error, runId: run.id }, "could not reconcile terminal run capacity");
@@ -24374,6 +24395,7 @@ export function heartbeatService(
                             ? meta.processGroupId
                             : null,
                         startedAt: meta.startedAt,
+                        localProcess: executionTarget?.kind !== "remote",
                       });
                     },
                     authToken: authToken ?? undefined,
