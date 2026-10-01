@@ -3305,6 +3305,12 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
+function isAcpxProviderLimitFailure(error: unknown): boolean {
+  // acpx emits this exact message from typed sessionFailure(category=limit).
+  // Inspect the actual terminal error, never user output or a stderr tail.
+  return error instanceof Error && error.message === "ACP agent reported a terminal limit failure.";
+}
+
 function classifyError(
   err: unknown,
   phase?: AcpxExecutionPhase,
@@ -3336,6 +3342,9 @@ function classifyError(
       errorCode: "acpx_handshake_transport_lost",
       errorMeta: { category: "runtime", ...baseMeta },
     };
+  }
+  if (phase === "turn" && isAcpxProviderLimitFailure(err)) {
+    return { errorCode: "provider_quota", errorMeta: { category: "limit", ...baseMeta } };
   }
   const lower = message.toLowerCase();
   const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
@@ -4990,6 +4999,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? channelLostMessage
             : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
+        const providerLimit = !timedOut && !channelLost && terminal.status === "failed" &&
+          isAcpxProviderLimitFailure(terminal.error);
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
           summary: channelLost ? "duplex_channel_lost" : terminal.status,
@@ -5010,8 +5021,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             : channelLost
               ? DUPLEX_CHANNEL_LOST_ERROR_CODE
               : terminal.status === "failed"
-                ? "acpx_turn_failed"
+                ? providerLimit ? "provider_quota" : "acpx_turn_failed"
                 : null,
+          ...(providerLimit ? { errorFamily: "provider_quota" as const } : {}),
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -5022,6 +5034,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            ...(providerLimit ? { errorFamily: "provider_quota" } : {}),
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -5134,26 +5147,37 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         } catch {
           emitted = null;
         }
-        const message = emitted?.message ?? preEmitMessage;
+        const loss = prepared.paperclipBridge?.readRunDisposition?.();
+        // Only override the newly classified limit here. Other thrown failures
+        // retain their established classification; settlement already checks the
+        // loss again before attempting a remote close.
+        const channelLost = isAcpxProviderLimitFailure(err) && loss?.failed === true;
+        const message = !timedOut && channelLost
+          ? `The sandbox duplex control channel was lost (${loss.lossReason ?? "other"}) before the run completed.`
+          : emitted?.message ?? preEmitMessage;
+        const providerLimit = !timedOut && !channelLost && phase === "turn" && isAcpxProviderLimitFailure(err);
+        runtimeSettlement = { ...runtimeSettlement, skipRemoteClose: channelLost };
         capturedResult = {
           exitCode: 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage: message,
-          errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
+          errorCode: timedOut ? "acpx_timeout" : channelLost
+            ? DUPLEX_CHANNEL_LOST_ERROR_CODE : (emitted?.classified.errorCode ?? null),
           errorMeta: emitted?.classified.errorMeta,
+          ...(providerLimit ? { errorFamily: "provider_quota" as const } : {}),
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession: clearSession || timedOut,
-          resultJson: { phase },
+          resultJson: { phase, ...(providerLimit ? { errorFamily: "provider_quota" } : {}) },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause
         // that forbids the save. The reported phase lives on the recorded result.
         return {
           kind: "failed",
-          cause: { kind: "turn_failed", error: err instanceof Error ? err : new Error(String(err)) },
+          cause: { kind: "turn_failed", error: channelLost ? new Error(message) : err instanceof Error ? err : new Error(String(err)) },
           resources: emptyConsumed,
         };
       };

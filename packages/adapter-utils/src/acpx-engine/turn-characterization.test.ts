@@ -608,6 +608,67 @@ describe("ACPX engine turn characterization", () => {
     expect(result.costUsd).toBeCloseTo(0.31);
   });
 
+  it("preserves an ACP terminal provider limit as quota for configured fallback", async () => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => turnRuntime({
+        events: async function* () { yield { type: "done", stopReason: "failed" }; },
+        result: Promise.resolve({ status: "failed", error: new Error("ACP agent reported a terminal limit failure.") }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "run-provider-limit", agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson).toMatchObject({ status: "failed", errorFamily: "provider_quota" });
+  });
+
+  it("preserves a thrown ACP turn provider limit as quota", async () => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => turnRuntime({
+        events: async function* () { throw new Error("ACP agent reported a terminal limit failure."); },
+        result: new Promise(() => {}),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "run-thrown-provider-limit", agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.resultJson).toMatchObject({ errorFamily: "provider_quota" });
+  });
+
+  it.each([
+    "ACP agent reported a terminal access failure.",
+    "ACP agent reported a terminal service failure.",
+    "maximum context length reached",
+    "User mentioned: ACP agent reported a terminal limit failure.",
+  ])("does not activate quota fallback for %s", async (message) => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => turnRuntime({
+        events: async function* () { yield { type: "done", stopReason: "failed" }; },
+        result: Promise.resolve({ status: "failed", error: new Error(message) }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "run-nonquota", agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    expect(result.errorFamily).toBeUndefined();
+    expect((result.resultJson as Record<string, unknown>).errorFamily).toBeUndefined();
+  });
+
   it("computes usage the same way summarizeAcpxTurnUsage does for the event fallback", () => {
     // Pin the exported helper the turn path calls: with no getStatus snapshots the
     // event breakdown and cost drive the per-run usage.

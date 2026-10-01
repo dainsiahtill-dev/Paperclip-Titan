@@ -6825,6 +6825,27 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(fake.readDisposition().failed).toBe(true);
   });
 
+  it("keeps a thrown provider limit behind a latched duplex channel loss", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const runtime = {
+      ...runtimeWithControlledResult(),
+      startTurn: () => ({
+        events: (async function* () {
+          fake.emitLoss("provider_exit");
+          throw new Error("ACP agent reported a terminal limit failure.");
+        })(),
+        result: new Promise(() => {}),
+        cancel: async () => {},
+      }),
+    };
+    const result = await runRemote(fake.handle, runtime, sandbox);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    expect(result.errorFamily).toBeUndefined();
+    expect((result.resultJson as Record<string, unknown>).errorFamily).toBeUndefined();
+    expect(result.errorMessage).toContain("provider_exit");
+  });
+
   it("keeps a completed run a success when the channel stays live, and a later teardown loss is benign", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeBridgeHandle();
