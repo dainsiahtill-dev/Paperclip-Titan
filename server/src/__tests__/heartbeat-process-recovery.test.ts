@@ -9873,6 +9873,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   // before a server restart survives it. Promotion is DB-driven (scheduled_retry rows +
   // promoteDueScheduledRetries), not an in-memory setTimeout — so a brand-new heartbeat
   // service instance with empty in-memory state still promotes the due retry.
+  it.each([false, true])("delivers deferred agent comments in an automatic legacy retry with existing input: %s", async (hasPreviousComment) => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const authorAgentId = randomUUID();
+    await db.insert(agents).values({ id: authorAgentId, companyId, name: "Manager", role: "ceo", status: "idle", adapterType: "codex_local" });
+    const now = new Date();
+    const previousCommentId = randomUUID();
+    if (hasPreviousComment) await db.insert(issueComments).values({ id: previousCommentId, companyId, issueId, authorUserId: "responsible-user", body: "Original request", createdAt: new Date(now.getTime() - 3000) });
+    await db.update(heartbeatRuns).set({
+      status: "failed", runtimeMode: "legacy", finishedAt: now,
+      errorCode: "workspace_validation_failed", error: "Startup interrupted before dispatch",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", ...(hasPreviousComment ? { wakeCommentIds: [previousCommentId], wakeCommentId: previousCommentId } : {}) },
+    }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, delayMs: 0, maxAttempts: 3 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected an automatic retry");
+
+    const body = "Use the updated practical customer acceptance standard and deliver a real reply.";
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "agent", authorAgentId, createdByRunId: runId, body, createdAt: new Date(now.getTime() + 100) }).returning();
+    const [deferred] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_commented", requestedByActorType: "agent", requestedByActorId: authorAgentId, status: "deferred_issue_execution", payload: { issueId, commentId: comment!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id], wakeCommentId: comment!.id } } }).returning();
+    const [interaction] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution", payload: { issueId, mutation: "interaction", _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id], interactionId: randomUUID() } } }).returning();
+
+    await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const retried = await heartbeat.getRun(scheduled.run.id);
+    expect(retried?.contextSnapshot?.wakeCommentIds).toContain(comment!.id);
+    expect(JSON.stringify(mockAdapterExecute.mock.calls)).toContain(body);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]).toMatchObject({ status: "coalesced", runId: scheduled.run.id });
+    const preservedInteraction = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, interaction!.id)))[0];
+    expect(preservedInteraction?.runId).not.toBe(scheduled.run.id);
+    expect(preservedInteraction?.payload).toMatchObject({ mutation: "interaction", _paperclipWakeContext: { interactionId: expect.any(String) } });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, comment!.id)))[0]).toMatchObject({ authorType: "agent", authorAgentId, body, deletedAt: null });
+  }, 30_000);
+
   it("promotes a scheduled plan-approval continuation retry after a simulated server restart", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedQueuedIssueRunFixture();

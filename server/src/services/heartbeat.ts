@@ -6,6 +6,7 @@ import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/papercli
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
+import { adoptDeferredCommentsForLegacyRetry } from "./retry-comment-queue.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { admitQueuedRunCapacity } from "./run-capacity.js";
 import { agentQuotaFallbackService } from "./agent-quota-fallback.js";
@@ -17463,10 +17464,12 @@ export function heartbeatService(
     agent = quotaSelection.agent;
     const claimedAdapterMetadata = { adapterDispatch: { adapterType: agent.adapterType }, ...(quotaSelection.pin ? { quotaFallback: quotaSelection.pin } : {}) };
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
+    const automaticLegacyRetry = run.runtimeMode === "legacy" &&
+      run.invocationSource === "automation" && Boolean(run.retryOfRunId);
     if (
       issueId &&
       run.invocationSource === "automation" &&
-      queuedCommentIds.length > 0
+      (queuedCommentIds.length > 0 || automaticLegacyRetry)
     )
       await options.beforeChatControlRecoveryCheck?.({
         runId: run.id,
@@ -17474,7 +17477,7 @@ export function heartbeatService(
         stage: "claim",
       });
     const queuedCommentClaim =
-      issueId && run.wakeupRequestId && queuedCommentIds.length > 0
+      issueId && run.wakeupRequestId && (queuedCommentIds.length > 0 || automaticLegacyRetry)
         ? await db
             .transaction(async (tx) => {
               // Match the queue-edit lock order: issue, wake, then run. Once the
@@ -17491,7 +17494,7 @@ export function heartbeatService(
                   ),
                 )
                 .for("update");
-              const wake = await tx
+              let wake = await tx
                 .select()
                 .from(agentWakeupRequests)
                 .where(
@@ -17504,7 +17507,7 @@ export function heartbeatService(
                 .for("update")
                 .limit(1)
                 .then((rows) => rows[0] ?? null);
-              const lockedRun = await tx
+              let lockedRun = await tx
                 .select()
                 .from(heartbeatRuns)
                 .where(
@@ -17614,6 +17617,22 @@ export function heartbeatService(
                     updatedAt: claimedAt,
                   })
                   .where(eq(heartbeatRuns.id, lockedRun.id));
+              }
+              if (automaticLegacyRetry) {
+                const adopted = await adoptDeferredCommentsForLegacyRetry(tx as unknown as Db, {
+                  run: lockedRun, wake, issueId, now: claimedAt,
+                  canAdopt: (entry) => {
+                    const payload = parseObject(entry.payload);
+                    const deferredContext = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+                    return !entry.idempotencyKey?.startsWith("chat-inbound:") &&
+                      !isInteractionResolutionWakePayload(payload) &&
+                      !hasInteractionContinuationWakeContext(deferredContext) &&
+                      ["issue_commented", "issue_reopened_via_comment"].includes(
+                        String(deferredContext.wakeReason ?? entry.reason),
+                      ) && queuedCommentIdsFromWakePayload(payload).length > 0;
+                  },
+                });
+                if (adopted) { wake = adopted.wake; lockedRun = adopted.run; }
               }
               const authoritativeIds = queuedCommentIdsFromWakePayload(
                 wake.payload,
