@@ -5927,6 +5927,37 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each([true, false])("places automatic ACP handoffs in the live transcript with explicit target=%s", async (explicitTarget) => {
+    const comment = createIssueComment({ id: "automatic-handoff", body: "Keep the original task and apply this review." });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "codex_local" })]);
+    mockIssuesApi.listComments.mockResolvedValue([comment]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({ queueId: null, state: null, targetRunId: null, entries: [], protocol: "legacy" }));
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "legacy", status: "running", invocationSource: "issue",
+      triggerDetail: null, contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z", createdAt: "2026-04-21T00:00:00.000Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Engineer", adapterType: "codex_local", issueId: "issue-1",
+    });
+    mockActivityApi.forIssue.mockResolvedValue([{
+      id: "automatic-ack", companyId: "company-1", entityType: "issue", entityId: "issue-1",
+      actorType: "system", actorId: "live-adapter-steering", runId: "run-active-1",
+      action: "issue.queued_comment_steered", createdAt: new Date("2026-04-21T00:00:06.000Z"),
+      details: { commentId: "automatic-handoff", protocol: "acp", ...(explicitTarget ? { targetRunId: "run-active-1" } : {}) },
+    }]);
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+        comments?: Array<{ id: string; steeredIntoRunId?: string; conversationAnchorAt?: string; queueState?: string }>;
+        queuedCommentQueue?: IssueQueuedCommentQueue | null;
+      };
+      expect(props.comments?.find((item) => item.id === "automatic-handoff")).toMatchObject({
+        steeredIntoRunId: "run-active-1", conversationAnchorAt: "2026-04-21T00:00:06.000Z",
+      });
+      expect(props.queuedCommentQueue).toBeNull();
+    });
+  });
+
   it("keeps an unacknowledged queue visible while withholding server controls", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({

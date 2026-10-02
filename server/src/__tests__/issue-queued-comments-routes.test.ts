@@ -24,6 +24,7 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { deliverLegacySteering, scheduleLegacySteering } from '../services/live-adapter-steering.js';
 import { preserveQueuedSteeringAcknowledgements } from '../services/queued-steering-result.js';
+import { subscribeCompanyLiveEvents } from '../services/live-events.js';
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -214,6 +215,15 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const owner = createAdapterExecutionControl();
     owner.steering = { state: async () => ({ supported: true, active: true, busy }), send: async ({ text }) => { sent.push(text); return { outcome: 'injected' }; } };
     adapterExecutionControls.set(seeded.runId, owner);
+    const notifications: Record<string, unknown>[] = [];
+    const committedQueueStates: Promise<string | undefined>[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(seeded.companyId, (event) => {
+      if (event.type === 'activity.logged' && event.payload.action === 'issue.queued_comment_steered') {
+        notifications.push(event.payload);
+        committedQueueStates.push(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)).then((rows) => rows[0]?.status));
+      }
+    });
+    try {
     scheduleLegacySteering(db, seeded.runId);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(sent).toEqual([]);
@@ -224,6 +234,18 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(sent[0]).toContain(`original author: Agent ${senderId}`);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0])))[0]).toMatchObject({ authorType: 'agent', authorAgentId: senderId, deletedAt: null });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe('running');
+    await vi.waitFor(() => expect(notifications).toHaveLength(2));
+    expect(notifications[0]).toMatchObject({
+      entityType: 'issue', entityId: seeded.issueId, runId: seeded.runId,
+      details: { commentId: seeded.commentIds[0], targetRunId: seeded.runId, protocol: 'acp' },
+    });
+    expect(await Promise.all(committedQueueStates)).toEqual(['coalesced', 'coalesced']);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
+    expect(activity.filter((row) => row.action === 'issue.queued_comment_steered')).toHaveLength(2);
+    expect(activity[0]?.details).toMatchObject({ targetRunId: seeded.runId });
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('retains live handoff acknowledgements when the adapter writes its final result', async () => {

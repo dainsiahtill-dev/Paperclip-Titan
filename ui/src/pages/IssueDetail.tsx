@@ -1682,6 +1682,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       const targetRunId =
         typeof details["targetRunId"] === "string"
           ? details["targetRunId"]
+          : evt.actorType === "system" &&
+              evt.actorId === "live-adapter-steering" &&
+              details["protocol"] === "acp" &&
+              typeof evt.runId === "string"
+            ? evt.runId
           : null;
       if (!commentId || !targetRunId) continue;
       const anchorAt =

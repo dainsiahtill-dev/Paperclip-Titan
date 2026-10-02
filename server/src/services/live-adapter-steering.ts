@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from '@paperclipai/db';
+import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from '@paperclipai/db';
+import { logActivity, publishActivity, type ActivityPublication } from './activity-log.js';
 import { adapterExecutionControls } from './adapter-execution-control.js';
 import { issueTreeControlService } from './issue-tree-control.js';
 import { queuedCommentIdsFromWakePayload, queuedCommentQueueRevision, withQueuedCommentIdsInWakePayload } from './issue-queued-comment-queue.js';
@@ -32,7 +33,8 @@ export async function deliverLegacySteering(db: Db, input: {
   if (!initial || initial.status !== 'running' || initial.runtimeMode !== 'legacy' || !issueId || input.issueId && input.issueId !== issueId) return 0;
   if (await issueTreeControlService(db).getActivePauseHoldGate(initial.companyId, issueId)) return 0;
 
-  return db.transaction(async (tx) => {
+  const publications: ActivityPublication[] = [];
+  const delivered = await db.transaction(async (tx) => {
     const [issue] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, initial.companyId))).for('update');
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, initial.id), eq(heartbeatRuns.companyId, initial.companyId))).for('update');
     const [agent] = await tx.select({ status: agents.status }).from(agents).where(and(eq(agents.id, initial.agentId), eq(agents.companyId, initial.companyId)));
@@ -88,12 +90,14 @@ export async function deliverLegacySteering(db: Db, input: {
         const now = new Date();
         await tx.update(heartbeatRuns).set({ resultJson: { ...result, queuedSteeringAcknowledgements: acknowledgements }, updatedAt: now }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
         await tx.update(agentWakeupRequests).set({ payload: withQueuedCommentIdsInWakePayload(payload, remaining), ...(remaining.length === 0 ? { status: 'coalesced', runId: run.id, finishedAt: now } : {}), updatedAt: now }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId)));
-        await tx.insert(activityLog).values({ companyId: run.companyId, actorType: 'system', actorId: 'live-adapter-steering', agentId: run.agentId, runId: run.id, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { commentId: comment.id, queueId: wake.id, protocol: 'acp', originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId } });
+        await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: 'system', actorId: 'live-adapter-steering', agentId: run.agentId, runId: run.id, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, protocol: 'acp', originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId } }, publications);
         delivered += 1;
       }
     }
     return delivered;
   });
+  for (const publication of publications) publishActivity(publication);
+  return delivered;
 }
 
 /** One owner per run; another event during delivery schedules one further pass. */
