@@ -351,6 +351,25 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it.each([
+    ['running', 'POST'], ['running', 'PATCH'], ['queued', 'POST'], ['queued', 'PATCH'],
+  ] as const)("preserves a %s recovery when an ordinary %s comment arrives", async (retryStatus, method) => {
+    const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ retryStatus });
+    const client = request(createApp(boardActor(companyId)));
+    const response = method === 'POST'
+      ? await client.post(`/api/issues/${issueId}/comments`).send({ body: 'Resume the original work without interrupting.', interrupt: false })
+      : await client.patch(`/api/issues/${issueId}`).send({ comment: 'Resume the original work without interrupting.', interrupt: false });
+    expect(response.status, JSON.stringify(response.body)).toBe(method === 'POST' ? 201 : 200);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(run?.status).toBe(retryStatus);
+    expect(issue).toMatchObject({ status: 'in_progress', executionRunId: retryRunId });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.map((comment) => comment.body)).toContain('Resume the original work without interrupting.');
+    const activities = await db.select().from(activityLog).where(eq(activityLog.entityId, retryRunId));
+    expect(activities.filter((activity) => activity.action === 'heartbeat.cancelled')).toEqual([]);
+  });
+
   it("uses normal promotion gates and records gate-suppressed retries", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry({ agentStatus: "paused" });
 

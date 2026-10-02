@@ -12961,6 +12961,7 @@ export function issueRoutes(
           : null;
       const shouldResumeInProgressScheduledRetry =
         !!scheduledRetryForHumanComment &&
+        scheduledRetryForHumanComment.status === "scheduled_retry" &&
         scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId;
       const assigneeSelfCommentOnTerminal =
         isAssigneeSelfCommentOnTerminalIssue({
@@ -17413,6 +17414,7 @@ export function issueRoutes(
           : null;
       const shouldResumeInProgressScheduledRetry =
         !!scheduledRetryForHumanComment &&
+        scheduledRetryForHumanComment.status === "scheduled_retry" &&
         scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
       const assigneeSelfCommentOnTerminal =
         isAssigneeSelfCommentOnTerminalIssue({
