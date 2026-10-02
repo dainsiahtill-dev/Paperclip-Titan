@@ -5,14 +5,20 @@ import { adapterExecutionControls } from './adapter-execution-control.js';
 import { issueTreeControlService } from './issue-tree-control.js';
 import { queuedCommentIdsFromWakePayload, queuedCommentQueueRevision, withQueuedCommentIdsInWakePayload } from './issue-queued-comment-queue.js';
 import { conflict } from '../errors.js';
+import { redactSensitiveText } from '../redaction.js';
 
 const running = new Map<string, Promise<number>>();
 const requestedAgain = new Set<string>();
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-export async function getLiveAdapterSteeringState(runId: string): Promise<'available' | 'temporarily_unavailable' | 'unsupported'> {
+export async function getLiveAdapterSteeringState(runId: string, db?: Db, commentIds: readonly string[] = []): Promise<'available' | 'temporarily_unavailable' | 'unsupported'> {
   const owner = adapterExecutionControls.get(runId);
   if (!owner?.steering || owner.controller.signal.aborted) return 'unsupported';
+  if (db && commentIds.length) {
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const acknowledgements = record(record(run?.resultJson).queuedSteeringAcknowledgements);
+    if (commentIds.some((id) => record(acknowledgements[id]).status === 'uncertain')) return 'temporarily_unavailable';
+  }
   try {
     const state = await owner.steering.state();
     return !state.supported ? 'unsupported' : state.active && !state.busy ? 'available' : 'temporarily_unavailable';
@@ -65,7 +71,10 @@ export async function deliverLegacySteering(db: Db, input: {
         if (input.commentId && input.commentId !== comment.id) continue;
         const previous = record(acknowledgements[comment.id]);
         if (previous.status === 'acknowledged') { remaining = remaining.filter((id) => id !== comment.id); continue; }
-        if (previous.status === 'uncertain') return delivered;
+        if (previous.status === 'uncertain') {
+          if (input.commentId) throw conflict('Delivery could not be confirmed. The message is preserved; resume it in the next turn.', { code: 'steering_acknowledgement_unknown' });
+          return delivered;
+        }
         if (adapterExecutionControls.get(run.id) !== owner || owner.controller.signal.aborted) return delivered;
         const state = await owner.steering!.state();
         if (!state.supported || !state.active || state.busy) return delivered;
@@ -78,8 +87,11 @@ export async function deliverLegacySteering(db: Db, input: {
             new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error('Steering acknowledgement timed out')), 8000); }),
           ]);
         } catch (error) {
-          acknowledgements[comment.id] = { status: 'uncertain', queueId: wake.id, at: new Date().toISOString() };
+          const errorMessage = redactSensitiveText(error instanceof Error ? error.message : 'Steering failed without an error message').slice(0, 500);
+          acknowledgements[comment.id] = { status: 'uncertain', queueId: wake.id, at: new Date().toISOString(), errorMessage };
           await tx.update(heartbeatRuns).set({ resultJson: { ...result, queuedSteeringAcknowledgements: acknowledgements } }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+          await tx.update(agentWakeupRequests).set({ payload: { ...payload, executionWait: { reason: 'steering_acknowledgement_unknown', message: 'Delivery could not be confirmed. The message is preserved; resume it in the next turn.' } }, updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId)));
+          await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: 'system', actorId: 'live-adapter-steering', agentId: run.agentId, runId: run.id, action: 'issue.queued_comment_delivery_uncertain', entityType: 'issue', entityId: issue.id, details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, protocol: 'acp', errorMessage } }, publications);
           return delivered;
         } finally {
           clearTimeout(timeout);

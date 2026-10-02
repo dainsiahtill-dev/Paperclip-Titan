@@ -274,6 +274,16 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       expect(send).toHaveBeenCalledTimes(1);
       expect(await deliverLegacySteering(db, input)).toBe(0);
       expect(send).toHaveBeenCalledTimes(1);
+      const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(queue.body.steeringDisposition).toBe('temporarily_unavailable');
+      expect(queue.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual(seeded.commentIds);
+      expect(queue.body.executionWait).toMatchObject({ reason: 'steering_acknowledgement_unknown' });
+      const run = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!;
+      const acknowledgements = run.resultJson?.queuedSteeringAcknowledgements as Record<string, { status: string; errorMessage?: string }>;
+      expect(acknowledgements[seeded.commentIds[0]!]).toMatchObject({ status: 'uncertain', errorMessage: 'provider transport closed' });
+      const repeated = await request(app(seeded.companyId)).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision }).expect(409);
+      expect(repeated.body.details).toMatchObject({ code: 'steering_acknowledgement_unknown' });
+      expect(send).toHaveBeenCalledTimes(1);
     } else expect(send).not.toHaveBeenCalled();
     const wake = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0]!;
     expect(wake.status).toBe('deferred_issue_execution');

@@ -7046,7 +7046,7 @@ export function issueRoutes(
     const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
       input.issue.conversationAgentId ? "unsupported" :
       steering.protocol === 'legacy' && queueState?.state === 'deferred' && input.activeRun && comments.length > 0
-        ? await getLiveAdapterSteeringState(input.activeRun.id) : steering.kind !== "probe"
+        ? await getLiveAdapterSteeringState(input.activeRun.id, db, comments.map((comment) => comment.id)) : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
