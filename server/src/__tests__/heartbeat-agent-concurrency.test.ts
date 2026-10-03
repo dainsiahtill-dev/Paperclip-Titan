@@ -77,6 +77,27 @@ describePostgres("shared Agent run capacity", () => {
     await temporary?.cleanup();
   });
 
+  it("serializes automatic resource admission across different children under one parent", async () => {
+    const companyId = randomUUID(), rootId = randomUUID(), agentA = randomUUID(), agentB = randomUUID(), childA = randomUUID(), childB = randomUUID(), runA = randomUUID(), runB = randomUUID();
+    await database.insert(companies).values({ id: companyId, name: "Resource boundary", issuePrefix: "RB", defaultResponsibleUserId: "board" });
+    await database.insert(agents).values([{ id: agentA, companyId, name: "A", role: "engineer", status: "idle", adapterType: ADAPTER }, { id: agentB, companyId, name: "B", role: "engineer", status: "idle", adapterType: ADAPTER }]);
+    await database.insert(issues).values({ id: rootId, companyId, title: "One automatic turn" });
+    await database.update(issues).set({ executionPolicy: sql`jsonb_build_object('resourceLimits', jsonb_build_object('maxAutomaticRuns', 1))` }).where(eq(issues.id, rootId));
+    await database.insert(issues).values([{ id: childA, companyId, parentId: rootId, title: "A", status: "todo", assigneeAgentId: agentA }, { id: childB, companyId, parentId: rootId, title: "B", status: "todo", assigneeAgentId: agentB }]);
+    await database.insert(heartbeatRuns).values([{ id: runA, companyId, agentId: agentA, invocationSource: "assignment", status: "queued", contextSnapshot: { issueId: childA } }, { id: runB, companyId, agentId: agentB, invocationSource: "assignment", status: "queued", contextSnapshot: { issueId: childB } }]);
+    const [a] = await database.select().from(agents).where(eq(agents.id, agentA)); const [b] = await database.select().from(agents).where(eq(agents.id, agentB));
+    const claim = (agent: typeof a, id: string) => database.transaction(async tx => {
+      const result = await admitQueuedRunCapacity(tx as unknown as Db, agent!, id, 6);
+      if (result.allowed) await tx.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, id));
+      return result;
+    });
+    const results = await Promise.all([claim(a, runA), claim(b, runB)]);
+    expect(results.filter(result => result.allowed)).toHaveLength(1);
+    const rows = await database.select().from(heartbeatRuns);
+    expect(rows.filter(row => row.status === "running")).toHaveLength(1);
+    expect(rows.filter(row => row.status === "queued")).toHaveLength(1);
+  });
+
   it("shared pool gives an unserved company Agent the next locked admission", async () => {
     const a = randomUUID(), b = randomUUID(), agentA = randomUUID(), agentB = randomUUID(), nextA = randomUUID(), nextB = randomUUID();
     await database.insert(companies).values([{ id: a, name: "A", issuePrefix: "FA", defaultResponsibleUserId: "board" }, { id: b, name: "B", issuePrefix: "FB", defaultResponsibleUserId: "board" }]);

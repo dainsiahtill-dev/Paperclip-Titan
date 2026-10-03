@@ -54,3 +54,11 @@ Workspace status was already scheduled; rev-list/merge-base bypasses reproduced 
 Drain regression repair: transaction-index-based fault injection missed the release transaction. Test now detects semantic release (queued + startedAt=null), faults the subsequent issue-lock update, and proves real rollback and reaper cleanup (2/2GREEN). Workspace cleanup-fence test now faults only status operations, so adding scheduled ancestry reads cannot shift its injection.
 
 Remaining integration: Root resource gate under this same capacity lock; final focused qualification after integration; full repo checks and actual configured provider/ACP/browser acceptance owned by Root. No schema migration/barrel export required by these runtime leaves.
+
+## Atomic Root resource gate integration
+
+Root prerequisites `ab2a8badf544ae15f9df4b816f77451c45fa1fcb` are present locally as `78cfd3a64`, including real generated cost-token migration/shared contract/issue-resource owner. Runtime delta is only capacity admission and its concurrency regression: read `getIssueResourceBlock` under the existing singleton lock before queued-to-running claim; exclude the same run; validate company/Agent queued ownership; exclude resource-held fair contenders. No second scheduler/hold/queue.
+
+RED: simultaneous different child Agents under parent maxAutomaticRuns=1 admitted2. GREEN:1admitted/1queued, exactly1running. Adjacent maxWorkers1 capacity/resource-PG/policy/drain/quota:5files66/66pass, original timeouts unchanged. All test owners closed. The Root prerequisite commit must not be cherry-picked back as a new runtime change.
+
+Next owned qualification: PC-10 real first/resume/compact/stale-resume prompt path and measured10-turn100KB-plan sequence, with exact immutable revision and preserved latest steering/core constraints. Scope limited to plan projection/context, heartbeat context assembly, and Claude/Codex prompt selection/fallback tests; other Root UI/token changes remain protected.

@@ -1,6 +1,7 @@
 import { compareQueuedCandidates } from "./queued-run-fairness.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { getIssueResourceBlock } from "./issue-resource-limits.js";
 import { agents, heartbeatRuns, instanceSettings, companies, issues, type Db } from "@paperclipai/db";
 import { agentConcurrencySettingsSchema, DEFAULT_AGENT_CONCURRENCY } from "@paperclipai/shared";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -60,6 +61,15 @@ export async function admitQueuedRunCapacity(
 ): Promise<RunCapacityAdmission> {
   const result = await checkRunCapacity(transaction, agent, maxAgentRuns);
   if (!result.allowed) return waiting(transaction, runId, result.reason);
+  const [run] = await transaction.select({ context: heartbeatRuns.contextSnapshot, nativeIssueId: heartbeatRuns.nativeIssueId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "queued"))).limit(1);
+  if (!run) return { allowed: false, reason: "Queued run is no longer eligible for this Agent" };
+  const issueId = run.nativeIssueId ?? record(run.context).issueId;
+  // Hold the same singleton lock through resource read and queued-to-running
+  // claim. A sibling controller must observe the first admitted turn.
+  if (typeof issueId === "string") {
+    const resource = await getIssueResourceBlock(transaction, { companyId: agent.companyId, issueId, excludeRunId: runId });
+    if (resource) return waiting(transaction, runId, `Waiting for task resource policy (${resource.code})`);
+  }
   const [settings] = await transaction.select({ general: instanceSettings.general }).from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1);
   const capacity = configuredCapacity(settings?.general);
   if (capacity.maxActiveRuns === null && result.group === null) return result;
@@ -81,6 +91,7 @@ export async function admitQueuedRunCapacity(
       if (candidate.issueStatus === "blocked") continue;
       const issueId = record(candidate.run.contextSnapshot).issueId;
       if (typeof issueId === "string" && await getExecutionBlocker(transaction, candidate.run.companyId, issueId)) continue;
+      if (typeof issueId === "string" && await getIssueResourceBlock(transaction, { companyId: candidate.run.companyId, issueId, excludeRunId: candidate.run.id })) continue;
       const max = Number(record(record(candidate.candidateAgent.runtimeConfig).heartbeat).maxConcurrentRuns ?? 1);
       if (candidate.reserved >= Math.max(1, max)) continue;
       let effective = candidate.candidateAgent;
