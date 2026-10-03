@@ -29,6 +29,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import {
+  buildIssueBlockersResolvedWakeStateKey,
+  buildIssueChildrenReadyWakeStateKey,
+} from "../services/issue-dependency-wakeups.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -119,6 +123,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .from(heartbeatRuns)
       .then((runs) => runs.map((run) => run.id));
     await Promise.all(runIds.map((runId) => heartbeat.waitForRunExecutionDrain(runId)));
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -173,6 +178,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const completedChildId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -200,6 +206,21 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
     });
+    const [completedChild] = await db.insert(issues).values({
+      id: completedChildId,
+      companyId,
+      parentId: issueId,
+      title: "Completed dependency",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    }).returning({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: completedChildId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
     const nativeWakePayload = {
       issueId,
       taskId: issueId,
@@ -219,7 +240,12 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         payload: nativeWakePayload,
         requestedByActorType: "system",
         requestedByActorId: "native-status-committer",
-        idempotencyKey: `native-parent:${issueId}`,
+        idempotencyKey: buildIssueChildrenReadyWakeStateKey({
+          parentIssueId: issueId,
+          children: [completedChild!],
+          blockerIssueIds: [completedChildId],
+          blockedTransitionAt: null,
+        }),
       },
       {
         companyId,
@@ -230,7 +256,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         payload: nativeWakePayload,
         requestedByActorType: "system",
         requestedByActorId: "native-status-committer",
-        idempotencyKey: `native-dependency:${issueId}`,
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: issueId,
+          blockerIssueIds: [completedChildId],
+          blockedTransitionAt: null,
+        }),
       },
     ]).returning({ id: agentWakeupRequests.id });
 
@@ -473,6 +503,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
+      idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: blockedIssueId,
+        blockerIssueIds: [blockerId],
+        blockedTransitionAt: null,
+      }),
       payload: { issueId: blockedIssueId, resolvedBlockerIssueId: blockerId },
       contextSnapshot: {
         issueId: blockedIssueId,
