@@ -9445,8 +9445,8 @@ export function heartbeatService(
       if (!(await getAgentInvokability(agent)).invokable) return false;
       return !(await budgets.getInvocationBlock(agent.companyId, agent.id));
     },
-    probePrimary: async (agent, responsibleUserId, scope) => {
-      const result = await probeQuotaModel(db, agent, responsibleUserId, { sourceRunId: scope.primaryQuotaRunId });
+    probePrimary: async (agent, responsibleUserId, _scope, context) => {
+      const result = await probeQuotaModel(db, agent, responsibleUserId, { sourceRunId: context.sourceRunId });
       if (quotaProbeAvailable(result)) return "available";
       return result.checks.some(check => check.code.includes("auth_required") || check.code === "quota_probe_environment_unsupported") ? "error" : "unavailable";
     },

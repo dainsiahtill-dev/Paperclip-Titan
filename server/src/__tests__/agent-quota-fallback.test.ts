@@ -73,6 +73,77 @@ describeDatabase("durable Agent quota fallback", () => {
     });
   });
 
+  it("monitors active primary work before any quota failure and keeps its user and source context", async () => {
+    const run = await seed();
+    await db.insert(heartbeatRuns).values({
+      id: run.id, companyId: run.companyId, agentId: run.agentId,
+      invocationSource: "assignment", status: "running", responsibleUserId: "alice", startedAt: now,
+    });
+    const probe = vi.fn(async () => "unavailable" as const);
+    const service = agentQuotaFallbackService(db, { probePrimary: probe });
+    await service.tick(now);
+    expect(probe).toHaveBeenCalledOnce();
+    expect(probe.mock.calls[0]).toEqual([
+      expect.objectContaining({ id: run.agentId }), "alice", expect.any(Object),
+      { sourceRunId: run.id },
+    ]);
+    expect(await service.getStatus(run.agentId, "alice")).toMatchObject({ usingBackup: true, lastQuotaAt: null });
+    expect(await service.getStatus(run.agentId, "bob")).toMatchObject({ usingBackup: false });
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stored?.status).toBe("running");
+  });
+
+  it("rechecks an active healthy primary on the configured cadence without pinging an idle agent", async () => {
+    const run = await seed();
+    const probe = vi.fn(async () => "available" as const);
+    const service = agentQuotaFallbackService(db, { probePrimary: probe });
+    await service.tick(now);
+    expect(probe).not.toHaveBeenCalled();
+    await db.insert(heartbeatRuns).values({
+      id: run.id, companyId: run.companyId, agentId: run.agentId,
+      invocationSource: "assignment", status: "running", responsibleUserId: "alice", startedAt: now,
+    });
+    await service.tick(now);
+    expect(probe).toHaveBeenCalledOnce();
+    clock = new Date(now.getTime() + 299_000);
+    await service.tick(clock);
+    expect(probe).toHaveBeenCalledOnce();
+    clock = new Date(now.getTime() + 300_000);
+    await service.tick(clock);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(await service.getStatus(run.agentId, "alice")).toMatchObject({ usingBackup: false });
+  });
+
+  it.each(["busy", "error"] as const)("does not switch active primary work after an inconclusive %s check", async result => {
+    const run = await seed();
+    await db.insert(heartbeatRuns).values({
+      id: run.id, companyId: run.companyId, agentId: run.agentId,
+      invocationSource: "assignment", status: "running", responsibleUserId: "alice", startedAt: now,
+    });
+    const service = agentQuotaFallbackService(db, { probePrimary: async () => result });
+    await service.tick(now);
+    expect(await service.getStatus(run.agentId, "alice")).toMatchObject({
+      usingBackup: false, lastPrimaryCheckResult: result, lastQuotaAt: null,
+    });
+  });
+
+  it("leaves active primary monitoring off when automatic checks are disabled", async () => {
+    const run = await seed();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    await agentService(db).update(run.agentId, {
+      runtimeConfig: { ...agent!.runtimeConfig, quotaFallback: {
+        ...(agent!.runtimeConfig.quotaFallback as Record<string, unknown>), recoveryEnabled: false,
+      } },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: run.id, companyId: run.companyId, agentId: run.agentId,
+      invocationSource: "assignment", status: "running", responsibleUserId: "alice", startedAt: now,
+    });
+    const probe = vi.fn(async () => "unavailable" as const);
+    await agentQuotaFallbackService(db, { probePrimary: probe }).tick(now);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it.each(["busy", "error"] as const)("keeps the primary after an inconclusive %s probe", async result => {
     const run = await seed();
     const service = agentQuotaFallbackService(db, { probePrimary: async () => result });
