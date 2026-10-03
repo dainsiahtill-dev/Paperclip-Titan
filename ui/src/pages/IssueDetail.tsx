@@ -9,6 +9,7 @@ import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPa
 import { EmailThreadProvider } from "../components/EmailMessageCard";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
+import { matchesSteeringReceipt } from "../lib/steering-receipt";
 import {
   memo,
   useCallback,
@@ -1521,7 +1522,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const [localSteeringPlacements, setLocalSteeringPlacements] = useState<
     ReadonlyMap<
       string,
-      { targetRunId: string; anchorAt: string; sequence: number }
+      { targetRunId: string; anchorAt: string; sequence: number; commentVersion?: string; payloadSha256?: string | null }
     >
   >(() => new Map());
   useEffect(() => {
@@ -1674,6 +1675,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
     const steeringSequenceByRunId = new Map<string, number>();
+    const seenDeliveries = new Set<string>();
     for (const evt of steeringEvents) {
       const details = evt.details ?? {};
       if (details["duplicate"] === true) continue;
@@ -1689,6 +1691,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             ? evt.runId
           : null;
       if (!commentId || !targetRunId) continue;
+      const currentComment = comments.find((comment) => comment.id === commentId);
+      if (!matchesSteeringReceipt(currentComment, details, evt.createdAt)) continue;
+      const deliveryId = typeof details["deliveryId"] === "string" ? details["deliveryId"] : `${targetRunId}:${commentId}`;
+      if (seenDeliveries.has(deliveryId)) continue;
+      seenDeliveries.add(deliveryId);
       const anchorAt =
         evt.createdAt instanceof Date
           ? evt.createdAt.toISOString()
@@ -1706,6 +1713,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       });
     }
     for (const [commentId, placement] of localSteeringPlacements) {
+      const currentComment = comments.find((comment) => comment.id === commentId);
+      if (placement.commentVersion && !matchesSteeringReceipt(currentComment, {
+        deliveryId: `local:${commentId}`, commentVersion: placement.commentVersion, payloadSha256: placement.payloadSha256,
+      }, placement.anchorAt)) continue;
       if (inputPlacementByCommentId.has(commentId)) continue;
       inputPlacementByCommentId.set(commentId, {
         runId: placement.targetRunId,
@@ -2135,6 +2146,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued message no longer has an active run target.",
         );
       try {
+        const submittedComment = comments.find((comment) => comment.id === commentId);
         const nextQueue = await issuesApi.steerQueuedComment(
           issueId,
           commentId,
@@ -2152,7 +2164,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           const sequence = [...current.values()].filter(
             (placement) => placement.targetRunId === targetRunId,
           ).length;
-          next.set(commentId, { targetRunId, anchorAt, sequence });
+          next.set(commentId, { targetRunId, anchorAt, sequence,
+            ...(submittedComment ? { commentVersion: new Date(submittedComment.updatedAt).toISOString(), payloadSha256: submittedComment.deliveryContentDigest } : {}),
+          });
           return next;
         });
         setConsumedQueuedCommentIds((current) => new Set(current).add(commentId));
@@ -2186,6 +2200,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [
       effectiveQueuedCommentQueue?.queueId,
       effectiveQueuedCommentQueue?.targetRunId,
+      comments,
       issueId,
       queryClient,
       refreshQueueAfterConflict,

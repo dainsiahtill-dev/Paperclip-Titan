@@ -940,6 +940,8 @@ export type IssueCommentDerivedAuthorSource =
   | "run_log_comment_post";
 
 export interface IssueComment {
+  /** Server-computed canonical content version, retained through display redaction. */
+  deliveryContentDigest?: string | null;
   clientRequestId?: string | null;
   conversationSessionGeneration?: number | null;
   id: string;

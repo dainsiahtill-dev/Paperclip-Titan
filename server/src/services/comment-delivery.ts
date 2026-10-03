@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { commentContentDigest } from './comment-content-digest.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from '@paperclipai/db';
 import { issueCommentDeliveries } from '@paperclipai/db/schema/issue_comment_deliveries';
@@ -10,9 +11,7 @@ import { queuedCommentIdsFromWakePayload, queuedCommentQueueRevision, withQueued
 export const deliveryRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 type Comment = typeof issueComments.$inferSelect;
 type Receipt = typeof issueCommentDeliveries.$inferSelect;
-export const commentDeliveryDigest = (comment: Comment) => createHash('sha256').update(JSON.stringify([
-  comment.id, comment.body, comment.authorType, comment.authorAgentId, comment.authorUserId, comment.updatedAt.toISOString(),
-])).digest('hex');
+export const commentDeliveryDigest = commentContentDigest;
 const sessionId = (run: typeof heartbeatRuns.$inferSelect) => run.nativeSessionId ?? run.sessionIdBefore;
 async function controllerLeaseLive(tx: Db, run: typeof heartbeatRuns.$inferSelect) {
   if (run.runtimeMode !== 'legacy' || !run.controllerBootId) return true;
@@ -186,7 +185,7 @@ export async function settleCommentDelivery(db: Db, input: {
       companyId: run.companyId, actorType: r.activityActorType as LogActivityInput['actorType'], actorId: r.activityActorId,
       agentApiKeyId: r.activityAgentApiKeyId, agentId: run.agentId, runId: run.id,
       action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id,
-      details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, turnId, deliveryId: r.id, correlationId: r.correlationId, protocol: r.deliveryMode, duplicate: false, originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId },
+      details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, turnId, deliveryId: r.id, correlationId: r.correlationId, payloadSha256: r.payloadSha256, commentVersion: r.commentVersion.toISOString(), protocol: r.deliveryMode, duplicate: false, originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId },
     }, publications);
     return true;
   });

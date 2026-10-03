@@ -191,6 +191,7 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 import { readIssueResourcePolicies } from "./issue-resource-limits.js";
+import { commentContentDigest } from "./comment-content-digest.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -6681,6 +6682,8 @@ export function issueService(db: Db) {
 
   function redactIssueComment<
     T extends {
+      id?: string;
+      updatedAt?: Date | string;
       body: string;
       authorType?: string | null;
       authorAgentId?: string | null;
@@ -6697,6 +6700,7 @@ export function issueService(db: Db) {
     comment: T,
     censorUsernameInLogs: boolean,
   ): T & {
+    deliveryContentDigest?: string | null;
     authorType: IssueCommentAuthorType;
     presentation: IssueCommentPresentation | null;
     metadata: IssueCommentMetadata | null;
@@ -6719,6 +6723,8 @@ export function issueService(db: Db) {
 
     return {
       ...comment,
+      deliveryContentDigest: typeof comment.id === "string" && comment.updatedAt
+        ? commentContentDigest({ ...comment, id: comment.id, updatedAt: comment.updatedAt }) : null,
       authorType: deriveIssueCommentAuthorType(comment),
       body: redactCurrentUserText(comment.body, {
         enabled: censorUsernameInLogs,
