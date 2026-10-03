@@ -271,6 +271,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
 }
 
 export interface AdapterExecutionTargetProcessOptions {
+  signal?: AbortSignal;
   cwd: string;
   env: Record<string, string>;
   stdin?: string;
@@ -912,6 +913,7 @@ export async function runAdapterExecutionTargetProcess(
       : options.env;
 
   return await runChildProcess(runId, command, args, {
+    signal: options.signal,
     cwd: options.cwd,
     env,
     stdin: options.stdin,

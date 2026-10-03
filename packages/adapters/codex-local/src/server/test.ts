@@ -266,6 +266,7 @@ export async function testEnvironment(
     };
   }
   if (engineSelection.engine === "acp") {
+    ctx.signal?.throwIfAborted();
     return testCodexAcpEnvironment(ctx);
   }
 
@@ -448,6 +449,7 @@ export async function testEnvironment(
             env: preparedProbe.env,
             timeoutSec: 45,
             graceSec: 5,
+            signal: ctx.signal,
             stdin: "Respond with hello.",
             onLog: async () => {},
           },

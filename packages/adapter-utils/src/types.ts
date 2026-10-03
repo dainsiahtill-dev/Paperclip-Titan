@@ -328,6 +328,8 @@ export interface AdapterSkillContext {
 }
 
 export interface AdapterEnvironmentTestContext {
+  /** Cancellation requests stop; callers retain occupancy until the returned promise settles. */
+  signal?: AbortSignal;
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;

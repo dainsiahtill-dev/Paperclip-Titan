@@ -24,3 +24,11 @@ Adjacent failure under diagnosis: `heartbeat-task-drain-admission-release.test.t
 All shell invocations use RTK; no `.codegraph` index exists. Node v24.21.0 first PATH, isolated `PAPERCLIP_HOME=/tmp/paperclip-runtime-tests-20261004`, `DATABASE_URL` unset; offline frozen install with scripts disabled. No dependencies or compiled package links to main. No port3100/service/default DB/config, real Agent or provider touched.
 
 Full runner build reached binary phase but explicit initial PATH omitted cargo (`cargo: not found`); runner TypeScript/contract checks passed. Full repo typecheck/test/build and real configured provider/ACP hello acceptance remain Root integration work. ACP environment test currently checks CLI login/scaffold only: exact ACP quota path is explicitly unsupported, never certified from CLI or classified as quota exhaustion.
+
+## Physical probe cancellation checkpoint
+
+Optional `AdapterEnvironmentTestContext.signal` propagates through Claude/Codex CLI hello and Claude ACP authentication probing into the existing execution-target/runChildProcess owner. A pre-aborted call starts no process; in-flight abort sends TERM, arms one grace/KILL timer, and retains the promise/process ownership through actual child close and stdout/stderr log drain. Close/error clears owned timers/listeners. Whole quota deadlines request abort; occupancy clears only after probe and managed auth cleanup settle. No hidden execution-run wall deadline introduced.
+
+RED: real synthetic child ignored cancellation and reached its wall timeout; pre-aborted child incorrectly started. GREEN: both real process regressions passed, adjacent Claude probe/remote suites passed in the latest runtime 11-file sweep. That sweep had148 passing tests and one workspace mock failure; no probe/cancellation failure.
+
+Ruling: cancellation acknowledgement comes from child close plus log drain, not AbortSignal delivery. Remote quota probes remain unsupported; no remote-provider stop proof is inferred from a host process.

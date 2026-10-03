@@ -4603,6 +4603,7 @@ export async function runChildProcess(
   command: string,
   args: string[],
   opts: {
+    signal?: AbortSignal;
     cwd: string;
     env: Record<string, string>;
     timeoutSec: number;
@@ -4620,6 +4621,7 @@ export async function runChildProcess(
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
+  opts.signal?.throwIfAborted();
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -4653,7 +4655,8 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
-      .then((target) => {
+      .then(async (target) => {
+        if (opts.signal?.aborted) { await target.cleanup?.(); opts.signal.throwIfAborted(); }
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
@@ -4765,20 +4768,27 @@ export async function runChildProcess(
           }, graceMs);
         };
 
-        const timeout =
-          opts.timeoutSec > 0
-            ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(
-                  () => {
-                    signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                  },
-                  Math.max(1, opts.graceSec) * 1000,
-                );
-              }, opts.timeoutSec * 1000)
-            : null;
+        let stopRequested = false;
+        let stopKillTimer: ReturnType<typeof setTimeout> | null = null;
+        const requestStop = () => {
+          if (stopRequested) return;
+          stopRequested = true;
+          clearTerminalCleanupTimers();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          stopKillTimer = setTimeout(() => {
+            stopKillTimer = null;
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+        const timeout = opts.timeoutSec > 0 ? setTimeout(() => { timedOut = true; requestStop(); }, opts.timeoutSec * 1000) : null;
+        const cleanupStop = () => {
+          if (timeout) clearTimeout(timeout);
+          if (stopKillTimer) clearTimeout(stopKillTimer);
+          opts.signal?.removeEventListener("abort", requestStop);
+          clearTerminalCleanupTimers();
+        };
+        opts.signal?.addEventListener("abort", requestStop, { once: true });
+        if (opts.signal?.aborted) requestStop();
 
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
@@ -4826,8 +4836,7 @@ export async function runChildProcess(
         }
 
         child.on("error", (err: Error) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
+          cleanupStop();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -4846,8 +4855,7 @@ export async function runChildProcess(
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
-            if (timeout) clearTimeout(timeout);
-            clearTerminalCleanupTimers();
+            cleanupStop();
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               void Promise.resolve()

@@ -82,6 +82,7 @@ export async function testEnvironment(
     };
   }
   if (engineSelection.engine === "acp") {
+    ctx.signal?.throwIfAborted();
     return testClaudeAcpEnvironment(ctx);
   }
 
@@ -399,6 +400,7 @@ export async function testEnvironment(
           env: probeEnv,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
+          signal: ctx.signal,
           stdin: "Respond with hello.",
           onLog: async () => {},
         },

@@ -591,6 +591,7 @@ function buildAcpLoginProbeUnavailableCheck(
  * maps "probe could not run" to a silent pass.
  */
 export async function probeClaudeAcpSandboxLogin(input: {
+  signal?: AbortSignal;
   config: Record<string, unknown>;
   target: AdapterExecutionTarget | null;
   env?: Record<string, string>;
@@ -654,6 +655,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
       env,
       timeoutSec,
       graceSec: 5,
+      signal: input.signal,
       stdin: "Respond with hello.",
       onLog: async () => {},
     });
@@ -894,7 +896,7 @@ export async function testClaudeAcpEnvironment(
     );
     const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
     if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv, signal: ctx.signal })));
     }
   }
 
