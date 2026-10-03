@@ -1,3 +1,4 @@
+import { createRecoveryScheduler } from "./services/recovery-scheduler.js";
 /// <reference path="./types/express.d.ts" />
 // Kicks off the OTel bootstrap as early as possible (no-op unless
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
@@ -1141,6 +1142,17 @@ async function startServerWithDatabaseTeardown(
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
+  const recoveryScheduler = heartbeat ? createRecoveryScheduler({
+    reap: () => heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 }),
+    promote: () => heartbeat.promoteDueScheduledRetries(),
+    queues: () => heartbeat.resumeQueuedRuns(),
+    stranded: () => heartbeat.reconcileStrandedAssignedIssues(),
+    dependencies: () => heartbeat.reconcileResolvedDependencyWakes(),
+    watchdogs: () => heartbeat.reconcileTaskWatchdogs(),
+    silence: () => heartbeat.scanSilentActiveRuns(),
+    stale_locks: () => heartbeat.sweepStaleIssueLocks(),
+  }, async () => !heartbeatSchedulerStopped && !(await heartbeat.resolveSchedulingSuppression()).suppressed,
+  phase => logger.error({ code: `heartbeat_recovery_${phase}_failed` }, "periodic heartbeat recovery phase failed")) : null;
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
     tracked = Promise.resolve(work)
@@ -1485,9 +1497,11 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
+        let startupStopAuthority = false;
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();
+            startupStopAuthority = true;
             logger.info(
               { reaped: result.reaped, runIds: result.runIds },
               "startup reap of orphaned heartbeat runs complete",
@@ -1505,6 +1519,7 @@ async function startServerWithDatabaseTeardown(
           }
         }
 
+        if (startupStopAuthority && !heartbeatSchedulerStopped && !(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
         const recoveredGoalActions = await heartbeat.recoverPendingSessionGoalActions();
@@ -1537,6 +1552,10 @@ async function startServerWithDatabaseTeardown(
             { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
             "startup heartbeat recovery changed assigned issue state",
           );
+        }
+
+        } else {
+          logger.warn({ code: "heartbeat_startup_stop_authority_unproven" }, "startup dispatch recovery skipped until stop authority is proven");
         }
 
         const dependencyWakesReconciled = await heartbeat.reconcileResolvedDependencyWakes();
@@ -1779,57 +1798,7 @@ async function startServerWithDatabaseTeardown(
           }));
 
         if (heartbeatSchedulerStopped) return;
-        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-            .then(() => heartbeat.promoteDueScheduledRetries())
-            .then(async (promotion) => {
-              await heartbeat.resumeQueuedRuns();
-              const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-              if (
-                promotion.promoted > 0 ||
-                reconciled.assignmentDispatched > 0 ||
-                reconciled.dispatchRequeued > 0 ||
-                reconciled.continuationRequeued > 0 ||
-                reconciled.successfulRunHandoffEscalated > 0 ||
-                reconciled.escalated > 0
-              ) {
-                logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-                  "periodic heartbeat recovery changed assigned issue state",
-                );
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileResolvedDependencyWakes();
-              if (reconciled.healed > 0) {
-                logger.warn({ ...reconciled }, "periodic dependency-wake reconciliation restored task execution paths");
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileTaskWatchdogs();
-              if (reconciled.triggered > 0) {
-                logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
-              }
-            })
-            .then(async () => {
-              const scanned = await heartbeat.scanSilentActiveRuns();
-              if (scanned.created > 0 || scanned.escalated > 0) {
-                logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-              }
-            })
-            .then(async () => {
-              const swept = await heartbeat.sweepStaleIssueLocks();
-              if (swept.cleared > 0) {
-                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-              }
-            })
-            .catch((err) => {
-              logger.error({ err }, "periodic heartbeat recovery failed");
-            }));
-        }
+        if (recoveryScheduler) trackHeartbeatSchedulerWork(recoveryScheduler.tick());
       })().catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
@@ -1941,6 +1910,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    recoveryScheduler?.stop();
     abortRetentionSweep();
     clearInterval(executionControlInterval);
     if (heartbeatSchedulerInterval) {
@@ -1951,7 +1921,10 @@ async function startServerWithDatabaseTeardown(
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
       prepareHotRestartShutdown,
-      waitForHeartbeatSchedulerIdle,
+      waitForHeartbeatSchedulerIdle: async () => {
+        await recoveryScheduler?.drain();
+        await waitForHeartbeatSchedulerIdle();
+      },
     });
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
