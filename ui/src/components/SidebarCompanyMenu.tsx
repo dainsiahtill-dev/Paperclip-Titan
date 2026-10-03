@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -404,7 +405,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       >
         <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
           <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
-            Organizations
+            {v3t("local.organizations_273018")}
           </DropdownMenuLabel>
           {/* Stack order is owned by cloud's own portfolio in v1, so the
               drag-to-reorder affordance stays self-hosted-only. */}
@@ -418,7 +419,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               }}
               className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {isEditingOrder ? "Done" : "Edit"}
+              {isEditingOrder ? v3t("common.done") : v3t("common.edit")}
             </button>
           )}
         </div>
@@ -436,10 +437,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               {stacks.length === 0 ? (
                 <DropdownMenuItem disabled>
                   {stacksQuery.isLoading
-                    ? "Loading organizations..."
+                    ? v3t("local.loading_organizations_a47e33")
                     : stacksQuery.isError
-                      ? "Could not load organizations"
-                      : "No organizations"}
+                      ? v3t("sidebar.couldNotLoadOrganizations")
+                      : v3t("sidebar.noOrganizations")}
                 </DropdownMenuItem>
               ) : null}
             </>
@@ -472,7 +473,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                 // offer the way back.
                 companyListUnavailable ? (
                   <>
-                    <DropdownMenuItem disabled>Couldn&apos;t load organizations</DropdownMenuItem>
+                    <DropdownMenuItem disabled>{v3t("local.couldn_t_load_organizations_85d975")}</DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={(event) => {
                         // Keep the menu open so the result of the retry is visible.
@@ -481,11 +482,11 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                       }}
                     >
                       <RefreshCw className="h-4 w-4 mr-2" />
-                      Try again
+                      {v3t("secrets.tryAgain")}
                     </DropdownMenuItem>
                   </>
                 ) : (
-                  <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{v3t("sidebar.noOrganizations")}</DropdownMenuItem>
                 )
               ) : null}
             </>
@@ -503,7 +504,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
                 <Plus className="size-4" />
               </span>
-              <span className="min-w-0 flex-1 truncate">Create organization</span>
+              <span className="min-w-0 flex-1 truncate">{v3t("local.create_organization_f14e1b")}</span>
             </DropdownMenuItem>
           )}
           {showInvitePeople ? (
@@ -522,7 +523,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                   <UserPlus className="size-4" />
                 </span>
                 <span className="min-w-0 flex-1 truncate">
-                  {currentName ? `Invite people to ${currentName}` : "Invite people"}
+                  {currentName ? v3t("dynamic.inviteToCompany", { name: currentName }) : v3t("sidebar.invitePeople")}
                 </span>
               </Link>
             </DropdownMenuItem>
@@ -537,7 +538,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                 <LogOut className="size-4" />
               </span>
               <span className="min-w-0 flex-1 truncate">
-                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                {signOutMutation.isPending ? v3t("sidebar.signingOut") : v3t("common.signOut")}
               </span>
             </DropdownMenuItem>
           ) : null}

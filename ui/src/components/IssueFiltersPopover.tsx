@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -196,9 +197,9 @@ export function IssueFiltersPopover({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter") : undefined}>
+        <Button variant={buttonVariant} size={iconOnly ? "icon" : "sm"} className={`text-xs ${iconOnly ? "relative h-8 w-8 shrink-0" : ""} ${activeFilterCount > 0 ? "text-blue-600 dark:text-blue-400" : ""}`} title={iconOnly ? (activeFilterCount > 0 ? v3t("dynamic.filtersCount", { count: activeFilterCount }) : v3t("issues.filter")) : undefined}>
           <Filter className={iconOnly ? "h-3.5 w-3.5" : "h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1"} />
-          {!iconOnly && <span className="hidden sm:inline">{activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}</span>}
+          {!iconOnly && <span className="hidden sm:inline">{activeFilterCount > 0 ? v3t("dynamic.filtersCount", { count: activeFilterCount }) : v3t("issues.filter")}</span>}
           {!iconOnly && activeFilterCount > 0 ? <span className="ml-0.5 text-(length:--text-nano) font-medium sm:hidden">{activeFilterCount}</span> : null}
           {iconOnly && activeFilterCount > 0 ? <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{activeFilterCount}</span> : null}
           {!iconOnly && activeFilterCount > 0 ? (
@@ -220,14 +221,14 @@ export function IssueFiltersPopover({
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Filters</span>
+            <span className="text-sm font-medium">{v3t("issues.filters")}</span>
             {activeFilterCount > 0 ? (
               <button
                 type="button"
                 className="text-xs text-muted-foreground hover:text-foreground"
                 onClick={clearFilters}
               >
-                Clear
+                {v3t("companySettings.clear")}
               </button>
             ) : null}
           </div>
@@ -236,7 +237,7 @@ export function IssueFiltersPopover({
             <>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-1" data-filter-options="inbox-category">
-                  <span className="text-xs text-muted-foreground">Category</span>
+                  <span className="text-xs text-muted-foreground">{v3t("inbox.category")}</span>
                   <div className="space-y-0.5">
                     {INBOX_CATEGORY_OPTIONS.map(([value, label]) => {
                       const selected = inboxScopeFilters.category === value;
@@ -263,7 +264,7 @@ export function IssueFiltersPopover({
 
                 {inboxScopeFilters.showApprovalStatus ? (
                   <div className="space-y-1" data-filter-options="inbox-approval-status">
-                    <span className="text-xs text-muted-foreground">Approval status</span>
+                    <span className="text-xs text-muted-foreground">{v3t("inbox.approvalStatus")}</span>
                     <div className="space-y-0.5">
                       {INBOX_APPROVAL_STATUS_OPTIONS.map(([value, label]) => {
                         const selected = inboxScopeFilters.approvalStatus === value;
@@ -295,7 +296,7 @@ export function IssueFiltersPopover({
           ) : null}
 
           <div className="space-y-1.5">
-            <span className="text-xs text-muted-foreground">Quick filters</span>
+            <span className="text-xs text-muted-foreground">{v3t("local.quick_filters_e01c5f")}</span>
             <div className="flex flex-wrap gap-1.5">
               {issueQuickFilterPresets.map((preset) => {
                 const isActive = issueFilterArraysEqual(state.statuses, preset.statuses);
@@ -322,7 +323,7 @@ export function IssueFiltersPopover({
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Status</span>
+                <span className="text-xs text-muted-foreground">{v3t("issues.fieldStatus")}</span>
                 <div className="space-y-0.5">
                   {issueStatusOrder.map((status) => (
                     <label key={status} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -340,7 +341,7 @@ export function IssueFiltersPopover({
               {/* PAP-411: Priority filter section hidden behind SHOW_TASK_PRIORITY_UI (filter state stays intact). */}
               {SHOW_TASK_PRIORITY_UI && (
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Priority</span>
+                <span className="text-xs text-muted-foreground">{v3t("issues.fieldPriority")}</span>
                 <div className="space-y-0.5">
                   {issuePriorityOrder.map((priority) => (
                     <label key={priority} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -359,9 +360,9 @@ export function IssueFiltersPopover({
 
             <div className="min-w-0 space-y-3">
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Responsible</span>
+                <span className="text-xs text-muted-foreground">{v3t("issues.fieldAssignee")}</span>
                 {streamlined && (agents?.length ?? 0) + (currentUserId ? 2 : 1) > SEARCHABLE_FILTER_THRESHOLD ? (
-                  <FilterOptionSearch value={assigneeSearch} onChange={setAssigneeSearch} label="Responsible" />
+                  <FilterOptionSearch value={assigneeSearch} onChange={setAssigneeSearch} label={v3t("issues.fieldAssignee")} />
                 ) : null}
                 <div data-filter-options="responsible" className={streamlined ? "space-y-0.5" : "max-h-32 space-y-0.5 overflow-y-auto"}>
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -369,7 +370,7 @@ export function IssueFiltersPopover({
                       checked={state.assignees.includes("__unassigned")}
                       onCheckedChange={() => onChange({ assignees: toggleIssueFilterValue(state.assignees, "__unassigned") })}
                     />
-                    <span className="text-sm">No responsible</span>
+                    <span className="text-sm">{v3t("pipelines.noResponsible")}</span>
                   </label>
                   {currentUserId ? (
                     <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -378,7 +379,7 @@ export function IssueFiltersPopover({
                         onCheckedChange={() => onChange({ assignees: toggleIssueFilterValue(state.assignees, "__me") })}
                       />
                       <User className="h-3.5 w-3.5 text-muted-foreground" />
-                      <span className="text-sm">Me</span>
+                      <span className="text-sm">{v3t("issues.filterMe")}</span>
                     </label>
                   ) : null}
                   {(streamlined ? visibleAgents : agents ?? []).map((agent) => (
@@ -395,7 +396,7 @@ export function IssueFiltersPopover({
 
               {creatorOptions.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Creator</span>
+                  <span className="text-xs text-muted-foreground">{v3t("local.creator_88447b")}</span>
                   {selectedCreatorOptions.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {selectedCreatorOptions.map((creator) => (
@@ -419,7 +420,7 @@ export function IssueFiltersPopover({
                     <Input
                       value={creatorSearch}
                       onChange={(event) => setCreatorSearch(event.target.value)}
-                      placeholder="Search creators..."
+                      placeholder={v3t("local.search_creators_229489")}
                       className="h-8 pl-7 text-xs"
                     />
                   </div>
@@ -441,7 +442,7 @@ export function IssueFiltersPopover({
                         </button>
                       );
                     }) : (
-                      <div className="px-2 py-1 text-xs text-muted-foreground">No creators match.</div>
+                      <div className="px-2 py-1 text-xs text-muted-foreground">{v3t("local.no_creators_match_e23e5a")}</div>
                     )}
                   </div>
                 </div>
@@ -449,9 +450,9 @@ export function IssueFiltersPopover({
 
               {projects && projects.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Project</span>
+                  <span className="text-xs text-muted-foreground">{v3t("issues.fieldProject")}</span>
                   {streamlined && projects.length > SEARCHABLE_FILTER_THRESHOLD ? (
-                    <FilterOptionSearch value={projectSearch} onChange={setProjectSearch} label="Projects" />
+                    <FilterOptionSearch value={projectSearch} onChange={setProjectSearch} label={v3t("sidebar.projects")} />
                   ) : null}
                   <div data-filter-options="projects" className={streamlined ? "space-y-0.5" : "max-h-32 space-y-0.5 overflow-y-auto"}>
                     {(streamlined ? visibleProjects : projects).map((project) => (
@@ -471,9 +472,9 @@ export function IssueFiltersPopover({
             <div className="min-w-0 space-y-3">
               {labels && labels.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Labels</span>
+                  <span className="text-xs text-muted-foreground">{v3t("caseDetail.labels")}</span>
                   {streamlined && labels.length > SEARCHABLE_FILTER_THRESHOLD ? (
-                    <FilterOptionSearch value={labelSearch} onChange={setLabelSearch} label="Labels" />
+                    <FilterOptionSearch value={labelSearch} onChange={setLabelSearch} label={v3t("caseDetail.labels")} />
                   ) : null}
                   <div data-filter-options="labels" className={streamlined ? "space-y-0.5" : "max-h-32 space-y-0.5 overflow-y-auto"}>
                     {(streamlined ? visibleLabels : labels).map((label) => (
@@ -492,9 +493,9 @@ export function IssueFiltersPopover({
 
               {workspaces && workspaces.length > 0 ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">Workspace</span>
+                  <span className="text-xs text-muted-foreground">{v3t("issues.fieldWorkspace")}</span>
                   {streamlined && workspaces.length > SEARCHABLE_FILTER_THRESHOLD ? (
-                    <FilterOptionSearch value={workspaceSearch} onChange={setWorkspaceSearch} label="Workspaces" />
+                    <FilterOptionSearch value={workspaceSearch} onChange={setWorkspaceSearch} label={v3t("sidebar.workspaces")} />
                   ) : null}
                   <div data-filter-options="workspaces" className={streamlined ? "space-y-0.5" : "max-h-32 space-y-0.5 overflow-y-auto"}>
                     {(streamlined ? visibleWorkspaces : workspaces).map((workspace) => (
@@ -513,7 +514,7 @@ export function IssueFiltersPopover({
 
               {enableExternalObjectFilters ? (
                 <div className="space-y-1">
-                  <span className="text-xs text-muted-foreground">External object status</span>
+                  <span className="text-xs text-muted-foreground">{v3t("local.external_object_status_48bc20")}</span>
                   <div className="space-y-0.5">
                     {externalObjectFilterOrder.map((value) => {
                       const iconCategory = value === "failed" ? "failed"
@@ -545,13 +546,13 @@ export function IssueFiltersPopover({
               ) : null}
 
               <div className="space-y-1">
-                <span className="text-xs text-muted-foreground">Visibility</span>
+                <span className="text-xs text-muted-foreground">{v3t("local.visibility_744861")}</span>
                 <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
                   <Checkbox
                     checked={state.liveOnly}
                     onCheckedChange={(checked) => onChange({ liveOnly: checked === true })}
                   />
-                  <span className="text-sm">Live runs only</span>
+                  <span className="text-sm">{v3t("local.live_runs_only_596632")}</span>
                 </label>
                 {enableRoutineVisibilityFilter ? (
                   <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -559,7 +560,7 @@ export function IssueFiltersPopover({
                       checked={state.hideRoutineExecutions}
                       onCheckedChange={(checked) => onChange({ hideRoutineExecutions: checked === true })}
                     />
-                    <span className="text-sm">Hide routine runs</span>
+                    <span className="text-sm">{v3t("local.hide_routine_runs_d4a9dd")}</span>
                   </label>
                 ) : null}
               </div>

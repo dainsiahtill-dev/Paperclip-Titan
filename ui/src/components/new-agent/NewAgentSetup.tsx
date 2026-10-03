@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
@@ -76,7 +77,7 @@ export function NewAgentSetup() {
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
-        Select an organization to create an agent.
+        {v3t("local.select_an_organization_to_create_an_agent_28b980")}
       </p>
     );
   return (
@@ -564,8 +565,8 @@ function Setup({
         className="text-sm text-muted-foreground"
       >
         {savedAgent.error
-          ? "Could not load the created agent. Return to Agents to view it."
-          : "Loading your agent…"}
+          ? v3t("local.could_not_load_the_created_agent_return_to_agents_to_vie_07abe0")
+          : v3t("local.loading_your_agent_480463")}
       </p>
     );
   if (!name || !adapterType)
@@ -637,7 +638,7 @@ function Setup({
                 <span>
                   ·{" "}
                   {runnerProvider === "codex"
-                    ? "Native app server runner"
+                    ? v3t("local.native_app_server_runner_6254c5")
                     : "Paperclip Runner"}
                 </span>
               )}
@@ -656,19 +657,18 @@ function Setup({
         )}
         {adapters.data && !available && (
           <p role="alert" className="text-sm text-destructive">
-            This adapter is unavailable. Choose an enabled adapter.
+            {v3t("local.this_adapter_is_unavailable_choose_an_enabled_adapter_36fcb6")}
           </p>
         )}
         {(managedOnly || forced.forced) &&
           !envs.isPending &&
           !environmentId && (
             <p role="alert" className="text-sm text-destructive">
-              No managed environment is available. Configure an environment
-              before continuing.
+              {v3t("local.no_managed_environment_is_available_configure_an_environ_3dcfbc")}
             </p>
           )}
         <div className="flex flex-col gap-8 md:flex-row">
-          <nav aria-label="Agent setup steps" className="shrink-0 md:w-44">
+          <nav aria-label={v3t("local.agent_setup_steps_1f28c3")} className="shrink-0 md:w-44">
             <ol className="flex flex-wrap gap-2 md:flex-col">
               {steps.map((step, index) => (
                 <li key={step}>
@@ -709,8 +709,8 @@ function Setup({
                   <OnboardingCard className="mx-auto">
                     <div className="mb-8">
                       <OnboardingHeading
-                        title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
+                        title={v3t("onboardingWizard.connectAModel")}
+                        lede={v3t("dynamic.connectAgent", { name, provider: connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI" })}
                         center
                       />
                     </div>
@@ -749,27 +749,27 @@ function Setup({
                       <h2 className="flex items-center gap-3 text-lg font-semibold">
                         <Check className="size-5" />
                         {created.status === "pending_approval"
-                          ? "Agent submitted for approval"
-                          : "Your agent is ready"}
+                          ? v3t("local.agent_submitted_for_approval_9357fe")
+                          : v3t("local.your_agent_is_ready_bf213d")}
                       </h2>
                       <dl className="grid grid-cols-2 gap-4 text-sm">
-                        <dt className="text-muted-foreground">Adapter</dt>
+                        <dt className="text-muted-foreground">{v3t("agentDetail.adapter")}</dt>
                         <dd>{getAdapterDisplay(adapterType).label}</dd>
                         {showModel && (
                           <>
-                            <dt className="text-muted-foreground">Model</dt>
+                            <dt className="text-muted-foreground">{v3t("agentConfig.model")}</dt>
                             <dd className="break-all">
                               {String(confirmationModel)}
                             </dd>
                           </>
                         )}
-                        <dt className="text-muted-foreground">Environment</dt>
+                        <dt className="text-muted-foreground">{v3t("agentDetail.environment")}</dt>
                         <dd>{environmentLabel}</dd>
                       </dl>
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
-                          ? "An organization administrator must approve this agent before it can work."
-                          : "Assign a task when you’re ready for this agent to work."}
+                          ? v3t("local.an_organization_administrator_must_approve_this_agent_be_77d7c0")
+                          : v3t("local.assign_a_task_when_you_re_ready_for_this_agent_to_work_adbf2c")}
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-between gap-3">
@@ -778,7 +778,7 @@ function Setup({
                         onClick={() => navigate(`${agentUrl(created)}/runtime`)}
                       >
                         <Settings2 className="size-4" />
-                        Edit configuration
+                        {v3t("local.edit_configuration_307681")}
                       </Button>
                       <Button
                         disabled={created.status === "pending_approval"}
@@ -789,7 +789,7 @@ function Setup({
                           })
                         }
                       >
-                        Assign {created.name} a Task
+                        {v3t("local.assign_8ece89")} {created.name} {v3t("local.a_task_da913e")}
                         <ArrowRight className="size-4" />
                       </Button>
                     </div>
@@ -803,19 +803,19 @@ function Setup({
                     }}
                   >
                     <h2 className="text-xl font-semibold">
-                      Configure your agent
+                      {v3t("local.configure_your_agent_be9ca6")}
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
-                        <h3 className="text-sm font-semibold">Runtime</h3>
+                        <h3 className="text-sm font-semibold">{v3t("local.runtime_109311")}</h3>
                         {aiProviderForAdapter(brandType) && (
                           connection && !aiBinding ? (
                             <div className="space-y-3">
                               <p className="text-sm text-muted-foreground">
-                                Using the connection selected in the Connect step.
+                                {v3t("local.using_the_connection_selected_in_the_connect_step_7129ce")}
                               </p>
                               <Button type="button" variant="outline" onClick={() => setScreen("connect")}>
-                                Change connection
+                                {v3t("local.change_connection_286b1c")}
                               </Button>
                             </div>
                           ) : (
@@ -823,7 +823,7 @@ function Setup({
                               onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
                           )
                         )}
-                        {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
+                        {models.error && <p role="alert" className="text-sm text-destructive">{v3t("local.could_not_load_models_retry_or_enter_a_model_id_manually_c8cad4")}</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
@@ -861,9 +861,9 @@ function Setup({
                               />
                             )}
                             {efforts.length > 0 && (
-                              <Field label="Thinking effort">
+                              <Field label={v3t("agentConfig.thinkingEffort")}>
                                 <select
-                                  aria-label="Thinking effort"
+                                  aria-label={v3t("agentConfig.thinkingEffort")}
                                   className={controlClass}
                                   value={effort}
                                   onChange={(event) => {
@@ -871,7 +871,7 @@ function Setup({
                                     resetTest();
                                   }}
                                 >
-                                  <option value="">Auto</option>
+                                  <option value="">{v3t("companySettings.auto")}</option>
                                   {efforts.map((value) => (
                                     <option key={value} value={value}>
                                       {value}
@@ -889,16 +889,15 @@ function Setup({
                         )}
                         {showModel && models.error && (
                           <p className="text-xs text-muted-foreground">
-                            Couldn’t load models. You can enter a model ID
-                            manually.
+                            {v3t("local.couldn_t_load_models_you_can_enter_a_model_id_manually_5943c1")}
                           </p>
                         )}
                         {hasCredentialField && !aiBinding && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
-                              <Field label="API key provider">
+                              <Field label={v3t("local.api_key_provider_d8551d")}>
                                 <select
-                                  aria-label="API key provider"
+                                  aria-label={v3t("local.api_key_provider_d8551d")}
                                   className={controlClass}
                                   value={provider}
                                   onChange={(event) => {
@@ -949,13 +948,13 @@ function Setup({
                                     }}
                                     placeholder={
                                       selectedBinding
-                                        ? "Using saved key"
+                                        ? v3t("local.using_saved_key_572209")
                                         : [
                                               "cursor_cloud",
                                               "hermes_gateway",
                                             ].includes(adapterType)
-                                          ? "Required"
-                                          : "Optional if already configured"
+                                          ? v3t("teamCatalog.preview.required")
+                                          : v3t("local.optional_if_already_configured_74f784")
                                     }
                                   />
                                   {adapterType === "cursor_cloud" && (
@@ -965,7 +964,7 @@ function Setup({
                                       rel="noopener noreferrer"
                                       className="shrink-0 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
                                     >
-                                      get api key
+                                      {v3t("local.get_api_key_b23844")}
                                     </a>
                                   )}
                                 </div>
@@ -977,7 +976,7 @@ function Setup({
                                   chooseProvider ? "sm:col-span-2" : undefined
                                 }
                               >
-                                <Field label="Or use an organization secret">
+                                <Field label={v3t("local.or_use_an_organization_secret_961df7")}>
                                   <SecretPicker
                                     secretId={
                                       selectedBinding &&
@@ -1002,16 +1001,15 @@ function Setup({
                               </div>
                             )}
                             <p className="text-xs text-muted-foreground sm:col-span-2">
-                              New keys are saved as organization secrets when
-                              you finish setup.
+                              {v3t("local.new_keys_are_saved_as_organization_secrets_when_you_fini_ff9613")}
                               {multiProvider && ` Use a ${provider}/model ID.`}
                             </p>
                           </div>
                         )}
                         {adapterType === "hermes_gateway" && (
-                          <Field label="Hermes API base URL">
+                          <Field label={v3t("local.hermes_api_base_url_ccec8c")}>
                             <Input
-                              aria-label="Hermes API base URL"
+                              aria-label={v3t("local.hermes_api_base_url_ccec8c")}
                               value={gatewayUrl}
                               onChange={(event) => {
                                 setGatewayUrl(event.target.value);
@@ -1023,9 +1021,9 @@ function Setup({
                         )}
                         {usingKimiApi && (
                           <div className="grid gap-5 sm:grid-cols-2">
-                            <Field label="Kimi API model name">
+                            <Field label={v3t("local.kimi_api_model_name_d880c2")}>
                               <Input
-                                aria-label="Kimi API model name"
+                                aria-label={v3t("local.kimi_api_model_name_d880c2")}
                                 value={kimiModel}
                                 onChange={(event) => {
                                   setKimiModel(event.target.value);
@@ -1034,9 +1032,9 @@ function Setup({
                                 placeholder="kimi-for-coding"
                               />
                             </Field>
-                            <Field label="Kimi API protocol">
+                            <Field label={v3t("local.kimi_api_protocol_2fd465")}>
                               <select
-                                aria-label="Kimi API protocol"
+                                aria-label={v3t("local.kimi_api_protocol_2fd465")}
                                 className={controlClass}
                                 value={kimiProtocol}
                                 onChange={(event) => {
@@ -1052,26 +1050,26 @@ function Setup({
                               </select>
                             </Field>
                             <Field
-                              label="Kimi API base URL"
+                              label={v3t("local.kimi_api_base_url_b46e77")}
                               hint="Optional override for your provider endpoint."
                             >
                               <Input
-                                aria-label="Kimi API base URL"
+                                aria-label={v3t("local.kimi_api_base_url_b46e77")}
                                 value={kimiBaseUrl}
                                 onChange={(event) => {
                                   setKimiBaseUrl(event.target.value);
                                   resetTest();
                                 }}
-                                placeholder="Provider default"
+                                placeholder={v3t("local.provider_default_352a25")}
                               />
                             </Field>
                           </div>
                         )}
                         {adapterType === "cursor_cloud" && (
                           <div className="grid gap-5 sm:grid-cols-2">
-                            <Field label="GitHub repository">
+                            <Field label={v3t("local.github_repository_505554")}>
                               <Input
-                                aria-label="GitHub repository"
+                                aria-label={v3t("local.github_repository_505554")}
                                 value={repository}
                                 onChange={(event) => {
                                   setRepository(event.target.value);
@@ -1080,10 +1078,10 @@ function Setup({
                                 placeholder="https://github.com/your-org/repo"
                               />
                             </Field>
-                            <Field label="Branch">
+                            <Field label={v3t("agentDetail.branch")}>
                               <Input
-                                aria-label="Branch"
-                                placeholder="Repository default"
+                                aria-label={v3t("agentDetail.branch")}
+                                placeholder={v3t("local.repository_default_e88cba")}
                                 value={branch}
                                 onChange={(event) => {
                                   setBranch(event.target.value);
@@ -1098,9 +1096,9 @@ function Setup({
                         adapterType,
                       ) && (
                         <section className="space-y-5">
-                          <h3 className="text-sm font-semibold">Environment</h3>
+                          <h3 className="text-sm font-semibold">{v3t("agentDetail.environment")}</h3>
                           <select
-                            aria-label="Environment"
+                            aria-label={v3t("agentDetail.environment")}
                             className={controlClass}
                             value={environmentOverride}
                             disabled={forced.forced || managedOnly}
@@ -1112,7 +1110,7 @@ function Setup({
                             }}
                           >
                             <option value="">
-                              Default: {environmentLabel}
+                              {v3t("local.default_d1f6d9")} {environmentLabel}
                             </option>
                             {(envs.data ?? [])
                               .filter((env) => env.status === "active")
@@ -1146,7 +1144,7 @@ function Setup({
                           onClick={() => setScreen("connect")}
                         >
                           <ArrowLeft className="size-4" />
-                          Connection
+                          {v3t("local.connection_639a40")}
                         </Button>
                       ) : (
                         <span />
@@ -1160,7 +1158,7 @@ function Setup({
                           Boolean(connectionAdapter && !connection)
                         }
                       >
-                        {saving ? "Creating…" : "Finish setup"}
+                        {saving ? v3t("newAgent.creating") : v3t("local.finish_setup_bc01ae")}
                         <Check className="size-4" />
                       </Button>
                     </div>

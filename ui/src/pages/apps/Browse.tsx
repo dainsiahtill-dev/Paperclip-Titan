@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -164,21 +165,21 @@ function connectionState(connection: ToolConnection): ConnectionState {
   if (connection.status === "draft") {
     return {
       kind: "draft",
-      label: "Setup incomplete",
+      label: v3t("local.setup_incomplete_167fc0"),
       message: "Finish setup before agents can use this account.",
     };
   }
   if (connection.enabled === false || connection.status === "disabled") {
     return {
       kind: "paused",
-      label: "Paused",
+      label: v3t("issues.paused"),
       message: "Agents can’t use this account right now.",
     };
   }
   if ((connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config))) || isToolConnectionAttentionHealth(connection.healthStatus)) {
     return {
       kind: "attention",
-      label: "Needs attention",
+      label: v3t("pipelines.needsAttention"),
       message:
         connection.healthMessage ??
         connection.lastError ??
@@ -187,7 +188,7 @@ function connectionState(connection: ToolConnection): ConnectionState {
           : "Replace the credential to restore access."),
     };
   }
-  return { kind: "connected", label: "Connected", message: null };
+  return { kind: "connected", label: v3t("companyEnvironments.terminal.connected"), message: null };
 }
 
 function connectionRank(connection: ToolConnection): number {
@@ -221,32 +222,32 @@ function connectorAction(
       )
     : null;
   if (row.connections.length > 0 || row.chatEndpoints.length > 0) {
-    if (chatHref) return { label: "Add connection", href: chatHref };
+    if (chatHref) return { label: v3t("local.add_connection_685f88"), href: chatHref };
     if (row.entry && applicationId) {
       return {
-        label: "Add account",
+        label: v3t("local.add_account_ee7ee5"),
         href: additionalConnectionHref(row.entry, applicationId),
       };
     }
     return {
-      label: "Add account",
+      label: v3t("local.add_account_ee7ee5"),
       href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
     };
   }
 
   if (row.entry?.availability?.available === false) {
     return {
-      label: "Unavailable",
+      label: v3t("sidebar.unavailable"),
       href: null,
       title:
         row.entry.availability.reason ??
         "This connector is unavailable on this instance.",
     };
   }
-  if (chatHref) return { label: "Connect", href: chatHref };
-  if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
+  if (chatHref) return { label: v3t("local.connect_1a2303"), href: chatHref };
+  if (row.entry) return { label: v3t("local.connect_1a2303"), href: connectHrefFor(row.entry) };
   return {
-    label: "Connect",
+    label: v3t("local.connect_1a2303"),
     href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
   };
 }
@@ -282,7 +283,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors" }]);
+    setBreadcrumbs([{ label: v3t("local.connectors_c3d2e7") }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
 
@@ -604,7 +605,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Select an organization to manage connectors.
+        {v3t("local.select_an_organization_to_manage_connectors_85993a")}
       </div>
     );
   }
@@ -630,8 +631,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search connectors…"
-            aria-label="Search connectors"
+            placeholder={v3t("local.search_connectors_fad7e4")}
+            aria-label={v3t("local.search_connectors_706a60")}
             className="pl-9"
           />
         </div>
@@ -644,8 +645,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <p className="min-w-0 flex-1">
-            Couldn’t load every connector. Existing accounts are shown where
-            available.
+            {v3t("local.couldn_t_load_every_connector_existing_accounts_are_show_513ced")}
           </p>
           <Button
             type="button"
@@ -658,13 +658,13 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               if (chatConnectorsEnabled) void chatEndpointsQuery.refetch();
             }}
           >
-            Try again
+            {v3t("secrets.tryAgain")}
           </Button>
         </div>
       ) : null}
 
       {loading ? (
-        <div className="space-y-3" aria-label="Loading connectors">
+        <div className="space-y-3" aria-label={v3t("local.loading_connectors_2d1897")}>
           {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="h-24 w-full rounded-xl" />
           ))}
@@ -672,10 +672,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : nothingMatches ? (
         <p className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
           <Link2 className="h-4 w-4" />
-          No connectors match “{query.trim()}”.
+          {v3t("local.no_connectors_match_faad7a")}{query.trim()}”.
         </p>
       ) : (
-        <div className="space-y-3" role="list" aria-label="Connector list">
+        <div className="space-y-3" role="list" aria-label={v3t("local.connector_list_3bbef1")}>
           {visibleRows.map((row) => (
             <ConnectorCard
               renderAccountDetails={renderAccountDetails}
@@ -704,7 +704,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Remove {connectionToRemove?.accountName ?? "this"} connection?
+              {v3t("profileSettings.remove")} {connectionToRemove?.accountName ?? v3t("local.this_1eb796")} {v3t("local.connection_1df400")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {connectionToRemove && connectionToRemove.childConnectionCount > 0
@@ -712,12 +712,12 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                 : connectionToRemove &&
                     connectionToRemove.remainingConnectionCount > 0
                   ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
-                  : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+                  : v3t("local.the_saved_credentials_are_deleted_and_agents_lose_access_9c0b82")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={removeConnection.isPending}>
-              Cancel
+              {v3t("agentDetail.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -733,7 +733,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               ) : (
                 <Trash2 />
               )}
-              {removeConnection.isPending ? "Removing…" : "Remove connection"}
+              {removeConnection.isPending ? v3t("companySkills.removing") : v3t("local.remove_connection_e9e9e2")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -858,12 +858,12 @@ export function ConnectorCard({
                     onNavigate(`/apps/chat/${endpoint.id}/settings`)
                   }
                 >
-                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : "Chat"}
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? v3t("profileSettings.email") : v3t("issueDetail.tabChat")}
                 </button>
                 <p className="truncate text-xs text-muted-foreground">
                   {endpoint.providerAccountLabel ??
                     endpoint.botLabel ??
-                    "Provider identity"}
+                    v3t("local.provider_identity_656eef")}
                 </p>
               </div>
               <span className="text-xs text-muted-foreground">
@@ -880,7 +880,7 @@ export function ConnectorCard({
                   )
                 }
               >
-                {endpoint.status === "draft" ? "Finish setup" : "Manage"}
+                {endpoint.status === "draft" ? v3t("local.finish_setup_bc01ae") : v3t("local.manage_5a2344")}
               </Button>
             </div>
           ))}
@@ -943,7 +943,7 @@ function ConnectionAccountRow({
 
       <div className="flex flex-wrap items-center gap-2 sm:justify-end">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Connected by</span>
+          <span>{v3t("local.connected_by_9952ce")}</span>
           <ConnectionOwnerIdentity owner={owner} />
         </div>
         {state.kind === "attention" || state.kind === "draft" ? (
@@ -955,9 +955,9 @@ function ConnectionAccountRow({
           >
             {state.kind === "attention"
               ? connection.requiresReauthorization === false
-                ? "Retry access"
-                : "Reconnect"
-              : "Finish setup"}
+                ? v3t("local.retry_access_e52222")
+                : v3t("companyEnvironments.reconnect")
+              : v3t("local.finish_setup_bc01ae")}
           </Button>
         ) : null}
         <DropdownMenu>
@@ -975,12 +975,12 @@ function ConnectionAccountRow({
             <DropdownMenuItem
               onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
             >
-              Permissions
+              {v3t("agentDetail.permissions")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
               <Trash2 />
-              Remove connection
+              {v3t("local.remove_connection_e9e9e2")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1047,10 +1047,10 @@ function CustomConnectorCard({
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-foreground">
-            Connect your own tool
+            {v3t("local.connect_your_own_tool_89af50")}
           </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Add a custom MCP server or paste an existing configuration.
+            {v3t("local.add_a_custom_mcp_server_or_paste_an_existing_configurati_b1e889")}
           </p>
         </div>
         <Button
@@ -1061,7 +1061,7 @@ function CustomConnectorCard({
           aria-controls="custom-connector-options"
           onClick={() => setExpanded((open) => !open)}
         >
-          {expanded ? "Close" : "Connect"}
+          {expanded ? v3t("issueDetail.closeLabel") : v3t("local.connect_1a2303")}
         </Button>
       </div>
 
@@ -1072,14 +1072,14 @@ function CustomConnectorCard({
         >
           <CustomConnectorOption
             icon={ServerCog}
-            title="Connect your own MCP server"
-            description="Enter the URL for a custom or self-hosted MCP server."
+            title={v3t("local.connect_your_own_mcp_server_abb240")}
+            description={v3t("local.enter_the_url_for_a_custom_or_self_hosted_mcp_server_a5d749")}
             onClick={() => onNavigate("/apps/byo")}
           />
           <CustomConnectorOption
             icon={ClipboardPaste}
-            title="Paste a config"
-            description="Paste an existing setup snippet and connect it."
+            title={v3t("local.paste_a_config_272614")}
+            description={v3t("local.paste_an_existing_setup_snippet_and_connect_it_3c4205")}
             onClick={() => onNavigate("/apps/advanced/paste-config")}
           />
         </div>

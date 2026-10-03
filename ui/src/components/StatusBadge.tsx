@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { v3t } from "@/i18n";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
@@ -35,7 +36,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {label ?? v3t(`status.${status}`, { defaultValue: status.replace(/[_-]/g, " ") })}
     </span>
   );
 }
@@ -45,7 +46,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
  * `--status-agent-*` base hue via the `.status-chip` color-mix helper. `active`
  * renders as "idle" (alias for dead code).
  */
-export function AgentStatusBadge({ status }: { status: string }) {
+export function AgentStatusBadge({ status, label: overrideLabel }: { status: string; label?: string }) {
   const cssVar = agentStatusVar[status] ?? agentStatusVarDefault;
   const label = status === "active" ? "idle" : status;
   return (
@@ -53,7 +54,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {overrideLabel ?? v3t(`status.${label}`, { defaultValue: label.replace(/_/g, " ") })}
     </span>
   );
 }
@@ -94,7 +95,7 @@ export function IssueStatusBadge({ status }: { status: string }) {
       style={scStyle(cssVar)}
     >
       <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      {v3t(`taskStatus.${status}`, { defaultValue: sentenceCaseStatus(status) })}
     </span>
   );
 }

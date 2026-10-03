@@ -1,4 +1,5 @@
 import {
+  Building2,
   Inbox,
   ListChecks,
   CircleDot,
@@ -22,6 +23,7 @@ import {
   LayoutGrid,
 } from "lucide-react";
 import { useState } from "react";
+import { v3t } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem.production";
@@ -231,6 +233,7 @@ export function Sidebar() {
 
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/org" label="Org" icon={Network} />
+          <SidebarNavItem to="/office" label={v3t("office.title")} icon={Building2} />
           {showApps ? <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} /> : null}
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />

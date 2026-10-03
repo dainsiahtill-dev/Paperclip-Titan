@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -48,13 +49,13 @@ interface ActiveAgentsPanelProps {
 
 export function ActiveAgentsPanel({
   companyId,
-  title = "Agents",
+  title = v3t("dynamic.agentsTitle"),
   minRunCount = MIN_DASHBOARD_RUNS,
   fetchLimit,
   cardLimit = DASHBOARD_RUN_CARD_LIMIT,
   gridClassName,
   cardClassName,
-  emptyMessage = "No recent agent runs.",
+  emptyMessage = v3t("dynamic.noRecentRuns"),
   queryScope = "dashboard",
   showMoreLink = true,
   showTranscripts = false,
@@ -140,7 +141,7 @@ export function ActiveAgentsPanel({
           <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
             {hiddenRunCount > 0
               ? `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`
-              : "View all runs"}
+              : v3t("local.view_all_runs_346de5")}
           </Link>
         </div>
       )}
@@ -167,12 +168,12 @@ export const AgentRunCard = memo(function AgentRunCard({
   issueLoadFailed?: boolean;
   className?: string;
 }) {
-  const statusLabel = runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " ");
+  const statusLabel = v3t(`taskStatus.${run.status}`, { defaultValue: runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " ") });
   const runUrl = `/agents/${run.agentId}/runs/${run.id}`;
   const timestamp = run.finishedAt
-    ? `Finished ${relativeTime(run.finishedAt)}`
-    : run.startedAt ? `Started ${relativeTime(run.startedAt)}` : `Queued ${relativeTime(run.createdAt)}`;
-  const taskTitle = issue?.title ?? (issueLoadFailed ? "Task unavailable" : "Loading task…");
+    ? v3t("dynamic.finishedAt", { time: relativeTime(run.finishedAt) })
+    : run.startedAt ? v3t("dynamic.startedAt", { time: relativeTime(run.startedAt) }) : v3t("dynamic.queuedAt", { time: relativeTime(run.createdAt) });
+  const taskTitle = issue?.title ?? (issueLoadFailed ? v3t("dynamic.taskUnavailable") : v3t("dynamic.loadingTask"));
 
   return (
     <div className={cn(
@@ -215,7 +216,7 @@ export const AgentRunCard = memo(function AgentRunCard({
         ) : (
           <Link to={runUrl} className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <Clock3 className="size-4 shrink-0" aria-hidden />
-            <span className="truncate">{run.invocationSource === "timer" ? "Scheduled heartbeat" : "No linked task"}</span>
+            <span className="truncate">{run.invocationSource === "timer" ? v3t("local.scheduled_heartbeat_9994a6") : v3t("local.no_linked_task_65d7a1")}</span>
           </Link>
         )}
         <time

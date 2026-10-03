@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { useState, type ReactNode } from "react";
 import { CheckCircle2, RefreshCw, Star, TriangleAlert, Unplug } from "lucide-react";
 import type { ConnectionGrant } from "@paperclipai/shared";
@@ -26,7 +27,7 @@ export function AiConnectionAccountControls({
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
   return (
-    <section className="space-y-4" aria-label="AI account settings">
+    <section className="space-y-4" aria-label={v3t("local.ai_account_settings_da9923")}>
       {ownPersonal && (
         <div className={cn(
           "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3",
@@ -35,18 +36,18 @@ export function AiConnectionAccountControls({
           <div className="flex items-center gap-3">
             <Star aria-hidden className={cn("size-5 shrink-0", activeDefault ? "fill-current text-(--status-task-icon-done)" : "text-muted-foreground")} />
             <div>
-              <h3 className="text-sm font-semibold">Personal default</h3>
-              <p className="text-xs text-muted-foreground">For your {AI_PROVIDERS[account.provider].name} tasks</p>
+              <h3 className="text-sm font-semibold">{v3t("local.personal_default_a74362")}</h3>
+              <p className="text-xs text-muted-foreground">{v3t("local.for_your_fffd8c")} {AI_PROVIDERS[account.provider].name} {v3t("local.tasks_085154")}</p>
             </div>
           </div>
           {account.isDefault ? (
             <span role="status" className={cn("inline-flex items-center gap-1.5 text-sm font-medium", available ? "text-(--status-task-icon-done)" : "text-destructive")}>
               {available ? <CheckCircle2 className="size-4" aria-hidden /> : <TriangleAlert className="size-4" aria-hidden />}
-              {available ? "Your default" : "Default unavailable"}
+              {available ? v3t("local.your_default_2b2bd0") : v3t("local.default_unavailable_f7828b")}
             </span>
           ) : !readOnly ? (
-            <Button variant="outline" size="sm" disabled={!available} onClick={onMakeDefault}>Make default</Button>
-          ) : <span className="text-xs text-muted-foreground">Not your default</span>}
+            <Button variant="outline" size="sm" disabled={!available} onClick={onMakeDefault}>{v3t("secrets.vaults.makeDefault")}</Button>
+          ) : <span className="text-xs text-muted-foreground">{v3t("local.not_your_default_589f9a")}</span>}
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -56,13 +57,13 @@ export function AiConnectionAccountControls({
         </div>
         {!readOnly && grant.capabilities?.canRevoke && (
           <div className="flex flex-wrap items-center gap-2">
-            {<Button variant="outline" size="sm" onClick={onReconnect}><RefreshCw className="size-4" aria-hidden />Reconnect</Button>}
-            {account.status !== "revoked" && <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setRevoking(true)}><Unplug className="size-4" aria-hidden />Revoke identity</Button>}
+            {<Button variant="outline" size="sm" onClick={onReconnect}><RefreshCw className="size-4" aria-hidden />{v3t("companyEnvironments.reconnect")}</Button>}
+            {account.status !== "revoked" && <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setRevoking(true)}><Unplug className="size-4" aria-hidden />{v3t("local.revoke_identity_c85342")}</Button>}
           </div>
         )}
       </div>
       {revoking && <RevokeGrantDialog grant={grant} providerName={account.name} pending={revokePending} credentialPolicy={account.ownership === "shared" ? "shared" : "per_user"} isOwnIdentity={account.ownerUserId === currentUserId}
-        description="New runs using this account will be blocked. Existing runs may retain credentials already issued to them. No other account will be selected automatically."
+        description={v3t("local.new_runs_using_this_account_will_be_blocked_existing_run_103d40")}
         onCancel={() => setRevoking(false)} onConfirm={async () => { setRevokePending(true); setRevokeError(undefined); try { await onRevoke(); setRevoking(false); } catch (error) { setRevokeError(error instanceof Error ? error.message : "Could not revoke this account. Retry."); } finally { setRevokePending(false); } }}>{revokeError && <p role="alert" className="text-sm text-destructive">{revokeError}</p>}{revocationDetails}</RevokeGrantDialog>}
     </section>
   );

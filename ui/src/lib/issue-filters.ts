@@ -1,4 +1,5 @@
 import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import { v3t } from "@/i18n";
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -73,21 +74,23 @@ const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
 };
 
 export function externalObjectFilterLabel(value: string): string {
-  return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
+  return v3t(`filters.${value}`, { defaultValue: EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value) });
 }
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
+  { label: v3t("filters.all"), statuses: [] as string[] },
+  { label: v3t("filters.active"), statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { label: v3t("filters.backlog"), statuses: ["backlog"] },
+  { label: v3t("filters.done"), statuses: ["done", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return v3t(`filterStatus.${value}`, {
+    defaultValue: value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()),
+  });
 }
 
 export function issueFilterArraysEqual(a: string[], b: string[]): boolean {

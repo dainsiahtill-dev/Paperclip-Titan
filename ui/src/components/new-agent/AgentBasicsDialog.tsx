@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
@@ -140,18 +141,18 @@ export function AgentBasicsDialog({
       >
         <div
           className="flex items-center gap-2 px-6 py-5 text-xs text-muted-foreground"
-          aria-label="New agent progress"
+          aria-label={v3t("local.new_agent_progress_260193")}
         >
           <span
             className={cn(step === "name" && "font-medium text-foreground")}
           >
-            1. Name
+            {v3t("local.1_name_6dce9c")}
           </span>
           <ChevronRight className="size-3" />
           <span
             className={cn(step === "adapter" && "font-medium text-foreground")}
           >
-            2. Adapter
+            {v3t("local.2_adapter_f692ef")}
           </span>
         </div>
         <form
@@ -170,26 +171,26 @@ export function AgentBasicsDialog({
               <div className="space-y-2">
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
-                    ? "Meet your next agent"
-                    : "Choose an adapter"}
+                    ? v3t("local.meet_your_next_agent_945b95")
+                    : v3t("local.choose_an_adapter_ea43ab")}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
-                    ? "Start with a name. Make them your own."
-                    : `How should ${name.trim()} work?`}
+                    ? v3t("local.start_with_a_name_make_them_your_own_8d8fc9")
+                    : v3t("dynamic.howAgentWorks", { name: name.trim() })}
                 </DialogDescription>
               </div>
             </div>
             {step === "name" ? (
               <div className="space-y-2">
                 <label htmlFor={id} className="text-sm font-medium">
-                  Agent name
+                  {v3t("newAgent.agentNamePlaceholder")}
                 </label>
                 <Input
                   id={id}
                   autoFocus
                   maxLength={100}
-                  placeholder="e.g. Darnold"
+                  placeholder={v3t("local.e_g_darnold_4c64e4")}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   className="h-12 text-base"
@@ -201,16 +202,16 @@ export function AgentBasicsDialog({
                     className="px-0 text-muted-foreground"
                     onClick={onInvite}
                   >
-                    Invite an external agent
+                    {v3t("newAgent.inviteExternal")}
                   </Button>
                 )}
               </div>
             ) : (
               <fieldset className="space-y-4">
-                <legend className="sr-only">Adapter</legend>
+                <legend className="sr-only">{v3t("agentDetail.adapter")}</legend>
                 {isPending && (
                   <p role="status" className="text-sm text-muted-foreground">
-                    Loading adapters…
+                    {v3t("local.loading_adapters_89e309")}
                   </p>
                 )}
                 {error && (
@@ -256,7 +257,7 @@ export function AgentBasicsDialog({
                 </div>
                 {validAdapter && adapterType === "paperclip_runner" && (
                   <label className="flex flex-col gap-2 text-sm font-medium">
-                    Runner
+                    {v3t("local.runner_2184a4")}
                     <select
                       className="rounded-md border border-border bg-background px-3 py-2"
                       value={runnerProvider}
@@ -264,7 +265,7 @@ export function AgentBasicsDialog({
                         setRunnerProvider(event.target.value)
                       }
                     >
-                      <option value="codex">Codex (app server)</option>
+                      <option value="codex">{v3t("local.codex_app_server_d64fe2")}</option>
                       <option value="claude">Claude (ACPX)</option>
                       <option value="opencode">OpenCode</option>
                     </select>
@@ -280,11 +281,11 @@ export function AgentBasicsDialog({
               onClick={() => (step === "name" ? onClose() : setStep("name"))}
             >
               {step === "name" ? (
-                "Cancel"
+                v3t("newAgent.cancel")
               ) : (
                 <>
                   <ArrowLeft className="size-4" />
-                  Back
+                  {v3t("newAgent.back")}
                 </>
               )}
             </Button>
@@ -292,7 +293,7 @@ export function AgentBasicsDialog({
               type="submit"
               disabled={!name.trim() || (step === "adapter" && !validAdapter)}
             >
-              {step === "name" ? "Choose adapter" : "Configure agent"}
+              {step === "name" ? v3t("local.choose_adapter_83a3d0") : v3t("local.configure_agent_14c603")}
               <ArrowRight className="size-4" />
             </Button>
           </div>

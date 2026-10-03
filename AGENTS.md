@@ -223,3 +223,31 @@ A change is done when all are true:
 ## Design system
 
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
+
+<!-- GENERAL_PROJECT_LIBRARY_START -->
+## Project library
+
+Read `project-library/README.md` before searching old task history or reusable resources. Keep searched and generated reusable originals in persistent local project storage with provenance, prompt, version, and status metadata. Register existing runtime paths instead of moving or duplicating them. Prefer summaries, manifests, hashes, thumbnails, and a few necessary originals over loading full conversations or large binary collections.
+<!-- GENERAL_PROJECT_LIBRARY_END -->
+
+
+## Local v3 foundation instructions (2026-09-27)
+
+- User project name: 项目管理后台 v3. This independent clone is based on Paperclip v2026.916.1; preserve upstream source and MIT attribution.
+- Read `README.V3.md` and `project-library/README.md` first for local handoff and actual execution status.
+- Keep the old 项目管理后台 and its data, services, agents, artwork, and configs separate. Do not migrate them or resume legacy tasks implicitly.
+- Use project-local `.paperclip/`, instance `project-management-v3`, and loopback port 3133 after checking availability. Do not inherit an external database URL or use global Paperclip state. These are startup requirements, not verified runtime claims.
+- Initial bootstrap must remain an empty instance: no company/agent/task creation, no model calls or credential import, no onboarding CEO or automatic service installation.
+- Routine implementation stays with the user-authorized Hermes route; do not change model/provider or use paid fallback. Single writer per checkout. Do not restart or duplicate unknown submissions.
+- Historical V2 install task remains paused without a session binding. The user subsequently requested direct Paperclip startup; Codex completed installation and local browser/API verification. Do not resume that superseded install request. See README.V3.md for current runtime status.
+- Do not delete existing files without user consent. Keep plans in `doc/plans/`; register source and handoff in this single `project-library/`.
+
+- 2026-09-27 startup scope: the user explicitly requested running Paperclip directly using its own integration capabilities. This startup is complete; Hermes integration/model login are a separate next step. Preserve company data entered through the UI and do not reset the instance.
+
+## Ordinary local project directory (2026-10-01)
+
+- User requires every project directly under `/Volumes/固态硬盘/02_代码项目/<项目名>`; create a missing directory there. Do not create or run projects in `.worktrees`.
+- This project is the ordinary checkout `/Volumes/固态硬盘/02_代码项目/项目管理后台v3`.
+- Use `scripts/v3-local.sh` or `scripts/titan-local.sh` start|status|stop. Both use this project root and its canonical `.paperclip` and `project-library`.
+- Keep instance `project-management-v3`, loopback API 3133 and PostgreSQL 54333, employee credentials/models and disabled scheduler. Existing data is authoritative; do not bootstrap or reset it.
+- The pixel-office and NPC work was saved and paused for integration; preserve its unfinished status until user authorizes continued implementation.
