@@ -1,7 +1,11 @@
-import { agents, heartbeatRuns, instanceSettings, type Db } from "@paperclipai/db";
+import { compareQueuedCandidates } from "./queued-run-fairness.js";
+import { createRunDispatch } from "../modules/run-dispatch/index.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
+import { agents, heartbeatRuns, instanceSettings, companies, issues, type Db } from "@paperclipai/db";
 import { agentConcurrencySettingsSchema, DEFAULT_AGENT_CONCURRENCY } from "@paperclipai/shared";
-import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { activeQuotaProbeReservations } from "./agent-quota-fallback-policy.js";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { deriveQuotaProbeIdentity } from "./quota-probe-identity.js";
+import { activeQuotaProbeReservations, quotaFallbackPolicy, selectQuotaFallbackAgent } from "./agent-quota-fallback-policy.js";
 
 type AgentRow = typeof agents.$inferSelect;
 
@@ -55,7 +59,50 @@ export async function admitQueuedRunCapacity(
   maxAgentRuns: number,
 ): Promise<RunCapacityAdmission> {
   const result = await checkRunCapacity(transaction, agent, maxAgentRuns);
-  return result.allowed ? result : waiting(transaction, runId, result.reason);
+  if (!result.allowed) return waiting(transaction, runId, result.reason);
+  const [settings] = await transaction.select({ general: instanceSettings.general }).from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1);
+  const capacity = configuredCapacity(settings?.general);
+  if (capacity.maxActiveRuns === null && result.group === null) return result;
+  // The singleton capacity lock is still held. All invocation, completion and
+  // sweep entrances therefore validate the same current eligible winner.
+  const dispatcher = createRunDispatch(transaction);
+  let cursor: string | null = null;
+  let winner: { id: string; agentId: string; createdAt: Date; lastAdmittedAt: Date | null; ready: boolean; status: string | null; priority: string | null } | null = null;
+  for (;;) {
+    const candidates = await transaction.select({ run: heartbeatRuns, candidateAgent: agents, issueStatus: issues.status, issuePriority: issues.priority,
+      lastAdmittedAt: sql<Date | null>`(select max(started_at) from heartbeat_runs history where history.agent_id = ${agents.id})`,
+      reserved: sql<number>`(select count(*)::int from heartbeat_runs owner where owner.agent_id = ${agents.id} and (owner.status = 'running' or (owner.capacity_group is not null and owner.capacity_released_at is null)))`,
+    }).from(heartbeatRuns).innerJoin(agents, eq(agents.id, heartbeatRuns.agentId)).innerJoin(companies, eq(companies.id, agents.companyId))
+      .leftJoin(issues, and(eq(issues.companyId, heartbeatRuns.companyId), sql`${issues.id}::text = ${heartbeatRuns.contextSnapshot}->>'issueId'`))
+      .where(and(eq(heartbeatRuns.status, "queued"), eq(companies.status, "active"), inArray(agents.status, ["idle", "running", "active", "error"]), cursor ? gt(heartbeatRuns.id, cursor) : undefined))
+      .orderBy(asc(heartbeatRuns.id)).limit(50);
+    if (!candidates.length) break;
+    for (const candidate of candidates) {
+      if (candidate.issueStatus === "blocked") continue;
+      const issueId = record(candidate.run.contextSnapshot).issueId;
+      if (typeof issueId === "string" && await getExecutionBlocker(transaction, candidate.run.companyId, issueId)) continue;
+      const max = Number(record(record(candidate.candidateAgent.runtimeConfig).heartbeat).maxConcurrentRuns ?? 1);
+      if (candidate.reserved >= Math.max(1, max)) continue;
+      let effective = candidate.candidateAgent;
+      if (effective.id === agent.id) effective = agent;
+      else if (quotaFallbackPolicy(effective)) {
+        try {
+          const identity = await deriveQuotaProbeIdentity(transaction, effective, candidate.run.responsibleUserId, candidate.run.id);
+          effective = selectQuotaFallbackAgent(effective, candidate.run.responsibleUserId, undefined, identity.effectiveFingerprint).agent;
+        } catch { continue; }
+      }
+      if (runtimeGroup(effective.runtimeConfig) !== result.group && capacity.maxActiveRuns === null) continue;
+      const next = { id: candidate.run.id, agentId: candidate.run.agentId, createdAt: candidate.run.createdAt, lastAdmittedAt: candidate.lastAdmittedAt ? new Date(candidate.lastAdmittedAt) : null, ready: true, status: candidate.issueStatus, priority: candidate.issuePriority };
+      if (winner && compareQueuedCandidates(next, winner, new Date()) >= 0) continue;
+      if (!(await checkRunCapacity(transaction, effective, Math.max(1, max))).allowed) continue;
+      const gate = await dispatcher.evaluateScheduledRetryGate({ runId: candidate.run.id, companyId: candidate.run.companyId, retryReasonOverride: candidate.run.scheduledRetryReason ?? "bounded_transient_retry" });
+      if (!gate.allowed) continue;
+      winner = next;
+    }
+    cursor = candidates.at(-1)!.run.id;
+  }
+  if (winner && winner.id !== runId) return waiting(transaction, runId, "Waiting for another ready Agent's fair turn in the shared pool");
+  return result;
 }
 
 /** Caller reserves its task/probe under this same capacity lock before commit. */

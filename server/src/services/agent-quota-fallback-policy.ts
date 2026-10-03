@@ -13,6 +13,9 @@ export interface QuotaFallbackAgent {
 }
 
 export interface QuotaFallbackScope {
+  effectiveFingerprint?: string;
+  responsibleUserId?: string | null;
+  sourceRunId?: string | null;
   usingBackup: boolean;
   lastQuotaAt: string | null;
   primaryQuotaRunId: string | null;
@@ -39,6 +42,7 @@ export interface QuotaFallbackPin {
   version: 1;
   fingerprint: string;
   usingBackup: boolean;
+  effectiveFingerprint?: string;
   primaryAdapterType: string;
   adapterType: string;
   model: string | null;
@@ -46,7 +50,7 @@ export interface QuotaFallbackPin {
 
 export const QUOTA_FALLBACK_METADATA_KEY = "quotaFallbackState";
 export const QUOTA_PROBE_LEASE_MS = 120_000;
-export const quotaScopeKey = (responsibleUserId: string | null) => responsibleUserId ?? "__unattributed__";
+export const quotaScopeKey = (responsibleUserId: string | null, effectiveFingerprint?: string) => `${responsibleUserId ?? "__unattributed__"}${effectiveFingerprint ? `::${effectiveFingerprint}` : ""}`;
 
 export function quotaFallbackPolicy(agent: QuotaFallbackAgent): AgentQuotaFallbackConfig | null {
   if (!["claude_local", "codex_local"].includes(agent.adapterType)) return null;
@@ -89,7 +93,7 @@ export function quotaFallbackBook(agent: QuotaFallbackAgent): QuotaFallbackBook 
     } else if (typeof scope.probeToken === "string" && typeof scope.probeUntil === "string") {
       // A config edit invalidates routing but cannot release a still-running
       // old probe's provider slot. Its result will only release this lease.
-      scopes[key] = { ...initialQuotaScope(), probeToken: scope.probeToken, probeUntil: scope.probeUntil, probeGroup: typeof scope.probeGroup === "string" ? scope.probeGroup : null, probeFingerprint: typeof scope.probeFingerprint === "string" ? scope.probeFingerprint : null };
+      scopes[key] = { ...initialQuotaScope(), effectiveFingerprint: typeof scope.effectiveFingerprint === "string" ? scope.effectiveFingerprint : undefined, responsibleUserId: typeof scope.responsibleUserId === "string" ? scope.responsibleUserId : null, sourceRunId: typeof scope.sourceRunId === "string" ? scope.sourceRunId : null, probeToken: scope.probeToken, probeUntil: scope.probeUntil, probeGroup: typeof scope.probeGroup === "string" ? scope.probeGroup : null, probeFingerprint: typeof scope.probeFingerprint === "string" ? scope.probeFingerprint : null };
     }
   }
   return { version: 1, fingerprint, scopes };
@@ -99,7 +103,7 @@ export function initialQuotaScope(): QuotaFallbackScope {
   return { usingBackup: false, lastQuotaAt: null, primaryQuotaRunId: null, backupQuotaRunId: null, lastPrimaryCheckAt: null, lastPrimaryCheckResult: null, nextPrimaryCheckAt: null, probeUntil: null, probeGroup: null, probeToken: null, probeFingerprint: null, recoveryToken: null, recoveryAt: null, primaryCheckIntervalSec: null };
 }
 
-const sharedConfigKeys = ["cwd", "instructionsFilePath", "promptTemplate", "bootstrapPrompt", "timeoutSec", "graceSec", "env", "paperclipRuntimeSkills", "mcpServers", "mcpServerBindings"];
+const sharedConfigKeys = ["cwd", "instructionsFilePath", "promptTemplate", "bootstrapPrompt", "timeoutSec", "graceSec", "env", "paperclipRuntimeSkills", "mcpServers", "mcpServerBindings", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "permissionMode"];
 
 export function stripQuotaAuthEnvironment(value: unknown): Record<string, unknown> {
   const env = { ...record(value) };
@@ -122,16 +126,19 @@ export function buildQuotaBackupConfig(primary: QuotaFallbackAgent, backup: Quot
     model: backup.model,
     ...(backup.thinkingEffort ? { thinkingEffort: backup.thinkingEffort, effort: backup.thinkingEffort } : {}),
     engine: primary.adapterConfig.engine === "acp" ? "acp" : "cli",
-    ...(backup.adapterType === "codex_local" ? { dangerouslyBypassSandbox: true, fastMode: backup.fastMode === true } : { dangerouslySkipPermissions: true, permissionMode: "approve-all" }),
+    ...(backup.adapterType === "codex_local"
+      ? { dangerouslyBypassSandbox: primary.adapterConfig.dangerouslyBypassSandbox === true, fastMode: backup.fastMode === true }
+      : { dangerouslySkipPermissions: primary.adapterConfig.dangerouslySkipPermissions === true,
+          permissionMode: typeof primary.adapterConfig.permissionMode === "string" ? primary.adapterConfig.permissionMode : primary.adapterConfig.dangerouslySkipPermissions === true ? "approve-all" : "default" }),
   };
 }
 
-export function selectQuotaFallbackAgent<T extends QuotaFallbackAgent>(primary: T, responsibleUserId: string | null, pinned?: QuotaFallbackPin | null): { agent: T; pin: QuotaFallbackPin | null } {
+export function selectQuotaFallbackAgent<T extends QuotaFallbackAgent>(primary: T, responsibleUserId: string | null, pinned?: QuotaFallbackPin | null, effectiveFingerprint?: string): { agent: T; pin: QuotaFallbackPin | null } {
   const policy = quotaFallbackPolicy(primary);
   if (!policy && !pinned) return { agent: primary, pin: null };
   const fingerprint = quotaFallbackFingerprint(primary);
   if (pinned && pinned.fingerprint !== fingerprint) throw new Error("Quota fallback configuration changed during startup; start a new turn with the updated configuration");
-  const usingBackup = !!policy?.backup && (pinned?.usingBackup ?? quotaFallbackBook(primary).scopes[quotaScopeKey(responsibleUserId)]?.usingBackup ?? false);
+  const usingBackup = !!policy?.backup && (pinned?.usingBackup ?? quotaFallbackBook(primary).scopes[quotaScopeKey(responsibleUserId, effectiveFingerprint)]?.usingBackup ?? false);
   const backup = policy?.backup;
   const group = backup?.concurrencyGroup ?? (backup?.adapterType === "claude_local" && /^minimax/i.test(backup.model) ? "minimax" : "");
   const agent = usingBackup && backup ? {
@@ -140,7 +147,7 @@ export function selectQuotaFallbackAgent<T extends QuotaFallbackAgent>(primary: 
     adapterConfig: buildQuotaBackupConfig(primary, backup),
     runtimeConfig: { ...primary.runtimeConfig, aiConnection: backup.aiConnection, heartbeat: { ...record(primary.runtimeConfig.heartbeat), concurrencyGroup: group } },
   } : primary;
-  return { agent: agent as T, pin: { version: 1, fingerprint, usingBackup, primaryAdapterType: primary.adapterType, adapterType: agent.adapterType, model: typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null } };
+  return { agent: agent as T, pin: { version: 1, fingerprint, ...(effectiveFingerprint ? { effectiveFingerprint } : {}), usingBackup, primaryAdapterType: primary.adapterType, adapterType: agent.adapterType, model: typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null } };
 }
 
 export function readQuotaFallbackPin(value: unknown): QuotaFallbackPin | null {
@@ -152,7 +159,6 @@ export function activeQuotaProbeReservations(metadata: unknown, now: Date): Arra
   const scopes = record(record(record(metadata)[QUOTA_FALLBACK_METADATA_KEY]).scopes);
   return Object.values(scopes).flatMap(raw => {
     const scope = record(raw);
-    const until = typeof scope.probeUntil === "string" ? Date.parse(scope.probeUntil) : NaN;
-    return until > now.getTime() && until <= now.getTime() + QUOTA_PROBE_LEASE_MS && typeof scope.probeToken === "string" ? [{ group: typeof scope.probeGroup === "string" && scope.probeGroup ? scope.probeGroup : null }] : [];
+    return typeof scope.probeToken === "string" && typeof scope.probeUntil === "string" ? [{ group: typeof scope.probeGroup === "string" && scope.probeGroup ? scope.probeGroup : null }] : [];
   });
 }

@@ -1,7 +1,9 @@
+import { heartbeatService } from "../services/heartbeat.js";
+import { deriveQuotaProbeIdentity } from "../services/quota-probe-identity.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, environments, instanceSettings, projects, issues, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, environments, instanceSettings, projects, issues, heartbeatRuns, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentQuotaFallbackService as createQuotaService, type AgentQuotaFallbackDependencies } from "../services/agent-quota-fallback.js";
 import { quotaFallbackBook } from "../services/agent-quota-fallback-policy.js";
@@ -41,6 +43,80 @@ describeDatabase("durable Agent quota fallback", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", status: "idle", adapterType: "claude_local", adapterConfig: { model: "MiniMax-M3.1-Flash-Preview" }, runtimeConfig: { quotaFallback: { enabled: true, recoveryEnabled: true, primaryCheckIntervalSec: 300, backup: { adapterType: "codex_local", model: "gpt-6.1-sol", thinkingEffort: "high" } } }, metadata: { unrelated: "keep" } });
     return { id: randomUUID(), companyId, agentId, finishedAt: now };
   }
+
+  it("actual recovery callback schedules every eligible matching failed predecessor once", async () => {
+    const run = await seed(), sourceIds: string[] = [];
+    for (const status of ["in_progress", "in_progress", "in_progress", "blocked"]) {
+      const issueId = randomUUID(), sourceId = randomUUID(); sourceIds.push(sourceId);
+      await db.insert(issues).values({ id: issueId, companyId: run.companyId, title: "Synthetic quota predecessor", status, assigneeAgentId: run.agentId, responsibleUserId: "alice" });
+      await db.insert(heartbeatRuns).values({ id: sourceId, companyId: run.companyId, agentId: run.agentId, responsibleUserId: "alice", invocationSource: "assignment", status: "failed", errorCode: "provider_quota", finishedAt: new Date(), resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, contextSnapshot: { issueId } });
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceId));
+      await createQuotaService(db, { probePrimary: async () => "error", resolveIdentity: (agent, user, id) => deriveQuotaProbeIdentity(db, agent, user, id) }).registerQuotaFailure(source!, "alice", new Date());
+    }
+    vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment").mockResolvedValue({ adapterType: "claude_local", status: "pass", testedAt: new Date().toISOString(), checks: [{ code: "claude_hello_probe_passed", level: "info", message: "Synthetic hello" }] });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.checkQuotaFallbackPrimary(run.agentId, "alice");
+    await heartbeat.checkQuotaFallbackPrimary(run.agentId, "alice");
+    const successors = await db.select({ predecessor: heartbeatRuns.retryOfRunId, status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, run.agentId));
+    const retries = successors.filter(row => row.predecessor);
+    expect(retries.map(row => row.predecessor).sort()).toEqual(sourceIds.slice(0, 3).sort());
+    expect(retries.every(row => row.status === "scheduled_retry")).toBe(true);
+  });
+
+  it("content-free identity separates project accounts but shares exact-source context", async () => {
+    const run = await seed(), projectA = randomUUID(), projectB = randomUUID(), issueA = randomUUID(), issueB = randomUUID(), other = randomUUID();
+    await db.insert(projects).values([{ id: projectA, companyId: run.companyId, name: "A", env: { ANTHROPIC_AUTH_TOKEN: "synthetic-a" } }, { id: projectB, companyId: run.companyId, name: "B", env: { ANTHROPIC_AUTH_TOKEN: "synthetic-b" } }]);
+    await db.insert(issues).values([{ id: issueA, companyId: run.companyId, projectId: projectA, title: "A" }, { id: issueB, companyId: run.companyId, projectId: projectB, title: "B" }]);
+    await db.insert(heartbeatRuns).values([{ ...run, status: "failed", invocationSource: "assignment", responsibleUserId: "alice", contextSnapshot: { issueId: issueA } }, { ...run, id: other, status: "failed", invocationSource: "assignment", responsibleUserId: "alice", contextSnapshot: { issueId: issueA } }, { ...run, id: randomUUID(), status: "failed", invocationSource: "assignment", responsibleUserId: "alice", contextSnapshot: { issueId: issueB } }]);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    const a = await deriveQuotaProbeIdentity(db, agent!, "alice", run.id), a2 = await deriveQuotaProbeIdentity(db, agent!, "alice", other);
+    expect(a.effectiveFingerprint).toBe(a2.effectiveFingerprint);
+    await db.update(issues).set({ projectId: projectB }).where(eq(issues.id, issueA));
+    expect((await deriveQuotaProbeIdentity(db, agent!, "alice", run.id)).effectiveFingerprint).not.toBe(a.effectiveFingerprint);
+    expect(JSON.stringify(a)).not.toContain("synthetic");
+  });
+  it("identity includes responsible-user secret versions selected by key", async () => {
+    const run = await seed(), definition = randomUUID(), secret = randomUUID();
+    await db.insert(userSecretDefinitions).values({ id: definition, companyId: run.companyId, key: "account_key", name: "Synthetic account" });
+    await db.insert(companySecrets).values({ id: secret, companyId: run.companyId, scope: "user", ownerUserId: "alice", userSecretDefinitionId: definition, key: "account_key", name: "Synthetic Alice" });
+    const [agent] = await db.update(agents).set({ adapterConfig: { model: "MiniMax-M3.1-Flash-Preview", env: { ANTHROPIC_AUTH_TOKEN: { type: "user_secret_ref", key: "account_key" } } } }).where(eq(agents.id, run.agentId)).returning();
+    const before = await deriveQuotaProbeIdentity(db, agent!, "alice", null);
+    await db.update(companySecrets).set({ latestVersion: 2 }).where(eq(companySecrets.id, secret));
+    expect((await deriveQuotaProbeIdentity(db, agent!, "alice", null)).effectiveFingerprint).not.toBe(before.effectiveFingerprint);
+  });
+
+  it("retains physical probe occupancy past its logical deadline across service restart", async () => {
+    const run = await seed(); let release!: () => void;
+    const probe = vi.fn(async () => { await new Promise<void>(r => { release = r; }); return "available" as const; });
+    const first = agentQuotaFallbackService(db, { probePrimary: probe }).checkPrimary(run.agentId, "alice", { force: true });
+    await expect.poll(() => probe.mock.calls.length).toBe(1);
+    clock = new Date(now.getTime() + 121_000);
+    const restarted = agentQuotaFallbackService(db, { probePrimary: probe });
+    expect(await restarted.getStatus(run.agentId, "alice", clock)).toMatchObject({ checkingPrimary: true });
+    await restarted.checkPrimary(run.agentId, "alice", { force: true });
+    expect(probe).toHaveBeenCalledTimes(1);
+    release(); await first;
+    expect(await restarted.getStatus(run.agentId, "alice")).toMatchObject({ checkingPrimary: false });
+  });
+
+  it("recovers only the effective credential scope and rejects in-flight rotation", async () => {
+    const run = await seed(); let revisionA = "account-a-v1";
+    const runB = { ...run, id: randomUUID() };
+    const identities = async (_agent: unknown, _user: string | null, sourceId: string | null) => ({ version: 1 as const, companyId: run.companyId, agentId: run.agentId, responsibleUserId: "alice", sourceRunId: sourceId, effectiveFingerprint: sourceId === runB.id ? "account-b" : revisionA });
+    let release!: () => void;
+    const service = agentQuotaFallbackService(db, { resolveIdentity: identities, probePrimary: async () => { await new Promise<void>(r => { release = r; }); return "available"; } });
+    await service.registerQuotaFailure(run, "alice", now); await service.registerQuotaFailure(runB, "alice", now);
+    const b = service.checkPrimary(run.agentId, "alice", { force: true, sourceRunId: runB.id });
+    await expect.poll(() => Boolean(release)).toBe(true); release(); await b;
+    let [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    expect(Object.values(quotaFallbackBook(agent!).scopes).filter(scope => scope.usingBackup)).toHaveLength(1);
+    release = undefined!;
+    const a = service.checkPrimary(run.agentId, "alice", { force: true, sourceRunId: run.id });
+    await expect.poll(() => Boolean(release)).toBe(true); revisionA = "account-a-v2"; release(); await a;
+    [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    expect(Object.values(quotaFallbackBook(agent!).scopes).filter(scope => scope.usingBackup)).toHaveLength(1);
+    expect(Object.values(quotaFallbackBook(agent!).scopes).filter(scope => scope.probeToken)).toHaveLength(0);
+  });
 
   it("persists a quota switch across service restart without changing the primary or another user", async () => {
     const run = await seed();
@@ -85,7 +161,7 @@ describeDatabase("durable Agent quota fallback", () => {
     expect(probe).toHaveBeenCalledOnce();
     expect(probe.mock.calls[0]).toEqual([
       expect.objectContaining({ id: run.agentId }), "alice", expect.any(Object),
-      { sourceRunId: run.id },
+      { sourceRunId: run.id, signal: expect.any(AbortSignal) },
     ]);
     expect(await service.getStatus(run.agentId, "alice")).toMatchObject({ usingBackup: true, lastQuotaAt: null });
     expect(await service.getStatus(run.agentId, "bob")).toMatchObject({ usingBackup: false });
@@ -253,8 +329,10 @@ describeDatabase("durable Agent quota fallback", () => {
     const run = await seed();
     const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
     const test = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment").mockResolvedValue({ adapterType: "claude_local", status: "pass", testedAt: now.toISOString(), checks: [{ code: "claude_hello_probe_passed", level: "info", message: "hello" }] });
-    expect(quotaProbeAvailable(await probeQuotaModel(db, { ...agent!, adapterConfig: { model: "MiniMax-M3.1-Flash-Preview", engine: "acp" } }, "alice"))).toBe(true);
-    expect(test).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ engine: "cli", model: "MiniMax-M3.1-Flash-Preview", helloProbeTimeoutSec: 45 }) }));
+    expect(quotaProbeAvailable(await probeQuotaModel(db, { ...agent!, adapterConfig: { model: "MiniMax-M3.1-Flash-Preview", engine: "acp" } }, "alice"))).toBe(false);
+    expect(test).not.toHaveBeenCalled();
+    expect(quotaProbeAvailable(await probeQuotaModel(db, agent!, "alice"))).toBe(true);
+    expect(test).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ model: "MiniMax-M3.1-Flash-Preview", helloProbeTimeoutSec: 45 }) }));
     expect(quotaProbeAvailable({ adapterType: "claude_local", status: "pass", testedAt: now.toISOString(), checks: [{ code: "claude_cli_installed", level: "info", message: "installed" }] })).toBe(false);
   });
 
@@ -298,7 +376,7 @@ describeDatabase("durable Agent quota fallback", () => {
     await restarted.tick(now); expect(callback).toHaveBeenCalledTimes(2);
   });
 
-  it("uses project credentials after Agent credentials and refuses unsupported routine or model overrides", async () => {
+  it("uses project credentials after Agent credentials, supports model overrides, and rejects unknown routine context", async () => {
     const run = await seed(); const projectId = randomUUID(), issueId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId: run.companyId, name: "Project auth", env: { ANTHROPIC_BASE_URL: "https://project.invalid" } });
     await db.insert(issues).values({ id: issueId, companyId: run.companyId, projectId, title: "Quota work", assigneeAgentId: run.agentId });
@@ -310,8 +388,9 @@ describeDatabase("durable Agent quota fallback", () => {
     await db.update(issues).set({ originKind: "routine_execution", originId: randomUUID() }).where(eq(issues.id, issueId));
     expect(await probeQuotaModel(db, agent!, "alice", { sourceRunId: run.id })).toMatchObject({ status: "fail", checks: [{ code: "quota_probe_environment_unsupported" }] });
     await db.update(issues).set({ originKind: "manual", assigneeAdapterOverrides: { adapterConfig: { model: "different-model" } } }).where(eq(issues.id, issueId));
-    expect(await probeQuotaModel(db, agent!, "alice", { sourceRunId: run.id })).toMatchObject({ status: "fail" });
-    expect(test).toHaveBeenCalledOnce();
+    expect(await probeQuotaModel(db, agent!, "alice", { sourceRunId: run.id })).toMatchObject({ status: "pass" });
+    expect(test).toHaveBeenLastCalledWith(expect.objectContaining({ config: expect.objectContaining({ model: "different-model" }) }));
+    expect(test).toHaveBeenCalledTimes(2);
   });
 
   it("preserves backup routing while recovery is disabled and applies an edited cadence", async () => {

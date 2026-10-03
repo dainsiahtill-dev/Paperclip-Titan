@@ -77,6 +77,21 @@ describePostgres("shared Agent run capacity", () => {
     await temporary?.cleanup();
   });
 
+  it("shared pool gives an unserved company Agent the next locked admission", async () => {
+    const a = randomUUID(), b = randomUUID(), agentA = randomUUID(), agentB = randomUUID(), nextA = randomUUID(), nextB = randomUUID();
+    await database.insert(companies).values([{ id: a, name: "A", issuePrefix: "FA", defaultResponsibleUserId: "board" }, { id: b, name: "B", issuePrefix: "FB", defaultResponsibleUserId: "board" }]);
+    await database.insert(agents).values([{ id: agentA, companyId: a, name: "Busy", role: "engineer", status: "idle", adapterType: ADAPTER, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 6, concurrencyGroup: "shared" } } }, { id: agentB, companyId: b, name: "Waiting", role: "engineer", status: "idle", adapterType: ADAPTER, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 6, concurrencyGroup: "shared" } } }]);
+    await instanceSettingsService(database).updateGeneral({ agentConcurrency: { maxActiveRuns: null, groups: [{ name: "shared", maxActiveRuns: 1 }] } });
+    await database.insert(heartbeatRuns).values([{ companyId: a, agentId: agentA, invocationSource: "on_demand", status: "succeeded", startedAt: new Date(), finishedAt: new Date(), capacityGroup: "shared", capacityReleasedAt: new Date() }, { id: nextA, companyId: a, agentId: agentA, invocationSource: "on_demand", status: "queued", createdAt: new Date(Date.now() - 20_000) }, { id: nextB, companyId: b, agentId: agentB, invocationSource: "on_demand", status: "queued", createdAt: new Date(Date.now() - 10_000) }]);
+    const [busy] = await database.select().from(agents).where(eq(agents.id, agentA));
+    const blocked = await database.transaction(tx => admitQueuedRunCapacity(tx as unknown as Db, busy!, nextA, 6));
+    expect(blocked).toMatchObject({ allowed: false });
+    const [queued] = await database.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, nextA));
+    expect(queued?.status).toBe("queued");
+    const [waiting] = await database.select().from(agents).where(eq(agents.id, agentB));
+    expect(await database.transaction(tx => admitQueuedRunCapacity(tx as unknown as Db, waiting!, nextB, 6))).toMatchObject({ allowed: true });
+  });
+
   async function seed(groupForHolder: string, groupForCandidate: string) {
     const companyId = randomUUID();
     const holderId = randomUUID();

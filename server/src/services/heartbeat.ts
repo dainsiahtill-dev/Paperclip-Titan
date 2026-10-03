@@ -1,3 +1,6 @@
+import { compareQueuedCandidates } from "./queued-run-fairness.js";
+import { deriveQuotaProbeIdentity } from "./quota-probe-identity.js";
+import { reconcileQuotaContinuations } from "./quota-recovery-continuations.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, hasNativeLocalProcessStop, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
@@ -9458,6 +9461,7 @@ export function heartbeatService(
   };
   const budgets = budgetService(db, budgetHooks);
   const quotaFallbacks = agentQuotaFallbackService(db, {
+    resolveIdentity: (agent, user, sourceId) => deriveQuotaProbeIdentity(db, agent, user, sourceId),
     canCheck: async (agent) => {
       if (getTaskDrainStatus().draining) return false;
       if ((await getSchedulingSuppression()).suppressed) return false;
@@ -9465,30 +9469,51 @@ export function heartbeatService(
       return !(await budgets.getInvocationBlock(agent.companyId, agent.id));
     },
     probePrimary: async (agent, responsibleUserId, _scope, context) => {
-      const result = await probeQuotaModel(db, agent, responsibleUserId, { sourceRunId: context.sourceRunId });
+      const result = await probeQuotaModel(db, agent, responsibleUserId, { sourceRunId: context.sourceRunId, signal: context.signal });
       if (quotaProbeAvailable(result)) return "available";
-      return result.checks.some(check => check.code.includes("auth_required") || check.code === "quota_probe_environment_unsupported") ? "error" : "unavailable";
+      return result.checks.some(check => /usage_limited|quota_exhausted|provider_quota/.test(check.code)) ? "unavailable" : "error";
     },
     onRecovered: async (agent, responsibleUserId, scope, now) => {
-      await db.update(heartbeatRuns).set({
-        scheduledRetryAt: now, updatedAt: now,
-        contextSnapshot: sql`((case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end)
-          - 'resumeSessionParams' - 'resumeSessionDisplayId' - 'codexTransientFallbackMode'
-          - 'providerQuotaRetryNotBefore' - 'transientRetryNotBefore')
-          || jsonb_build_object('forceFreshSession', true, 'quotaFallbackHandoff',
-            jsonb_build_object('sourceRunId', ${heartbeatRuns.retryOfRunId}, 'adapterType', ${agent.adapterType}::text,
-              'model', ${typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null}::text, 'reason', 'primary_recovered'))`,
-      }).where(and(
-        eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.companyId, agent.companyId),
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        responsibleUserId === null ? isNull(heartbeatRuns.responsibleUserId) : eq(heartbeatRuns.responsibleUserId, responsibleUserId),
-        sql`${heartbeatRuns.retryOfRunId} in (select id from heartbeat_runs where agent_id = ${agent.id} and (error_code = 'provider_quota' or result_json ->> 'errorFamily' = 'provider_quota'))`,
-      ));
-      const sourceId = scope.backupQuotaRunId ?? scope.primaryQuotaRunId;
-      const source = sourceId ? await getRun(sourceId) : null;
-      if (source?.status === "failed" && source.companyId === agent.companyId && source.agentId === agent.id && readHeartbeatRunErrorFamily(source) === "provider_quota") {
-        await scheduleBoundedRetryForRun(source, agent, { now, delayMs: 500, maxAttempts: executionFailureRetryCount(source) + 1 });
-      }
+      if (!scope.effectiveFingerprint) return; // Legacy account-unknown evidence cannot authorize recovery.
+      const batch = await reconcileQuotaContinuations({
+        page: async (cursor, limit) => db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "failed"),
+          responsibleUserId === null ? isNull(heartbeatRuns.responsibleUserId) : eq(heartbeatRuns.responsibleUserId, responsibleUserId),
+          sql`(${heartbeatRuns.errorCode} = 'provider_quota' or ${heartbeatRuns.resultJson}->>'errorFamily' = 'provider_quota')`,
+          cursor ? gt(heartbeatRuns.id, cursor) : undefined,
+        )).orderBy(asc(heartbeatRuns.id)).limit(limit),
+        matches: async source => {
+          const original = readQuotaFallbackPin(parseObject(source.runnerProfileJson).quotaFallback);
+          if (original?.effectiveFingerprint && original.effectiveFingerprint !== scope.effectiveFingerprint) return false;
+          try { return (await deriveQuotaProbeIdentity(db, agent, responsibleUserId, source.id)).effectiveFingerprint === scope.effectiveFingerprint; }
+          catch { return false; }
+        },
+        eligible: async source => {
+          if (getTaskDrainStatus().draining || (await getSchedulingSuppression()).suppressed) return false;
+          const gate = await runDispatch.evaluateScheduledRetryGate({ runId: source.id, companyId: source.companyId, retryReasonOverride: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON, now });
+          if (!gate.allowed) return false;
+          const issueId = readNonEmptyString(parseObject(source.contextSnapshot).issueId);
+          if (!issueId) return true;
+          const [currentIssue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(eq(issues.companyId, source.companyId), eq(issues.id, issueId))).limit(1);
+          if (!currentIssue || currentIssue.status === "blocked" || currentIssue.assigneeAgentId !== agent.id) return false;
+          const [successor] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, source.companyId), eq(heartbeatRuns.retryOfRunId, source.id))).limit(1);
+          const permittedOwners = new Set([source.id, successor?.id]);
+          if ([currentIssue.executionRunId, currentIssue.checkoutRunId].some(owner => owner && !permittedOwners.has(owner))) return false;
+          const [pending] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, source.companyId), eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.status, "pending"))).limit(1);
+          if (pending) return false;
+          const [approval] = await db.select({ id: issueApprovals.approvalId }).from(issueApprovals).innerJoin(approvals, and(eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId))).where(and(eq(issueApprovals.companyId, source.companyId), eq(issueApprovals.issueId, issueId), inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
+          return !approval;
+        },
+        continue: async source => {
+          const retry = await scheduleBoundedRetryForRun(source, agent, { now, delayMs: 500, maxAttempts: executionFailureRetryCount(source) + 1 });
+          if (retry.outcome !== "scheduled") return "gateHeld";
+          if (retry.run.status === "scheduled_retry") await db.update(heartbeatRuns).set({ scheduledRetryAt: now, updatedAt: now,
+            contextSnapshot: sql`((case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) - 'resumeSessionParams' - 'resumeSessionDisplayId' - 'codexTransientFallbackMode' - 'providerQuotaRetryNotBefore' - 'transientRetryNotBefore') || ${JSON.stringify({ forceFreshSession: true, quotaFallbackHandoff: { sourceRunId: source.id, adapterType: agent.adapterType, model: typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null, reason: "primary_recovered" } })}::jsonb`,
+          }).where(and(eq(heartbeatRuns.id, retry.run.id), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.status, "scheduled_retry")));
+          return retry.reusedExisting ? "alreadyCovered" : "scheduled";
+        },
+      });
+      if (batch.deferred) throw new Error("quota_recovery_pending");
     },
   });
   const recovery = recoveryService(db, {
@@ -15357,6 +15382,7 @@ export function heartbeatService(
         : baseSchedule;
 
     const requiresIssueGate =
+      readHeartbeatRunErrorFamily(run) === "provider_quota" ||
       isTransientWorkspaceGitScanCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
       retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
@@ -17509,7 +17535,21 @@ export function heartbeatService(
         responsibleUserId: null,
       },
     });
-    const quotaSelection = selectQuotaFallbackAgent(agent, responsibleUserId);
+    let quotaIdentity: Awaited<ReturnType<typeof deriveQuotaProbeIdentity>> | undefined;
+    if (quotaFallbackPolicy(agent)) {
+      try { quotaIdentity = await deriveQuotaProbeIdentity(db, agent, responsibleUserId, run.id); }
+      catch { /* unsupported context retains primary configuration */ }
+    }
+    if (quotaIdentity) {
+      const scoped = await quotaFallbacks.ensureScopeForRun(agent.id, responsibleUserId, quotaIdentity);
+      if (scoped?.unknownLegacy) {
+        await db.update(heartbeatRuns).set({ executionStage: "waiting_capacity", resultJson: { ...parseObject(run.resultJson), capacityWait: { reason: "Primary availability requires verified credential scope for this task" } } }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")));
+        return null;
+      }
+      if (scoped) agent = scoped.agent;
+    }
+    const quotaPrimaryAgent = agent;
+    const quotaSelection = selectQuotaFallbackAgent(agent, responsibleUserId, undefined, quotaIdentity?.effectiveFingerprint ?? "__unknown_scope__");
     agent = quotaSelection.agent;
     const claimedAdapterMetadata = { adapterDispatch: { adapterType: agent.adapterType }, ...(quotaSelection.pin ? { quotaFallback: quotaSelection.pin } : {}) };
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
@@ -17692,7 +17732,8 @@ export function heartbeatService(
                 // envelope. Preserve their established claim path; only an
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
-                const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id, maxAgentRuns);
+                if (quotaIdentity && (await deriveQuotaProbeIdentity(tx as unknown as Db, (await tx.select().from(agents).where(eq(agents.id, quotaPrimaryAgent.id)).limit(1))[0] ?? quotaPrimaryAgent, responsibleUserId, run.id)).effectiveFingerprint !== quotaIdentity.effectiveFingerprint) return null;
+              const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id, maxAgentRuns);
                 if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
@@ -17783,6 +17824,7 @@ export function heartbeatService(
                 };
               }
 
+              if (quotaIdentity && (await deriveQuotaProbeIdentity(tx as unknown as Db, (await tx.select().from(agents).where(eq(agents.id, quotaPrimaryAgent.id)).limit(1))[0] ?? quotaPrimaryAgent, responsibleUserId, run.id)).effectiveFingerprint !== quotaIdentity.effectiveFingerprint) return null;
               const capacity = await admitQueuedRunCapacity(tx as unknown as Db, agent, lockedRun.id, maxAgentRuns);
               if (!capacity.allowed) return { kind: "capacity_wait" as const, run: null };
               await tx
@@ -17882,6 +17924,7 @@ export function heartbeatService(
               staleIssueWakeReason = await issueAutomationWakeClaimHold(claimDb, run, issueId, wakeReason);
               if (staleIssueWakeReason) return null;
             }
+            if (quotaIdentity && (await deriveQuotaProbeIdentity(claimDb, (await claimDb.select().from(agents).where(eq(agents.id, quotaPrimaryAgent.id)).limit(1))[0] ?? quotaPrimaryAgent, responsibleUserId, run.id)).effectiveFingerprint !== quotaIdentity.effectiveFingerprint) return null;
             const capacity = await admitQueuedRunCapacity(claimDb, agent, run.id, maxAgentRuns);
             if (!capacity.allowed) return null;
             return claimDb
@@ -19917,52 +19960,19 @@ export function heartbeatService(
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+      const fairnessNow = new Date();
+      const candidate = (run: typeof heartbeatRuns.$inferSelect) => {
+        const id = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        const issue = id ? issueById.get(id) : null;
+        return { id: run.id, agentId, createdAt: run.createdAt, lastAdmittedAt: null,
+          ready: id ? dependencyReadiness.get(id)?.isDependencyReady ?? true : true,
+          status: issue?.status, priority: issue?.priority };
+      };
+      const prioritizedRuns = [...queuedRuns].sort((left, right) => compareQueuedCandidates(candidate(left), candidate(right), fairnessNow));
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
+        if (claimedRuns.length >= Math.min(availableSlots, 1)) break;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
@@ -26160,7 +26170,8 @@ export function heartbeatService(
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
-        await startNextQueuedRunForAgent(run.agentId);
+        if (latestRun?.status === "cancelled" || latestRun?.status === "interrupted") await startNextQueuedRunForAgent(run.agentId);
+        else await resumeQueuedRuns();
       }
     }
   }

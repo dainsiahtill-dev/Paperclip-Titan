@@ -1,3 +1,4 @@
+import type { QuotaProbeIdentity } from "./quota-probe-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { activityLog, agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -16,7 +17,8 @@ export type PrimaryQuotaProbeResult = "available" | "unavailable" | "busy" | "er
 
 export interface AgentQuotaFallbackDependencies {
   clock?: () => Date;
-  probePrimary: (agent: AgentRow, responsibleUserId: string | null, scope: QuotaFallbackScope, context: { sourceRunId: string | null }) => Promise<PrimaryQuotaProbeResult>;
+  resolveIdentity?: (agent: AgentRow, responsibleUserId: string | null, sourceRunId: string | null) => Promise<QuotaProbeIdentity>;
+  probePrimary: (agent: AgentRow, responsibleUserId: string | null, scope: QuotaFallbackScope, context: { sourceRunId: string | null; signal?: AbortSignal }) => Promise<PrimaryQuotaProbeResult>;
   canCheck?: (agent: AgentRow, responsibleUserId: string | null) => Promise<boolean>;
   onRecovered?: (agent: AgentRow, responsibleUserId: string | null, scope: QuotaFallbackScope, now: Date) => Promise<void>;
 }
@@ -44,11 +46,38 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
   const clock = () => dependencies.clock?.() ?? new Date();
   const recoveryInFlight = new Set<string>();
 
-  async function reconcileRecovery(agentId: string, responsibleUserId: string | null) {
+  async function scopeForIdentity(agent: AgentRow, book: QuotaFallbackBook, user: string | null, identity?: QuotaProbeIdentity) {
+    const key = quotaScopeKey(user, identity?.effectiveFingerprint);
+    if (book.scopes[key]) return { key, scope: book.scopes[key]! };
+    const legacyKey = quotaScopeKey(user), legacy = book.scopes[legacyKey];
+    if (identity && legacy && !legacy.probeToken && legacy.primaryQuotaRunId) {
+      try {
+        const [original] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, legacy.primaryQuotaRunId), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id))).limit(1);
+        const pinned = readQuotaFallbackPin(record(original?.profile).quotaFallback);
+        if (pinned?.effectiveFingerprint === identity.effectiveFingerprint) {
+          const scope = { ...legacy, effectiveFingerprint: identity.effectiveFingerprint, responsibleUserId: user, sourceRunId: identity.sourceRunId };
+          delete book.scopes[legacyKey]; book.scopes[key] = scope;
+          return { key, scope };
+        }
+      } catch { /* unknown legacy authority stays waiting */ }
+    }
+    return { key, scope: { ...initialQuotaScope(), ...(identity ? { effectiveFingerprint: identity.effectiveFingerprint, responsibleUserId: user, sourceRunId: identity.sourceRunId } : {}) } };
+  }
+  async function ensureScopeForRun(agentId: string, user: string | null, identity: QuotaProbeIdentity) {
+    return db.transaction(async tx => {
+      const agent = await loadAgent(tx as unknown as Db, agentId, true); if (!agent) return null;
+      const book = quotaFallbackBook(agent); const legacy = book.scopes[quotaScopeKey(user)];
+      const scoped = await scopeForIdentity(agent, book, user, identity);
+      if (legacy && !book.scopes[quotaScopeKey(user)]) await writeBook(tx as unknown as Db, agent, book);
+      return { agent: { ...agent, metadata: { ...agent.metadata, [QUOTA_FALLBACK_METADATA_KEY]: book } }, unknownLegacy: !!book.scopes[quotaScopeKey(user)]?.usingBackup && !book.scopes[scoped.key] };
+    });
+  }
+
+  async function reconcileRecovery(agentId: string, responsibleUserId: string | null, scopeKey?: string) {
     const agent = await loadAgent(db, agentId);
     if (!agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) return;
     if (dependencies.canCheck && !await dependencies.canCheck(agent, responsibleUserId)) return;
-    const key = quotaScopeKey(responsibleUserId);
+    const key = scopeKey ?? quotaScopeKey(responsibleUserId);
     const scope = quotaFallbackBook(agent).scopes[key];
     if (!scope?.recoveryToken || !scope.recoveryAt) return;
     const inFlightKey = `${agentId}:${key}:${scope.recoveryToken}`;
@@ -68,16 +97,21 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
     } finally { recoveryInFlight.delete(inFlightKey); }
   }
   async function registerQuotaFailure(run: QuotaRun, responsibleUserId: string | null, now: Date) {
+    const initial = await loadAgent(db, run.agentId);
+    if (!initial) return null;
+    let identity: QuotaProbeIdentity | undefined;
+    try { identity = await dependencies.resolveIdentity?.(initial, responsibleUserId, run.id); } catch { return null; }
     return db.transaction(async tx => {
       const agent = await loadAgent(tx as unknown as Db, run.agentId, true);
       if (!agent || agent.companyId !== run.companyId) return null;
       const policy = quotaFallbackPolicy(agent);
       if (!policy?.backup) return null;
+      if (identity && (await dependencies.resolveIdentity?.(agent, responsibleUserId, run.id))?.effectiveFingerprint !== identity.effectiveFingerprint) return null;
       const book = quotaFallbackBook(agent);
-      const key = quotaScopeKey(responsibleUserId);
-      const scope = book.scopes[key] ?? initialQuotaScope();
+      const { key, scope } = await scopeForIdentity(agent, book, responsibleUserId, identity);
       const pin = readQuotaFallbackPin(record(run.runnerProfileJson).quotaFallback);
       if (pin && pin.fingerprint !== book.fingerprint) return null;
+      if (pin?.effectiveFingerprint && identity && pin.effectiveFingerprint !== identity.effectiveFingerprint) return null;
       const actualType = pin?.adapterType ?? record(record(run.runnerProfileJson).adapterDispatch).adapterType;
       const actualModel = pin?.model ?? record(run.usageJson).model ?? record(run.resultJson).model;
       const backupRun = pin?.usingBackup === true || (typeof actualType === "string" && actualType !== agent.adapterType);
@@ -120,14 +154,16 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
     const agent = await loadAgent(db, agentId);
     if (!agent) return null;
     const policy = quotaFallbackPolicy(agent);
-    const scope = policy ? quotaFallbackBook(agent).scopes[quotaScopeKey(responsibleUserId)] : null;
+    const book = quotaFallbackBook(agent);
+    const matching = Object.entries(book.scopes).filter(([key, scope]) => key === quotaScopeKey(responsibleUserId) || (scope.effectiveFingerprint && scope.responsibleUserId === responsibleUserId));
+    const scope = policy ? matching.map(([, value]) => value).sort((a, b) => Number(b.usingBackup) - Number(a.usingBackup))[0] : null;
     return {
       enabled: !!policy, usingBackup: scope?.usingBackup === true,
       primaryAdapterType: agent.adapterType, primaryModel: typeof agent.adapterConfig.model === "string" ? agent.adapterConfig.model : null,
       backupAdapterType: policy?.backup?.adapterType ?? null, backupModel: policy?.backup?.model ?? null,
       lastQuotaAt: scope?.lastQuotaAt ?? null, lastPrimaryCheckAt: scope?.lastPrimaryCheckAt ?? null,
       lastPrimaryCheckResult: scope?.lastPrimaryCheckResult ?? null, nextPrimaryCheckAt: scope?.nextPrimaryCheckAt ?? null,
-      checkingPrimary: !!scope?.probeUntil && scope.probeFingerprint === quotaFallbackBook(agent).fingerprint && Date.parse(scope.probeUntil) > now.getTime(),
+      checkingPrimary: matching.some(([, value]) => !!value.probeToken),
     };
   }
 
@@ -137,10 +173,14 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
     const policy = agent ? quotaFallbackPolicy(agent) : null;
     if (!agent || !policy || ["paused", "terminated", "pending_approval"].includes(agent.status)) return getStatus(agentId, responsibleUserId, now);
     if (dependencies.canCheck && !await dependencies.canCheck(agent, responsibleUserId)) return getStatus(agentId, responsibleUserId, now);
-    const key = quotaScopeKey(responsibleUserId);
-    const scope = quotaFallbackBook(agent).scopes[key] ?? initialQuotaScope();
+    const existing = Object.values(quotaFallbackBook(agent).scopes).find(scope => scope.effectiveFingerprint && scope.responsibleUserId === responsibleUserId && scope.usingBackup);
+    const sourceRunId = options.sourceRunId ?? existing?.sourceRunId ?? quotaFallbackBook(agent).scopes[quotaScopeKey(responsibleUserId)]?.primaryQuotaRunId ?? null;
+    let identity: QuotaProbeIdentity | undefined;
+    try { identity = await dependencies.resolveIdentity?.(agent, responsibleUserId, sourceRunId); } catch { return getStatus(agentId, responsibleUserId, now); }
+    const { key, scope } = await scopeForIdentity(agent, quotaFallbackBook(agent), responsibleUserId, identity);
+    if (Object.entries(quotaFallbackBook(agent).scopes).some(([scopeKey, value]) => value.probeToken && (scopeKey === quotaScopeKey(responsibleUserId) || (value.effectiveFingerprint && value.responsibleUserId === responsibleUserId)))) return getStatus(agentId, responsibleUserId, now);
     if (!options.force && (!policy.recoveryEnabled || !primaryCheckDue(scope, policy.primaryCheckIntervalSec, now, options.monitorPrimary === true))) return getStatus(agentId, responsibleUserId, now);
-    if (scope.probeUntil && Date.parse(scope.probeUntil) > clock().getTime()) return getStatus(agentId, responsibleUserId, clock());
+    if (scope.probeToken) return getStatus(agentId, responsibleUserId, clock());
 
     const claimed = await db.transaction(async tx => {
       // Capacity admission takes the instance lock before the Agent lock, just
@@ -151,8 +191,9 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       if (!latest || ["paused", "terminated", "pending_approval"].includes(latest.status)) return null;
       const book = quotaFallbackBook(latest);
       if (book.fingerprint !== quotaFallbackBook(agent).fingerprint) return null;
-      const current = book.scopes[key] ?? initialQuotaScope();
-      if (current.probeUntil && Date.parse(current.probeUntil) > admissionTime.getTime()) return null;
+      if (Object.entries(book.scopes).some(([scopeKey, value]) => value.probeToken && (scopeKey === quotaScopeKey(responsibleUserId) || (value.effectiveFingerprint && value.responsibleUserId === responsibleUserId)))) return null;
+      const current = (await scopeForIdentity(latest, book, responsibleUserId, identity)).scope;
+      if (current.probeToken) return null;
       if (!options.force && !primaryCheckDue(current, policy.primaryCheckIntervalSec, admissionTime, options.monitorPrimary === true)) return null;
       if (!capacity.allowed) {
         current.lastPrimaryCheckResult = "busy";
@@ -169,7 +210,13 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
     if (!claimed) return getStatus(agentId, responsibleUserId, now);
 
     let result: PrimaryQuotaProbeResult = "error";
-    try { result = await dependencies.probePrimary(agent, responsibleUserId, scope, { sourceRunId: options.sourceRunId ?? scope.primaryQuotaRunId }); } catch { result = "error"; }
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), QUOTA_PROBE_LEASE_MS); deadline.unref?.();
+    try { result = await dependencies.probePrimary(agent, responsibleUserId, scope, { sourceRunId: sourceRunId ?? scope.primaryQuotaRunId, signal: controller.signal }); } catch { result = "error"; }
+    finally { clearTimeout(deadline); }
+    if (controller.signal.aborted) result = "error";
+    let currentIdentity: QuotaProbeIdentity | undefined;
+    try { const refreshed = await loadAgent(db, agentId); if (refreshed) currentIdentity = await dependencies.resolveIdentity?.(refreshed, responsibleUserId, sourceRunId); } catch { /* unknown current identity cannot recover */ }
     const finishedAt = clock();
     const recovered = await db.transaction(async tx => {
       const latest = await loadAgent(tx as unknown as Db, agentId, true);
@@ -179,7 +226,7 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       if (!current || current.probeToken !== claimed.token) return null;
       current.probeToken = null; current.probeUntil = null; current.probeGroup = null; current.probeFingerprint = null;
       const latestPolicy = quotaFallbackPolicy(latest);
-      if (book.fingerprint !== claimed.fingerprint || !latestPolicy) {
+      if (book.fingerprint !== claimed.fingerprint || !latestPolicy || (identity && currentIdentity?.effectiveFingerprint !== identity.effectiveFingerprint)) {
         book.scopes[key] = current; await writeBook(tx as unknown as Db, latest, book); return null;
       }
       const wasUsingBackup = current.usingBackup;
@@ -208,7 +255,7 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       book.scopes[key] = current; await writeBook(tx as unknown as Db, latest, book);
       return wasUsingBackup && !current.usingBackup ? { agent: latest, scope: { ...current } } : null;
     });
-    if (recovered) await reconcileRecovery(agentId, responsibleUserId);
+    if (recovered) await reconcileRecovery(agentId, responsibleUserId, key);
     return getStatus(agentId, responsibleUserId, finishedAt);
   }
 
@@ -222,24 +269,26 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       const activeRuns = await db.select({ id: heartbeatRuns.id, responsibleUserId: heartbeatRuns.responsibleUserId })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.status, "running")))
         .orderBy(desc(heartbeatRuns.startedAt), desc(heartbeatRuns.createdAt));
-      const activeScopes = new Map<string, string>();
+      const activeScopes = new Map<string, { sourceId: string; userId: string | null }>();
       for (const run of activeRuns) {
-        const key = quotaScopeKey(run.responsibleUserId);
-        if (!activeScopes.has(key)) activeScopes.set(key, run.id);
+        let identity: QuotaProbeIdentity | undefined;
+        try { identity = await dependencies.resolveIdentity?.(agent, run.responsibleUserId, run.id); } catch { continue; }
+        const key = quotaScopeKey(run.responsibleUserId, identity?.effectiveFingerprint);
+        if (!activeScopes.has(key)) activeScopes.set(key, { sourceId: run.id, userId: run.responsibleUserId });
       }
       const scopes = quotaFallbackBook(agent).scopes;
       const keys = new Set([...Object.keys(scopes), ...activeScopes.keys()]);
       for (const key of keys) {
         if (key.startsWith("__backup_test__:")) continue;
         const scope = scopes[key] ?? initialQuotaScope();
-        const userId = key === "__unattributed__" ? null : key;
+        const userId = scope.effectiveFingerprint ? scope.responsibleUserId ?? null : activeScopes.get(key)?.userId ?? (key === "__unattributed__" ? null : key);
         try {
-          if (scope.recoveryToken) await reconcileRecovery(agent.id, userId);
-          const sourceRunId = activeScopes.get(key);
+          if (scope.recoveryToken) await reconcileRecovery(agent.id, userId, key);
+          const sourceRunId = activeScopes.get(key)?.sourceId ?? scope.sourceRunId ?? undefined;
           if (!policy.recoveryEnabled || !primaryCheckDue(scope, policy.primaryCheckIntervalSec, now, sourceRunId !== undefined)) continue;
           await checkPrimary(agent.id, userId, { monitorPrimary: sourceRunId !== undefined, sourceRunId }); checked += 1;
         } catch (error) {
-          logger.warn({ err: error, agentId: agent.id, companyId: agent.companyId }, "primary quota recovery remains pending");
+          logger.warn({ code: "quota_recovery_pending", agentId: agent.id, companyId: agent.companyId }, "primary quota recovery remains pending");
         }
       }
     }
@@ -259,7 +308,7 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       if (!latest || ["paused", "terminated", "pending_approval"].includes(latest.status)) return null;
       const book = quotaFallbackBook(latest);
       const current = book.scopes[key] ?? initialQuotaScope();
-      if (current.probeUntil && Date.parse(current.probeUntil) > now.getTime()) return null;
+      if (current.probeToken) return null;
       current.probeToken = randomUUID(); current.probeFingerprint = book.fingerprint;
       current.probeUntil = new Date(now.getTime() + QUOTA_PROBE_LEASE_MS).toISOString(); current.probeGroup = capacity.group;
       book.scopes[key] = current; await writeBook(tx as unknown as Db, latest, book);
@@ -277,5 +326,5 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
     }
   }
 
-  return { registerQuotaFailure, getStatus, checkPrimary, tick, withProbeSlot };
+  return { registerQuotaFailure, getStatus, checkPrimary, tick, withProbeSlot, ensureScopeForRun };
 }

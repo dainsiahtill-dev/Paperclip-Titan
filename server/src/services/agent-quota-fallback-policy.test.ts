@@ -22,7 +22,7 @@ describe("quota routing policy", () => {
     const agent = primary(); activate(agent);
     const alice = selectQuotaFallbackAgent(agent, "alice");
     expect(alice.agent.adapterType).toBe("codex_local");
-    expect(alice.agent.adapterConfig).toMatchObject({ model: "gpt-6.1-sol", engine: "cli", dangerouslyBypassSandbox: true, instructionsFilePath: "/instructions/AGENTS.md" });
+    expect(alice.agent.adapterConfig).toMatchObject({ model: "gpt-6.1-sol", engine: "cli", dangerouslyBypassSandbox: false, instructionsFilePath: "/instructions/AGENTS.md" });
     expect(alice.agent.runtimeConfig.aiConnection).toBeUndefined();
     expect(alice.agent.runtimeConfig.heartbeat).toMatchObject({ maxConcurrentRuns: 1, concurrencyGroup: "" });
     expect(selectQuotaFallbackAgent(agent, "bob").agent).toBe(agent);
@@ -50,13 +50,13 @@ describe("quota routing policy", () => {
     expect(() => selectQuotaFallbackAgent(agent, "alice", admitted.pin)).toThrow("configuration changed");
   });
 
-  it("counts only bounded, live provider probe leases", () => {
+  it("retains every physical probe reservation until settlement", () => {
     const now = new Date("2026-10-01T00:00:00Z");
     expect(activeQuotaProbeReservations({ quotaFallbackState: { scopes: {
       alice: { probeToken: "lease", probeGroup: "minimax", probeUntil: "2026-10-01T00:01:00Z" },
       bob: { probeToken: "expired", probeGroup: "minimax", probeUntil: "2026-09-30T23:59:00Z" },
       forged: { probeToken: "forever", probeGroup: "minimax", probeUntil: "2099-01-01T00:00:00Z" },
-    } } }, now)).toEqual([{ group: "minimax" }]);
+    } } }, now)).toEqual([{ group: "minimax" }, { group: "minimax" }, { group: "minimax" }]);
   });
 
   it("keeps the backup selected when only recovery controls change", () => {
@@ -66,4 +66,11 @@ describe("quota routing policy", () => {
     expect(selectQuotaFallbackAgent(agent, "alice").pin?.usingBackup).toBe(true);
     expect(selectQuotaFallbackAgent(agent, "alice", original.pin).agent.adapterType).toBe("codex_local");
   });
+});
+
+it("preserves explicit permissions when selecting configured fallback", () => {
+  const agent = primary();
+  agent.adapterConfig = { ...agent.adapterConfig, dangerouslyBypassSandbox: false, dangerouslySkipPermissions: false, permissionMode: "default" };
+  expect(buildQuotaBackupConfig(agent, { adapterType: "codex_local", model: "custom-codex" })).toMatchObject({ dangerouslyBypassSandbox: false });
+  expect(buildQuotaBackupConfig(agent, { adapterType: "claude_local", model: "custom-claude" })).toMatchObject({ dangerouslySkipPermissions: false, permissionMode: "default" });
 });
