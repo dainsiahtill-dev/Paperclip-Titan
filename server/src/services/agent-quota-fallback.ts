@@ -176,6 +176,20 @@ export function agentQuotaFallbackService(db: Db, dependencies: AgentQuotaFallba
       }
       const wasUsingBackup = current.usingBackup;
       current.lastPrimaryCheckAt = finishedAt.toISOString(); current.lastPrimaryCheckResult = result;
+      if (result === "unavailable" && latestPolicy.backup && !wasUsingBackup) {
+        current.usingBackup = true;
+        current.primaryCheckIntervalSec = latestPolicy.primaryCheckIntervalSec;
+        current.recoveryToken = null; current.recoveryAt = null;
+        await tx.insert(activityLog).values({
+          companyId: latest.companyId, agentId: latest.id,
+          actorType: "system", actorId: "primary_availability_probe",
+          action: "agent.quota_fallback.activated", entityType: "agent", entityId: latest.id,
+          details: {
+            responsibleUserId, reason: "primary_probe_unavailable",
+            adapterType: latestPolicy.backup.adapterType, model: latestPolicy.backup.model,
+          },
+        });
+      }
       if (result === "available" && latestPolicy.recoveryEnabled) current.usingBackup = false;
       if (wasUsingBackup && !current.usingBackup) {
         current.recoveryToken = randomUUID(); current.recoveryAt = finishedAt.toISOString();

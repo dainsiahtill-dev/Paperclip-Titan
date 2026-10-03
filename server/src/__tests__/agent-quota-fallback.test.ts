@@ -54,6 +54,52 @@ describeDatabase("durable Agent quota fallback", () => {
     expect(agent?.adapterType).toBe("claude_local"); expect(agent?.metadata?.unrelated).toBe("keep"); expect(probe).not.toHaveBeenCalled();
   });
 
+  it("uses the configured backup after an unavailable primary probe without inventing quota evidence", async () => {
+    const run = await seed();
+    const service = agentQuotaFallbackService(db, { probePrimary: async () => "unavailable" });
+    const status = await service.checkPrimary(run.agentId, "alice", { force: true });
+    expect(status).toMatchObject({
+      usingBackup: true,
+      lastQuotaAt: null,
+      lastPrimaryCheckResult: "unavailable",
+      nextPrimaryCheckAt: "2030-04-20T12:05:00.000Z",
+    });
+    expect(await service.getStatus(run.agentId, "bob")).toMatchObject({ usingBackup: false });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    expect(agent?.adapterType).toBe("claude_local");
+    expect(quotaFallbackBook(agent!).scopes.alice).toMatchObject({
+      primaryQuotaRunId: null,
+      backupQuotaRunId: null,
+    });
+  });
+
+  it.each(["busy", "error"] as const)("keeps the primary after an inconclusive %s probe", async result => {
+    const run = await seed();
+    const service = agentQuotaFallbackService(db, { probePrimary: async () => result });
+    expect(await service.checkPrimary(run.agentId, "alice", { force: true })).toMatchObject({
+      usingBackup: false,
+      lastPrimaryCheckResult: result,
+      lastQuotaAt: null,
+    });
+  });
+
+  it("recovers a probe-activated backup on the existing primary-check cadence", async () => {
+    const run = await seed();
+    const recovered = vi.fn();
+    const probe = vi.fn().mockResolvedValueOnce("unavailable").mockResolvedValueOnce("available");
+    const service = agentQuotaFallbackService(db, { probePrimary: probe, onRecovered: recovered });
+    await service.checkPrimary(run.agentId, "alice", { force: true });
+    clock = new Date("2030-04-20T12:05:00Z");
+    await service.tick(clock);
+    expect(await service.getStatus(run.agentId, "alice")).toMatchObject({
+      usingBackup: false,
+      lastPrimaryCheckResult: "available",
+      lastQuotaAt: null,
+      nextPrimaryCheckAt: null,
+    });
+    expect(recovered).toHaveBeenCalledOnce();
+  });
+
   it("checks on the configured cadence and only returns after real primary availability", async () => {
     const run = await seed(); const recovered = vi.fn();
     const probe = vi.fn().mockResolvedValueOnce("unavailable").mockResolvedValueOnce("available");
