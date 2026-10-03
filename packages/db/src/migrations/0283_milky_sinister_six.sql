@@ -1,0 +1,1 @@
+ALTER TABLE "cost_events" ADD COLUMN "total_tokens" integer;

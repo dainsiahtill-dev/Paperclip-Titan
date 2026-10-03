@@ -10396,6 +10396,21 @@ export function issueRoutes(
     res.json(revisions);
   });
 
+  router.get("/issues/:id/documents/:key/revisions/:revisionId", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const key = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    const revisionId = String(req.params.revisionId ?? "");
+    const offset = req.query.offset === undefined ? 0 : Number(req.query.offset);
+    const limit = req.query.limit === undefined ? 16000 : Number(req.query.limit);
+    if (!key.success || !/^[0-9a-f-]{36}$/i.test(revisionId) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32000) {
+      res.status(400).json({ error: "Invalid revision or page; limit must be 1–32000" }); return;
+    }
+    const revision = await documentsSvc.getIssueDocumentRevision({ companyId: issue.companyId, issueId: issue.id, key: key.data, revisionId, offset, limit });
+    if (!revision) { res.status(404).json({ error: "Document revision not found" }); return; }
+    res.json(revision);
+  });
+
   router.post(
     "/issues/:id/documents/:key/revisions/:revisionId/restore",
     validate(restoreIssueDocumentRevisionSchema),

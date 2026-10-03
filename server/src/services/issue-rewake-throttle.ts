@@ -60,28 +60,7 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
  * interaction, or scheduled continuation behind.
  */
 export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
-  "issue.updated",
-  "issue.comment_added",
-  "issue.created",
-  "issue.child_created",
-  "issue.assigned",
-  "issue.released",
-  "issue.blockers_updated",
-  "issue.document_upserted",
-  "issue.document_updated",
-  "issue.document_deleted",
-  "issue.document_restored",
-  "issue.document_annotation_comment_added",
-  "issue.document_annotation_thread_created",
-  "issue.document_annotation_thread_resolved",
-  "issue.work_product_created",
-  "issue.work_product_updated",
-  "issue.work_product_deleted",
-  "issue.attachment_added",
-  "issue.attachment_removed",
-  "issue.thread_interaction_created",
-  "issue.monitor_scheduled",
-  "issue.approval_linked",
+  "issue.material_progress",
 ];
 
 /**
@@ -91,6 +70,19 @@ export const ISSUE_PROGRESS_ACTIVITY_ACTIONS: string[] = [
  */
 export const ISSUE_NEW_INPUT_ACTIVITY_ACTIONS: string[] = [
   ...ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  "issue.updated",
+  "issue.comment_added",
+  "issue.created",
+  "issue.assigned",
+  "issue.blockers_updated",
+  "issue.document_upserted",
+  "issue.document_updated",
+  "issue.document_restored",
+  "issue.work_product_created",
+  "issue.work_product_updated",
+  "issue.thread_interaction_created",
+  "issue.monitor_scheduled",
+  "issue.approval_linked",
   "issue.thread_interaction_accepted",
   "issue.thread_interaction_answered",
   "issue.thread_interaction_item_verdicts_submitted",

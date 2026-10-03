@@ -1,4 +1,5 @@
 import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
+import type { IssueResourceLimits } from "../validators/issue-resources.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -665,6 +666,7 @@ export interface IssueExecutionMonitorPolicy {
 }
 
 export interface IssueExecutionPolicy {
+  resourceLimits?: IssueResourceLimits | null;
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];

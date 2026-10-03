@@ -76,6 +76,16 @@ function createDbStub(selectResults: SelectResult[]) {
 }
 
 describe("budgetService", () => {
+  it("blocks an unpaused subscription agent when its token budget is exhausted", async () => {
+    const tokenPolicy = { id: "tokens", companyId: "company-1", scopeType: "agent", scopeId: "agent-1",
+      metric: "total_tokens", windowKind: "lifetime", amount: 1000, hardStopEnabled: true, isActive: true };
+    const stub = createDbStub([
+      [{ status: "idle", companyId: "company-1", name: "Agent", pauseReason: null }],
+      [{ status: "active", name: "Company" }], [], [], [tokenPolicy], [{ total: 1000 }],
+    ]);
+    const block = await budgetService(stub.db as any).getInvocationBlock("company-1", "agent-1");
+    expect(block).toMatchObject({ scopeType: "agent", scopeId: "agent-1", metric: "total_tokens" });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

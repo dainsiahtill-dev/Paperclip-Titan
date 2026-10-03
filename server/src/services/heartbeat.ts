@@ -196,6 +196,9 @@ import {
 } from "./issue-queued-comment-queue.js";
 import { documentService } from "./documents.js";
 import { getTaskPlanContext } from "./task-plan-context.js";
+import { projectTaskPlan } from "./task-plan-projection.js";
+import { compareMaterialProgress, readIssueMaterialProgress, type MaterialProgressSnapshot } from "./issue-material-progress.js";
+import { armIssueRunDeadline, readIssueResourcePolicies } from "./issue-resource-limits.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -3652,6 +3655,7 @@ type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
 };
 
 type SessionCompactionDecision = {
@@ -5355,6 +5359,8 @@ function normalizeUsageTotals(
       Math.floor(asNumber(usage.cachedInputTokens, 0)),
     ),
     outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
+    ...(typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens) && usage.totalTokens >= 0
+      ? { totalTokens: Math.floor(usage.totalTokens) } : {}),
   };
 }
 
@@ -5392,6 +5398,8 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     inputTokens,
     cachedInputTokens,
     outputTokens,
+    ...(typeof parsed.rawTotalTokens === "number" ? { totalTokens: Math.max(0, Math.floor(parsed.rawTotalTokens)) }
+      : typeof parsed.totalTokens === "number" ? { totalTokens: Math.max(0, Math.floor(parsed.totalTokens)) } : {}),
   };
 }
 
@@ -5419,6 +5427,9 @@ function deriveNormalizedUsageDelta(
     inputTokens: Math.max(0, inputTokens),
     cachedInputTokens: Math.max(0, cachedInputTokens),
     outputTokens: Math.max(0, outputTokens),
+    ...(current.totalTokens !== undefined && previous.totalTokens !== undefined
+      ? { totalTokens: current.totalTokens >= previous.totalTokens ? current.totalTokens - previous.totalTokens : current.totalTokens }
+      : {}),
   };
 }
 
@@ -8708,11 +8719,19 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
     if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
+      const projection = projectTaskPlan({
+        issueId: issue.id, title: issue.title, revisionId: input.taskPlan.revisionId,
+        body: input.taskPlan.body.trim(), compact: input.includeDescription === false,
+      });
       lines.push(
         "",
         `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
-        fenceTaskText(input.taskPlan.body.trim()),
+        `Exact revision: GET ${projection.sourceRef}. Full current document: GET /api/issues/${encodeURIComponent(issue.id)}/documents/plan.`,
+        projection.mode === "sections"
+          ? "This is a projection of core constraints and the current task, not proof that you read the plan. Read the exact revision before work if it is new or missing from your session; follow nextOffset until complete=true. Other sections remain available on demand."
+          : "The complete plan revision follows.",
+        fenceTaskText(projection.body),
       );
     }
   }
@@ -17369,6 +17388,7 @@ export function heartbeatService(
       {
         issueId: readNonEmptyString(context.issueId),
         projectId: readNonEmptyString(context.projectId),
+        runId: run.id,
       },
     );
     if (budgetBlock) {
@@ -18225,6 +18245,16 @@ export function heartbeatService(
   ): Promise<RunLivenessClassificationInput> {
     const context = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(context.issueId);
+    const baseline = parseObject(context.materialProgressBaseline);
+    const materialProgress = contextIssueId && baseline.version === 1
+      ? compareMaterialProgress(baseline as unknown as MaterialProgressSnapshot,
+          await readIssueMaterialProgress(db, run.companyId, contextIssueId))
+      : { state: "unknown" as const, kind: "none" as const };
+    if (contextIssueId && materialProgress.state === "advanced") {
+      await logActivity(db, { companyId: run.companyId, actorType: "system", actorId: "material-observer",
+        runId: run.id, action: "issue.material_progress", entityType: "issue", entityId: contextIssueId,
+        details: { version: 1, kind: materialProgress.kind } });
+    }
     const continuationAttempt = asNumber(
       context.continuationAttempt,
       run.continuationAttempt ?? 0,
@@ -18376,6 +18406,7 @@ export function heartbeatService(
       continuationAttempt,
       evidence: {
         issueCommentsCreated: countValue(commentStats?.count),
+        materialProgress: materialProgress.state,
         documentRevisionsCreated: countValue(documentStats?.count),
         planDocumentRevisionsCreated: countValue(documentStats?.planCount),
         workProductsCreated: countValue(workProductStats?.count),
@@ -19811,6 +19842,7 @@ export function heartbeatService(
         inputTokens,
         cachedInputTokens,
         outputTokens,
+        totalTokens: usage?.totalTokens ?? null,
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
@@ -20170,6 +20202,8 @@ export function heartbeatService(
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
+    let resourceDeadline: ReturnType<typeof armIssueRunDeadline> | null = null;
+    let resourceStopCode: string | null = null;
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
     let githubLauncherLocation:
@@ -20321,6 +20355,22 @@ export function heartbeatService(
       let issueContext = issueId
         ? await getIssueExecutionContext(agent.companyId, issueId)
         : null;
+      const resourcePolicies = issueId ? await readIssueResourcePolicies(db, agent.companyId, issueId) : [];
+      const runSeconds = resourcePolicies.flatMap((policy) => policy.limits.maxRunSeconds ? [policy.limits.maxRunSeconds] : []);
+      const runTokenCaps = resourcePolicies.flatMap((policy) => policy.limits.maxTokensPerRun ? [policy.limits.maxTokensPerRun] : []);
+      const maxRunSeconds = runSeconds.length ? Math.min(...runSeconds) : null;
+      const maxRunTokens = runTokenCaps.length ? Math.min(...runTokenCaps) : null;
+      if (maxRunSeconds) {
+        const prior = parseObject(context.resourceDeadline);
+        const deadlineAt = prior.runId === run.id && typeof prior.deadlineAt === "string" && Number.isFinite(Date.parse(prior.deadlineAt))
+          ? Date.parse(prior.deadlineAt) : (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
+        context.resourceDeadline = { runId: run.id, deadlineAt: new Date(deadlineAt).toISOString(), maxRunSeconds };
+        resourceDeadline = armIssueRunDeadline({ deadlineAt, stop: async () => {
+          resourceStopCode = "resource_run_deadline";
+          executionControl.controller.abort();
+          await executionControl.settled;
+        }, onError: () => logger.warn({ runId: run.id }, "resource deadline stop did not settle") });
+      }
       const issueDependencyReadiness = issueId
         ? await issuesSvc
             .listDependencyReadiness(agent.companyId, [issueId])
@@ -20893,6 +20943,9 @@ export function heartbeatService(
             exposeLowTrustRaw,
           })
         : null;
+      if (issueRef && !isConversation(issueContext)) {
+        context.materialProgressBaseline = await readIssueMaterialProgress(db, agent.companyId, issueRef.id);
+      }
       let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
@@ -20903,6 +20956,14 @@ export function heartbeatService(
         taskPlan,
         includeDescription: false,
       });
+      if (taskPlan && issueRef) {
+        const projection = projectTaskPlan({ issueId: issueRef.id, title: issueRef.title,
+          revisionId: taskPlan.revisionId, body: taskPlan.body, compact: true });
+        context.paperclipPlanMetrics = { revisionId: taskPlan.revisionId,
+          contentDigest: projection.contentDigest, sourceChars: projection.sourceChars,
+          resumeChars: projection.projectedChars, omittedChars: projection.omittedChars,
+          mode: projection.mode };
+      } else delete context.paperclipPlanMetrics;
       if (issueRef) {
         context.paperclipIssue = {
           id: issueRef.id,
@@ -21388,6 +21449,10 @@ export function heartbeatService(
       // Always replace this runtime-only field; caller wake data cannot supply skills.
       context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
       let runtimeConfig: Record<string, unknown> = connectorDelivery.config;
+      if (maxRunSeconds) {
+        const configured = asNumber(runtimeConfig.timeoutSec, 0);
+        runtimeConfig = { ...runtimeConfig, timeoutSec: configured > 0 ? Math.min(configured, maxRunSeconds) : maxRunSeconds };
+      }
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,
@@ -24743,6 +24808,9 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
+        if (maxRunTokens && normalizedUsage?.totalTokens !== undefined && normalizedUsage.totalTokens >= maxRunTokens) {
+          resourceStopCode = "resource_run_token_limit";
+        }
         const runErrorMessage =
           outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
@@ -24813,6 +24881,7 @@ export function heartbeatService(
                       rawInputTokens: rawUsage.inputTokens,
                       rawCachedInputTokens: rawUsage.cachedInputTokens,
                       rawOutputTokens: rawUsage.outputTokens,
+                      ...(rawUsage.totalTokens !== undefined ? { rawTotalTokens: rawUsage.totalTokens } : {}),
                     }
                   : {}),
                 ...(sessionUsageResolution.derivedFromSessionTotals
@@ -24838,6 +24907,8 @@ export function heartbeatService(
                 sessionRotated: sessionCompaction.rotate,
                 sessionRotationReason: sessionCompaction.reason,
                 configFreshness: configFreshnessResultMetadata,
+                ...(resourceStopCode ? { resourceLimitStop: { code: resourceStopCode, nextOwnerId: issueContext?.responsibleUserId ?? null,
+                  granularity: "reported_provider_boundary" } } : {}),
                 provider:
                   readNonEmptyString(adapterResult.provider) ?? "unknown",
                 biller: resolveLedgerBiller(adapterResult),
@@ -25884,6 +25955,7 @@ export function heartbeatService(
         }
       }
     } finally {
+      resourceDeadline?.clear();
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       try {
@@ -26058,6 +26130,7 @@ export function heartbeatService(
         // It is never retained beyond the active execution's cleanup.
         failedProcessRunCancellations.delete(run.id);
         executionControl.finish();
+        await resourceDeadline?.drain();
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
@@ -27781,9 +27854,7 @@ export function heartbeatService(
                           activityLog.action,
                           ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
                         ),
-                        wakeCommentId && opts.requestedByActorType === "agent"
-                          ? ne(activityLog.actorType, "agent")
-                          : undefined,
+                        ne(activityLog.actorType, "agent"),
                       ),
                     )
                     .limit(1)

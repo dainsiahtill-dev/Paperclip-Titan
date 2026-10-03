@@ -33,6 +33,8 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** Provider-normalized total. Absent means unknown cache semantics. */
+  totalTokens?: number;
 }
 
 export type AdapterBillingType =

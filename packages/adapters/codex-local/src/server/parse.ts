@@ -37,6 +37,7 @@ export function parseCodexJsonl(stdout: string) {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
+    totalTokens: 0,
   };
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -76,6 +77,7 @@ export function parseCodexJsonl(stdout: string) {
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
       usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+      usage.totalTokens = usage.inputTokens + usage.outputTokens;
       continue;
     }
 

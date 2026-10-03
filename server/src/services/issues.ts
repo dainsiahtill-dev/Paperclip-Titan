@@ -97,7 +97,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -190,6 +190,7 @@ import {
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { readIssueResourcePolicies } from "./issue-resource-limits.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -10871,6 +10872,19 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (actorAgentId && issueData.parentId !== undefined && issueData.parentId !== receiptExisting.parentId) {
+          const resourcePolicies = await readIssueResourcePolicies(tx, receiptExisting.companyId, receiptExisting.id);
+          if (resourcePolicies.some((policy) => Object.values(policy.limits).some((value) => typeof value === "number" && value > 0))) {
+            throw forbidden("An agent cannot reparent work out of a board-managed resource scope");
+          }
+        }
+        if (actorAgentId && issueData.executionPolicy !== undefined) {
+          const resources = (value: unknown) => value && typeof value === "object" && !Array.isArray(value)
+            ? (value as Record<string, unknown>).resourceLimits ?? null : null;
+          if (JSON.stringify(resources(receiptExisting.executionPolicy)) !== JSON.stringify(resources(issueData.executionPolicy))) {
+            throw forbidden("Task resource limits are board-managed and cannot be changed by an agent");
+          }
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });

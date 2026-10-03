@@ -194,6 +194,35 @@ export function documentService(db: Db) {
         .orderBy(desc(documentRevisions.revisionNumber));
     },
 
+    getIssueDocumentRevision: async (input: {
+      companyId: string; issueId: string; key: string; revisionId: string;
+      offset?: number; limit?: number;
+    }) => {
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 16000;
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 32000) {
+        throw unprocessable("Invalid revision page; offset must be nonnegative and limit 1–32000");
+      }
+      const row = await db.select({
+        id: documentRevisions.id, documentId: documents.id,
+        revisionNumber: documentRevisions.revisionNumber, body: documentRevisions.body,
+        sourceTrust: documents.sourceTrust,
+      }).from(issueDocuments)
+        .innerJoin(issues, eq(issues.id, issueDocuments.issueId))
+        .innerJoin(documents, eq(documents.id, issueDocuments.documentId))
+        .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+          eq(issueDocuments.companyId, input.companyId), eq(documents.companyId, input.companyId),
+          eq(documentRevisions.companyId, input.companyId), eq(issueDocuments.key, normalizeDocumentKey(input.key)),
+          eq(documentRevisions.id, input.revisionId)))
+        .limit(1).then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const body = row.body.slice(offset, offset + limit);
+      const nextOffset = offset + body.length;
+      const complete = nextOffset >= row.body.length;
+      return { ...row, body, offset, sourceChars: row.body.length, complete, nextOffset: complete ? null : nextOffset };
+    },
+
     upsertIssueDocument: async (input: {
       issueId: string;
       key: string;

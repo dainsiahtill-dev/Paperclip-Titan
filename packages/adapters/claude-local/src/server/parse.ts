@@ -51,7 +51,7 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
     cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
   }
   if (!sawEntry) return null;
-  return { inputTokens, outputTokens, cachedInputTokens };
+  return { inputTokens, outputTokens, cachedInputTokens, totalTokens: inputTokens + cachedInputTokens + outputTokens };
 }
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -112,6 +112,8 @@ export function parseClaudeStreamJson(stdout: string) {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
+    totalTokens: asNumber(usageObj.input_tokens, 0) + asNumber(usageObj.cache_read_input_tokens, 0)
+      + asNumber(usageObj.cache_creation_input_tokens, 0) + asNumber(usageObj.output_tokens, 0),
   };
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;

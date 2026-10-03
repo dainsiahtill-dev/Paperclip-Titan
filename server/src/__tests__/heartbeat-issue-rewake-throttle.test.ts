@@ -375,7 +375,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       actorId: agentId,
       agentId,
       runId: progressRunId,
-      action: "issue.comment_added",
+      action: "issue.material_progress",
       entityType: "issue",
       entityId: issueId,
       createdAt: new Date(Date.now() - 11_000),
@@ -383,6 +383,17 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     const wake = await assignmentWake(agentId, issueId);
     expect(wake).not.toBeNull();
+  });
+
+  it("does not reset the no-progress streak for an unchanged agent comment", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    const runId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId,
+      agentId, runId, action: "issue.comment_added", entityType: "issue", entityId: issueId,
+      createdAt: new Date(Date.now() - 11_000) });
+    expect(await assignmentWake(agentId, issueId)).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
 
   it("does not count progress on another issue toward the current issue", async () => {

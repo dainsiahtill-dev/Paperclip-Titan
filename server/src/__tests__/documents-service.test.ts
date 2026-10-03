@@ -25,6 +25,20 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("documentService system issue documents", () => {
+  it("reads a pinned revision in bounded pages and rejects another company's revision", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = await svc.getIssueDocumentByKey(issueId, "plan");
+    const [owner] = await db.select().from(issues);
+    const changed = await svc.upsertIssueDocument({ issueId, key: "plan", format: "markdown", body: "replacement", baseRevisionId: original!.latestRevisionId });
+    const revisionId = original!.latestRevisionId!;
+    const page = await svc.getIssueDocumentRevision({ companyId: owner.companyId, issueId, key: "plan", revisionId, offset: 0, limit: 3 });
+    expect(page).toMatchObject({ body: "# P", complete: false, nextOffset: 3, sourceChars: 6 });
+    const tail = await svc.getIssueDocumentRevision({ companyId: owner.companyId, issueId, key: "plan", revisionId, offset: 3, limit: 3 });
+    expect(page!.body + tail!.body).toBe("# Plan");
+    expect(tail).toMatchObject({ complete: true, nextOffset: null });
+    expect(changed.document.latestRevisionId).not.toBe(revisionId);
+    await expect(svc.getIssueDocumentRevision({ companyId: randomUUID(), issueId, key: "plan", revisionId })).resolves.toBeNull();
+  });
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof documentService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;

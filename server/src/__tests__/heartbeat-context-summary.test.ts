@@ -7,6 +7,33 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("projects long plans on resume while retaining scope, acceptance, current work and full revision access", () => {
+    const input = {
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Implement persistence", workMode: "standard" },
+      taskPlan: {
+        documentId: "document-1", revisionId: "revision-1", revisionNumber: 1,
+        body: "# Delivery\n## Goal\nShip task API.\n## Global Constraints\nNever touch production.\n## Acceptance\nRestart retains tasks.\n## Task A: Implement persistence\nUse local JSON storage.\n## Task B: Unrelated appendix\n" + "UNRELATED_PLAN_PAYLOAD ".repeat(5000) + "\n## Stop conditions\nRespect human pause.",
+      },
+      wakeComment: { id: "comment-1", body: "Also reject empty title." },
+    };
+    const full = buildPaperclipTaskMarkdown(input);
+    const compact = buildPaperclipTaskMarkdown({ ...input, includeDescription: false });
+    expect(full).toContain("UNRELATED_PLAN_PAYLOAD");
+    expect(compact.includes("UNRELATED_PLAN_PAYLOAD")).toBe(false);
+    for (const required of ["Never touch production.", "Restart retains tasks.", "Use local JSON storage.", "Respect human pause.", "Also reject empty title.", "revision-1", "/api/issues/issue-1/documents/plan"]) expect(compact).toContain(required);
+    expect(compact.length).toBeLessThan(full.length / 10);
+  });
+
+  it("keeps an approved revision pinned in compact plan references", () => {
+    const compact = buildPaperclipTaskMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Current task" },
+      taskPlan: { documentId: "document-1", revisionId: "approved-revision", revisionNumber: 2, body: "# Goal\nDeliver.\n## Scope\nOnly this workspace.\n## Other task\n" + "appendix ".repeat(1000) },
+      includeDescription: false,
+    });
+    expect(compact).toContain("approved-revision");
+    expect(compact.includes("/api/issues/issue-1/documents/plan/revisions/approved-revision")).toBe(true);
+    expect(compact).toContain("Only this workspace.");
+  });
   it("keeps a durable task plan in full and resumed context without granting execution approval", () => {
     const taskPlan = {
       documentId: "document", revisionId: "revision", revisionNumber: 1,

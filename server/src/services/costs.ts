@@ -238,6 +238,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             issueCount: sql<number>`count(distinct ${issues.id})::int`,
             costCents: sumAsNumber(costEvents.costCents),
             inputTokens: sumAsNumber(costEvents.inputTokens),
+            totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
             cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
             outputTokens: sumAsNumber(costEvents.outputTokens),
           })
@@ -270,6 +271,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         includeDescendants: true,
         costCents: Number(costRow?.costCents ?? 0),
         inputTokens: Number(costRow?.inputTokens ?? 0),
+        totalTokens: costRow?.totalTokens == null ? null : Number(costRow.totalTokens),
         cachedInputTokens: Number(costRow?.cachedInputTokens ?? 0),
         outputTokens: Number(costRow?.outputTokens ?? 0),
         runCount: Number(runRow?.runCount ?? 0),
@@ -289,6 +291,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           agentStatus: agents.status,
           costCents: sumAsNumber(costEvents.costCents),
           inputTokens: sumAsNumber(costEvents.inputTokens),
+          totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
           apiRunCount:
@@ -322,6 +325,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           model: costEvents.model,
           costCents: sumAsNumber(costEvents.costCents),
           inputTokens: sumAsNumber(costEvents.inputTokens),
+          totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
           apiRunCount:
@@ -351,6 +355,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           biller: costEvents.biller,
           costCents: sumAsNumber(costEvents.costCents),
           inputTokens: sumAsNumber(costEvents.inputTokens),
+          totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
           apiRunCount:
@@ -393,6 +398,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               biller: sql<string>`case when count(distinct ${costEvents.biller}) = 1 then min(${costEvents.biller}) else 'mixed' end`,
               costCents: sumAsNumber(costEvents.costCents),
               inputTokens: sumAsNumber(costEvents.inputTokens),
+              totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
               cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
               outputTokens: sumAsNumber(costEvents.outputTokens),
             })
@@ -413,6 +419,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             windowHours: hours,
             costCents: row.costCents,
             inputTokens: row.inputTokens,
+            totalTokens: row.totalTokens,
             cachedInputTokens: row.cachedInputTokens,
             outputTokens: row.outputTokens,
           }));
@@ -441,6 +448,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           model: costEvents.model,
           costCents: sumAsNumber(costEvents.costCents),
           inputTokens: sumAsNumber(costEvents.inputTokens),
+          totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
         })
@@ -497,6 +505,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           projectName: projects.name,
           costCents: costCentsExpr,
           inputTokens: sumAsNumber(costEvents.inputTokens),
+          totalTokens: sql<number | null>`case when count(*) filter (where ${costEvents.totalTokens} is null) > 0 then null else coalesce(sum(${costEvents.totalTokens}), 0)::double precision end`,
           cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
           outputTokens: sumAsNumber(costEvents.outputTokens),
         })

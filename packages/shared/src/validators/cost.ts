@@ -14,6 +14,7 @@ export const createCostEventSchema = z.object({
   costStatus: z.enum(COST_STATUSES).optional().default("reported"),
   model: z.string().min(1),
   inputTokens: z.number().int().nonnegative().optional().default(0),
+  totalTokens: z.number().int().nonnegative().optional().nullable(),
   cachedInputTokens: z.number().int().nonnegative().optional().default(0),
   outputTokens: z.number().int().nonnegative().optional().default(0),
   costCents: z.number().int().nonnegative(),

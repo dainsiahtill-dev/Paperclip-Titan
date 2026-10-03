@@ -1,21 +1,11 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { BudgetIncident } from "@paperclipai/shared";
 import { AlertOctagon, ArrowUpRight, PauseCircle } from "lucide-react";
-import { formatCents } from "../lib/utils";
+import { budgetInputValue, formatBudgetAmount, parseBudgetAmount } from "../lib/budget-format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-
-function centsInputValue(value: number) {
-  return (value / 100).toFixed(2);
-}
-
-function parseDollarInput(value: string) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.round(parsed * 100);
-}
 
 function incidentStateLabel(incident: BudgetIncident) {
   if (incident.status === "resolved") return "Resolved";
@@ -32,14 +22,16 @@ export function BudgetIncidentCard({
   isMutating,
 }: {
   incident: BudgetIncident;
-  onRaiseAndResume: (amountCents: number) => void;
+  onRaiseAndResume: (amount: number) => void;
   onKeepPaused: () => void;
   isMutating?: boolean;
 }) {
+  const inputId = useId();
+  const unit = incident.metric === "billed_cents" ? "USD" : "tokens";
   const [draftAmount, setDraftAmount] = useState(
-    centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
+    budgetInputValue(incident.metric, Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
-  const parsed = parseDollarInput(draftAmount);
+  const parsed = parseBudgetAmount(incident.metric, draftAmount);
   const stateLabel = incidentStateLabel(incident);
 
   return (
@@ -57,7 +49,7 @@ export function BudgetIncidentCard({
             </div>
             <CardTitle className="mt-1 text-base text-red-950 dark:text-red-50">{incident.scopeName}</CardTitle>
             <CardDescription className="mt-1 text-red-900/75 dark:text-red-100/70">
-              Spending reached {formatCents(incident.amountObserved)} against a limit of {formatCents(incident.amountLimit)}.
+              Usage reached {formatBudgetAmount(incident.metric, incident.amountObserved)} against a limit of {formatBudgetAmount(incident.metric, incident.amountLimit)}.
             </CardDescription>
           </div>
           <div className="rounded-full border border-red-400/30 bg-red-500/10 p-2 text-red-600 dark:text-red-200">
@@ -76,15 +68,17 @@ export function BudgetIncidentCard({
         </div>
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
-          <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-            New budget (USD)
+          <label htmlFor={inputId} className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
+            New budget ({unit})
           </label>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
+              id={inputId}
+              aria-label={`New budget (${unit})`}
               value={draftAmount}
               onChange={(event) => setDraftAmount(event.target.value)}
-              inputMode="decimal"
-              placeholder="0.00"
+              inputMode={incident.metric === "billed_cents" ? "decimal" : "numeric"}
+              placeholder={incident.metric === "billed_cents" ? "0.00" : "0"}
             />
             <Button
               className="gap-2"

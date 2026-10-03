@@ -1216,6 +1216,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       renderedPrompt,
     ]);
     const promptMetrics = {
+      planSourceChars: asNumber(parseObject(context.paperclipPlanMetrics).sourceChars, 0),
+      planResumeChars: asNumber(parseObject(context.paperclipPlanMetrics).resumeChars, 0),
+      planOmittedChars: asNumber(parseObject(context.paperclipPlanMetrics).omittedChars, 0),
       promptChars: prompt.length,
       instructionsChars,
       bootstrapPromptChars: renderedBootstrapPrompt.length,

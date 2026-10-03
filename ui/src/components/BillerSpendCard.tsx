@@ -3,6 +3,7 @@ import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
+import { formatTokenTotal } from "@/lib/token-usage";
 
 interface BillerSpendCardProps {
   row: CostByBiller;
@@ -20,7 +21,7 @@ export function BillerSpendCard({
   providerRows,
 }: BillerSpendCardProps) {
   const providerBreakdown = useMemo(() => {
-    const map = new Map<string, { provider: string; costCents: number; inputTokens: number; outputTokens: number }>();
+    const map = new Map<string, { provider: string; costCents: number; inputTokens: number | null; outputTokens: number }>();
     for (const entry of providerRows) {
       const current = map.get(entry.provider) ?? {
         provider: entry.provider,
@@ -29,7 +30,8 @@ export function BillerSpendCard({
         outputTokens: 0,
       };
       current.costCents += entry.costCents;
-      current.inputTokens += entry.inputTokens + entry.cachedInputTokens;
+      current.inputTokens = current.inputTokens == null || entry.totalTokens == null
+        ? null : current.inputTokens + Math.max(0, entry.totalTokens - entry.outputTokens);
       current.outputTokens += entry.outputTokens;
       map.set(entry.provider, current);
     }
@@ -62,7 +64,7 @@ export function BillerSpendCard({
               {providerDisplayName(row.biller)}
             </CardTitle>
             <CardDescription className="text-xs mt-0.5">
-              <span className="font-mono">{formatTokens(row.inputTokens + row.cachedInputTokens)}</span> in
+              <span className="font-mono">{formatTokenTotal(row.totalTokens == null ? null : Math.max(0, row.totalTokens - row.outputTokens))}</span> in
               {" · "}
               <span className="font-mono">{formatTokens(row.outputTokens)}</span> out
               {" · "}
@@ -130,7 +132,7 @@ export function BillerSpendCard({
                     <div className="text-right tabular-nums">
                       <div className="font-medium">{formatCents(entry.costCents)}</div>
                       <div className="text-muted-foreground">
-                        {formatTokens(entry.inputTokens + entry.outputTokens)} tok
+                        {formatTokenTotal(entry.inputTokens == null ? null : entry.inputTokens + entry.outputTokens)} tok
                       </div>
                     </div>
                   </div>

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { issueResourceLimitsSchema } from "./issue-resources.js";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
@@ -440,6 +441,7 @@ export const issueExecutionMonitorPolicySchema = z.object({
 });
 
 export const issueExecutionPolicySchema = z.object({
+  resourceLimits: issueResourceLimitsSchema.nullable().optional(),
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),

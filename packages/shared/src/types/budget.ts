@@ -27,6 +27,7 @@ export interface BudgetPolicy {
 }
 
 export interface BudgetPolicySummary {
+  unknownUsageCount?: number;
   policyId: string;
   companyId: string;
   scopeType: BudgetScopeType;

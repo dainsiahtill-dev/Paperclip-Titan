@@ -45,7 +45,8 @@ import {
   resolveIssueWorkspaceName,
   type InboxIssueColumn,
 } from "../lib/inbox";
-import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { cn, formatDurationMs } from "../lib/utils";
+import { formatTokenTotal } from "../lib/token-usage";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
@@ -588,10 +589,8 @@ function SubIssueProgressSummaryStrip({
     refetchInterval: hasInProgress ? costRefetchInterval : false,
   });
 
-  const totalTokens = costSummary
-    ? costSummary.inputTokens + costSummary.cachedInputTokens + costSummary.outputTokens
-    : 0;
-  const showCostSummary = !!costSummary && (costSummary.runCount > 0 || totalTokens > 0);
+  const totalTokens = costSummary?.totalTokens ?? null;
+  const showCostSummary = !!costSummary && (costSummary.runCount > 0 || (totalTokens ?? 0) > 0);
 
   return (
     <div className="border border-border bg-background p-3">
@@ -617,7 +616,7 @@ function SubIssueProgressSummaryStrip({
                     costSummary.issueCount === 1 ? "" : "s"
                   }`}
                 >
-                  {formatTokens(totalTokens)} tokens
+                  {formatTokenTotal(totalTokens)} tokens
                 </span>
                 <span className="text-muted-foreground tabular-nums">
                   {formatDurationMs(costSummary.runtimeMs)} runtime

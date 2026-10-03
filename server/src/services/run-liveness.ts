@@ -22,6 +22,7 @@ export interface RunLivenessEvidenceInput {
   activityEventsCreated: number;
   toolOrActionEventsCreated: number;
   latestEvidenceAt: Date | null;
+  materialProgress?: "advanced" | "unchanged" | "unknown";
 }
 
 export interface RunLivenessClassificationInput {
@@ -192,20 +193,20 @@ function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | 
     activityEventsCreated: normalizeCount(evidence?.activityEventsCreated),
     toolOrActionEventsCreated: normalizeCount(evidence?.toolOrActionEventsCreated),
     latestEvidenceAt: evidence?.latestEvidenceAt instanceof Date ? evidence.latestEvidenceAt : null,
+    materialProgress: evidence?.materialProgress,
   };
 }
 
 export function hasConcreteActionEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined) {
   const normalized = normalizeEvidence(evidence);
+  if (normalized.materialProgress === "advanced") return true;
+  if (normalized.materialProgress === "unchanged") return false;
   // Workspace creation is setup evidence, not task progress by itself. It can
   // appear in reasons alongside durable activity, but it must not prevent a
   // planning-only or empty run from receiving a bounded continuation.
   return (
-    normalized.issueCommentsCreated +
-      normalized.documentRevisionsCreated +
-      normalized.workProductsCreated +
-      normalized.activityEventsCreated +
-      normalized.toolOrActionEventsCreated >
+    normalized.documentRevisionsCreated +
+      normalized.workProductsCreated >
     0
   );
 }

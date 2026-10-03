@@ -18,6 +18,15 @@ const baseInput = {
 };
 
 describe("run liveness classifier", () => {
+  it.each([
+    { issueCommentsCreated: 1 },
+    { activityEventsCreated: 3 },
+    { toolOrActionEventsCreated: 1 },
+  ])("keeps activity observable without treating unchanged narration or tool counts as deliverable progress: %j", (evidence) => {
+    const classification = classifyRunLiveness({ ...baseInput, resultJson: { summary: "Checked the unchanged repository; still waiting." }, evidence });
+    expect(classification.livenessState).not.toBe("advanced");
+    expect(classification.lastUsefulActionAt).toBeNull();
+  });
   it("classifies text-only future work as plan_only", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

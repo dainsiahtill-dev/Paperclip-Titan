@@ -15,6 +15,7 @@ export interface CostEvent {
   costStatus: CostStatus;
   model: string;
   inputTokens: number;
+  totalTokens?: number | null;
   cachedInputTokens: number;
   outputTokens: number;
   costCents: number;
@@ -36,6 +37,7 @@ export interface IssueCostSummary {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
   /** number of distinct heartbeat runs aggregated across the issue tree */
   runCount: number;
@@ -51,6 +53,7 @@ export interface CostByAgent {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
@@ -67,6 +70,7 @@ export interface CostByProviderModel {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
@@ -80,6 +84,7 @@ export interface CostByBiller {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
   apiRunCount: number;
   subscriptionRunCount: number;
@@ -101,6 +106,7 @@ export interface CostByAgentModel {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
 }
 
@@ -115,6 +121,7 @@ export interface CostWindowSpendRow {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
 }
 
@@ -125,5 +132,6 @@ export interface CostByProject {
   costCents: number;
   inputTokens: number;
   cachedInputTokens: number;
+  totalTokens?: number | null;
   outputTokens: number;
 }

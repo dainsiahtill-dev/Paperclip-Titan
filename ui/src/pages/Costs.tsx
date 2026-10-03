@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -29,9 +29,13 @@ import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { formatTokenTotal, totalTokenUsage } from "../lib/token-usage";
+import { parseBudgetAmount } from "../lib/budget-format";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const NO_COMPANY = "__none__";
 export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance";
@@ -56,24 +60,24 @@ function currentWeekRange(): { from: string; to: string } {
 }
 
 function ProviderTabLabel({ provider, rows }: { provider: string; rows: CostByProviderModel[] }) {
-  const totalTokens = rows.reduce((sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0);
+  const totalTokens = totalTokenUsage(rows);
   const totalCost = rows.reduce((sum, row) => sum + row.costCents, 0);
   return (
     <span className="flex items-center gap-1.5">
       <span>{providerDisplayName(provider)}</span>
-      <span className="font-mono text-xs text-muted-foreground">{formatTokens(totalTokens)}</span>
+      <span className="font-mono text-xs text-muted-foreground">{formatTokenTotal(totalTokens)}</span>
       <span className="text-xs text-muted-foreground">{formatCents(totalCost)}</span>
     </span>
   );
 }
 
 function BillerTabLabel({ biller, rows }: { biller: string; rows: CostByBiller[] }) {
-  const totalTokens = rows.reduce((sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0);
+  const totalTokens = totalTokenUsage(rows);
   const totalCost = rows.reduce((sum, row) => sum + row.costCents, 0);
   return (
     <span className="flex items-center gap-1.5">
       <span>{providerDisplayName(biller)}</span>
-      <span className="font-mono text-xs text-muted-foreground">{formatTokens(totalTokens)}</span>
+      <span className="font-mono text-xs text-muted-foreground">{formatTokenTotal(totalTokens)}</span>
       <span className="text-xs text-muted-foreground">{formatCents(totalCost)}</span>
     </span>
   );
@@ -170,6 +174,10 @@ export function Costs({
   const [mainTab, setMainTab] = useState<CostsMainTab>(initialTab);
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
+  const tokenScopeId = useId();
+  const tokenAmountId = useId();
+  const [tokenScope, setTokenScope] = useState("");
+  const [tokenDraft, setTokenDraft] = useState("");
   const showSummaryChrome = !(embedded && lockTab && initialTab === "budgets");
 
   const {
@@ -234,12 +242,14 @@ export function Costs({
       scopeId: string;
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
+      metric?: BudgetPolicySummary["metric"];
     }) =>
       budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
         amount: input.amount,
         windowKind: input.windowKind,
+        metric: input.metric,
       }),
     onSuccess: invalidateBudgetViews,
   });
@@ -472,10 +482,7 @@ export function Costs({
 
   const providerTabItems = useMemo(() => {
     const providerKeys = Array.from(byProvider.keys());
-    const allTokens = providerKeys.reduce(
-      (sum, provider) => sum + (byProvider.get(provider)?.reduce((acc, row) => acc + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0) ?? 0),
-      0,
-    );
+    const allTokens = totalTokenUsage([...byProvider.values()].flat());
     const allCents = providerKeys.reduce(
       (sum, provider) => sum + (byProvider.get(provider)?.reduce((acc, row) => acc + row.costCents, 0) ?? 0),
       0,
@@ -488,7 +495,7 @@ export function Costs({
             <span>All providers</span>
             {providerKeys.length > 0 ? (
               <>
-                <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
+                <span className="font-mono text-xs text-muted-foreground">{formatTokenTotal(allTokens)}</span>
                 <span className="text-xs text-muted-foreground">{formatCents(allCents)}</span>
               </>
             ) : null}
@@ -504,10 +511,7 @@ export function Costs({
 
   const billerTabItems = useMemo(() => {
     const billerKeys = Array.from(byBiller.keys());
-    const allTokens = billerKeys.reduce(
-      (sum, biller) => sum + (byBiller.get(biller)?.reduce((acc, row) => acc + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0) ?? 0),
-      0,
-    );
+    const allTokens = totalTokenUsage([...byBiller.values()].flat());
     const allCents = billerKeys.reduce(
       (sum, biller) => sum + (byBiller.get(biller)?.reduce((acc, row) => acc + row.costCents, 0) ?? 0),
       0,
@@ -520,7 +524,7 @@ export function Costs({
             <span>All billers</span>
             {billerKeys.length > 0 ? (
               <>
-                <span className="font-mono text-xs text-muted-foreground">{formatTokens(allTokens)}</span>
+                <span className="font-mono text-xs text-muted-foreground">{formatTokenTotal(allTokens)}</span>
                 <span className="text-xs text-muted-foreground">{formatCents(allCents)}</span>
               </>
             ) : null}
@@ -534,14 +538,18 @@ export function Costs({
     ];
   }, [byBiller]);
 
-  const inferenceTokenTotal =
-    (spendData?.byAgent ?? []).reduce(
-      (sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens,
-      0,
-    );
+  const inferenceTokenTotal = totalTokenUsage(spendData?.byAgent ?? []);
 
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
+  const tokenScopes = [...new Map(budgetPolicies.map((policy) => [
+    `${policy.scopeType}:${policy.scopeId}`, { scopeType: policy.scopeType, scopeId: policy.scopeId, name: policy.scopeName },
+  ])).entries()];
+  if (!tokenScopes.some(([_key, scope]) => scope.scopeType === "company")) {
+    tokenScopes.unshift([`company:${companyId}`, { scopeType: "company", scopeId: companyId, name: "Organization" }]);
+  }
+  const effectiveTokenScope = tokenScopes.some(([key]) => key === tokenScope) ? tokenScope : `company:${companyId}`;
+  const tokenAmount = parseBudgetAmount("total_tokens", tokenDraft);
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
   const budgetPoliciesByScope = useMemo(() => ({
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
@@ -609,7 +617,7 @@ export function Costs({
             <MetricTile
               label="Inference spend"
               value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              subtitle={`${formatTokenTotal(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
             />
             <MetricTile
@@ -706,7 +714,7 @@ export function Costs({
                       <div className="border border-border px-4 py-3 text-right">
                         <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">usage</div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
-                          {formatTokens(inferenceTokenTotal)}
+                          {formatTokenTotal(inferenceTokenTotal)}
                         </div>
                       </div>
                     </div>
@@ -776,7 +784,7 @@ export function Costs({
                               <div className="text-right text-sm tabular-nums">
                                 <div className="font-medium">{formatCents(row.costCents)}</div>
                                 <div className="text-xs text-muted-foreground">
-                                  in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
+                                  in {formatTokenTotal(row.totalTokens == null ? null : Math.max(0, row.totalTokens - row.outputTokens))} · out {formatTokens(row.outputTokens)}
                                 </div>
                                 {(row.apiRunCount > 0 || row.subscriptionRunCount > 0) ? (
                                   <div className="text-xs text-muted-foreground">
@@ -815,7 +823,7 @@ export function Costs({
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
                                         <div className="text-muted-foreground">
-                                          {formatTokens(modelRow.inputTokens + modelRow.cachedInputTokens + modelRow.outputTokens)} tok
+                                          {formatTokenTotal(modelRow.totalTokens)} tok
                                         </div>
                                       </div>
                                     </div>
@@ -930,6 +938,30 @@ export function Costs({
               ) : null}
 
               <div className="space-y-5">
+                <section className="space-y-3">
+                  <h2 className="text-lg font-semibold">Token budget</h2>
+                  <p className="text-sm text-muted-foreground">Set a monthly limit on provider-normalized usage, including subscription runs. Unknown usage stays visible and cannot bypass a token hard-stop. Zero disables this limit.</p>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-2">
+                      <label htmlFor={tokenScopeId} className="text-sm font-medium">Scope</label>
+                      <Select value={effectiveTokenScope} onValueChange={setTokenScope}>
+                        <SelectTrigger id={tokenScopeId}><SelectValue /></SelectTrigger>
+                        <SelectContent>{tokenScopes.map(([key, scope]) => <SelectItem key={key} value={key}>{scope.name}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <label htmlFor={tokenAmountId} className="text-sm font-medium">Monthly tokens</label>
+                      <Input id={tokenAmountId} inputMode="numeric" value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="0" />
+                    </div>
+                    <Button className="self-end" disabled={policyMutation.isPending || !tokenDraft.trim() || tokenAmount === null || tokenAmount > 2147483647} onClick={() => {
+                      const scope = tokenScopes.find(([key]) => key === effectiveTokenScope)?.[1];
+                      if (scope && tokenAmount !== null) policyMutation.mutate({ scopeType: scope.scopeType, scopeId: scope.scopeId,
+                        metric: "total_tokens", windowKind: "calendar_month_utc", amount: tokenAmount });
+                    }}>{policyMutation.isPending ? "Saving..." : "Save token limit"}</Button>
+                  </div>
+                  {tokenAmount === null && <p role="alert" className="text-sm text-destructive">Enter a non-negative whole token count.</p>}
+                  {policyMutation.error && <p role="alert" className="text-sm text-destructive">{policyMutation.error instanceof Error ? policyMutation.error.message : "Could not save the budget. Try again."}</p>}
+                </section>
                 {(["company", "agent", "project"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];
                   if (rows.length === 0) return null;
@@ -957,6 +989,7 @@ export function Costs({
                                 scopeId: summary.scopeId,
                                 amount,
                                 windowKind: summary.windowKind,
+                                metric: summary.metric,
                               })}
                           />
                         ))}

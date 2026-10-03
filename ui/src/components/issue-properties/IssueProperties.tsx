@@ -2,6 +2,7 @@ import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
+import { IssueResourceLimitsPanel } from "../IssueResourceLimitsPanel";
 import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
@@ -1258,16 +1259,19 @@ export function IssueProperties({
       reviewerValues,
       approverValues,
     });
-    if (!basePolicy && !nextMonitor) {
+    const retainsAdditionalPolicy = Object.keys(issue.executionPolicy ?? {}).some((key) => !["mode", "commentRequired", "stages", "monitor"].includes(key));
+    if (!basePolicy && !nextMonitor && !retainsAdditionalPolicy) {
       onUpdate({ executionPolicy: null });
       return;
     }
     onUpdate({
       executionPolicy: {
+        ...issue.executionPolicy,
+        ...(basePolicy ?? {}),
         mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
-        ...(nextMonitor ? { monitor: nextMonitor } : {}),
+        monitor: nextMonitor,
       },
     });
   };
@@ -2588,6 +2592,7 @@ export function IssueProperties({
       </PropertySection>
 
       <PropertySection title="Execution" streamlined={streamlinedPropertiesEnabled}>
+        <IssueResourceLimitsPanel issue={issue} />
         {/* Read-only: agents set the policy, the board does not. */}
         {reviewPolicyBadge ? (
           <PropertyRow label="Approvals">
