@@ -1171,6 +1171,21 @@ export function IssueProperties({
   ) : undefined;
   const watchdogContent = (
     <div className="space-y-3 p-2">
+      <p className="text-xs text-muted-foreground">
+        复核停止的任务树，并验证恢复是否成功。最多重试 {issue.watchdog?.maxAttempts ?? issue.watchdog?.restorationLineage?.maxAttempts ?? 3} 次，随后升级给负责人或董事会。
+      </p>
+      {issue.watchdog?.restorationLineage ? (
+        <div className="text-xs text-foreground" role="status" aria-atomic="true">
+          {issue.watchdog.restorationLineage.disposition === "legitimate_stop"
+            ? "已确认合法停止"
+            : issue.watchdog.restorationLineage.disposition === "escalated"
+              ? "已升级给负责人或董事会；自动重试已停止"
+              : issue.watchdog.restorationLineage.disposition === "restoration_claimed"
+                ? "正在验证恢复"
+                : "正在复核停止的任务"}
+          {" · 第 "}{issue.watchdog.restorationLineage.attemptCount}{" / "}{issue.watchdog.restorationLineage.maxAttempts}{" 次"}
+        </div>
+      ) : null}
       <div className="space-y-1.5">
         <div className="text-xs font-medium text-foreground">Watchdog agent</div>
         <InlineEntitySelector

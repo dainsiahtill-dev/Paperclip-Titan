@@ -35,6 +35,23 @@ function classify(overrides: Partial<Parameters<typeof classifyTaskWatchdogSubtr
 }
 
 describe("task watchdog subtree classifier", () => {
+  it("does not permanently review a claimed restoration with the same stopped leaves", () => {
+    const input = [issue({ status: "in_progress" }), issue({ id: childId, parentId: sourceId, status: "blocked" })];
+    const initial = classify({ issues: input });
+    if (initial.state !== "stopped") throw new Error("Expected stopped source");
+    const result = classify({ issues: input, watchdog: {
+      companyId, issueId: sourceId, lastReviewedFingerprint: initial.stopFingerprint,
+      restorationDisposition: "restoration_claimed",
+    } as any });
+    expect(result.state).toBe("stopped");
+  });
+
+  it("includes intermediate status changes in the durable stop identity", () => {
+    const before = classify({ issues: [issue({ status: "in_progress" }), issue({ id: childId, parentId: sourceId, status: "blocked" })] });
+    const after = classify({ issues: [issue({ status: "todo" }), issue({ id: childId, parentId: sourceId, status: "blocked" })] });
+    if (before.state !== "stopped" || after.state !== "stopped") throw new Error("Expected stopped source");
+    expect(after.stopFingerprint).not.toBe(before.stopFingerprint);
+  });
   it("suppresses watchdog wakeups while watched subtree work has a live path", () => {
     const result = classify({
       issues: [

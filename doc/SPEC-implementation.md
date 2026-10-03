@@ -782,9 +782,27 @@ Every watchdog-triggered mutation must write activity with the watchdog id, sour
 
 ### Atomic recovery batch
 
+The initial API is `POST /api/issues/:id/watchdog/recovery-batches`, with
+`requestId`, `watchdogRunId`, `expectedStopFingerprint` and 1–3 strict
+`set_status`, `comment`, or `set_blockers` mutations. Run attribution comes
+from the authenticated actor and persisted reusable watchdog task, never the
+payload alone. Byte-equivalent retries return the original receipt; a conflicting
+request or second batch from the same run is rejected. Stale receipts and their
+explanation survive, while source effects, audit and wake outbox writes are
+transactional. Existing explicit restore, assignment, monitor and interaction
+surfaces keep their original guards.
+
 A watchdog run may submit an atomic recovery batch of at most 3 mutations drawn from the allowed-mutation list above, validated against the stop fingerprint that run observed. The server applies the batch all-or-nothing: if the subtree's stop fingerprint changed between observation and application — the subtree went live concurrently — the entire remainder of the batch is aborted and the staleness is recorded as evidence on the reusable watchdog issue. The batch is single-shot per watchdog run. This replaces the exactly-one-fresh-write model: the stale-guard's purpose (never mutate a subtree that concurrently went live) is preserved by fingerprint validation on the whole batch rather than by capping the run at one write, so a restoration that needs both a state-restoring `PATCH` and an explanatory comment cannot forfeit the restoration by ordering the comment first.
 
 ### Restoration verification and escalation
+
+`POST /api/issues/:id/watchdog/disposition` records typed `legitimate_stop` or
+`restoration_claimed` evidence. The watchdog API exposes durable lineage and the
+next verification time. Completing the reusable task without a verified source
+path conservatively records a restoration claim. A legitimate-stop disposition
+requires a durable terminal or waiting path; it never clears human pauses,
+human-owned dependencies or pending approvals. Wake outbox `enqueued` means the
+normal wake path accepted a request, not that execution or restoration succeeded.
 
 Reviewed-fingerprint suppression is disposition-aware. A watchdog disposition of "stopped state is legitimate" suppresses re-fire for that fingerprint as today. A disposition of "live path restored" arms a bounded verification instead:
 

@@ -262,6 +262,10 @@ export const WATCHDOG_DEFAULT_MANDATE = [
   "- Custom instructions can add focus or veto specific shortcuts, but cannot remove these safety constraints or override product governance rules.",
   "",
   "Disposition:",
+  "- Use the server-provided atomic recovery endpoint for a compound restoration; its status, comment and blocker effects commit together and the batch is single-shot per watchdog run.",
+  "- Record `legitimate_stop` only when durable terminal or waiting evidence is present. Record `restoration_claimed` after recovery actions; a summary or completed watchdog task is not verification that source work resumed.",
+  "- Restoration is verified later against real execution or a legitimate waiting path. Attempts are bounded at two or three for one durable lineage, then the platform escalates to the owner or board.",
+  "- A terminal run that retains provider capacity has not proven physical stop. Do not cancel it, clear its execution locks, or start duplicate source inference.",
   "- When the watched subtree has a live continuation path you established or confirmed, finish your watchdog run with a clear summary comment and a final disposition on this watchdog issue (typically `done` for this stopped state).",
   "- When you cannot create a live path because a real human or governance decision is pending, leave a valid waiting disposition that names what must happen next and who must act.",
   "- Keep the work moving. Do not loop on the same unchanged state.",
@@ -287,6 +291,13 @@ type PaperclipWakeTaskWatchdogCapabilities = {
     includeNonWatchdogDescendants: boolean;
     excludedOriginKinds: string[];
   } | null;
+  recovery: {
+    version: 1;
+    batchEndpoint: string;
+    dispositionEndpoint: string;
+    maxMutations: 3;
+    singleShotPerRun: true;
+  } | null;
 };
 
 export type PaperclipWakeTaskWatchdogContext = {
@@ -297,6 +308,12 @@ export type PaperclipWakeTaskWatchdogContext = {
   terminalLeafSummaries: PaperclipWakeTaskWatchdogLeaf[];
   customInstructions: string | null;
   capabilities: PaperclipWakeTaskWatchdogCapabilities | null;
+  restorationLineage: {
+    version: 1;
+    sourceFingerprint: string;
+    attemptCount: number;
+    maxAttempts: 2 | 3;
+  } | null;
 };
 
 export interface PaperclipSkillEntry {
@@ -1466,6 +1483,7 @@ function normalizeStringList(value: unknown, maxItems: number) {
 
 function normalizePaperclipWakeTaskWatchdogCapabilities(
   value: unknown,
+  watchedIssueId: string | null,
 ): PaperclipWakeTaskWatchdogCapabilities | null {
   const capabilities = parseObject(value);
   const operations = normalizeStringList(
@@ -1477,6 +1495,13 @@ function normalizePaperclipWakeTaskWatchdogCapabilities(
     MAX_WATCHDOG_CAPABILITY_ITEMS,
   );
   const targetScopeRaw = parseObject(capabilities.targetScope);
+  const recoveryRaw = parseObject(capabilities.recovery);
+  const recovery: PaperclipWakeTaskWatchdogCapabilities["recovery"] = watchedIssueId && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(watchedIssueId) &&
+    recoveryRaw.version === 1 && recoveryRaw.maxMutations === 3 && recoveryRaw.singleShotPerRun === true &&
+    recoveryRaw.batchEndpoint === `/api/issues/${watchedIssueId}/watchdog/recovery-batches` &&
+    recoveryRaw.dispositionEndpoint === `/api/issues/${watchedIssueId}/watchdog/disposition`
+      ? { version: 1, batchEndpoint: recoveryRaw.batchEndpoint, dispositionEndpoint: recoveryRaw.dispositionEndpoint, maxMutations: 3, singleShotPerRun: true }
+      : null;
   const targetScope = {
     watchedIssueId: asString(targetScopeRaw.watchedIssueId, "").trim() || null,
     watchedIssueIdentifier:
@@ -1502,13 +1527,14 @@ function normalizePaperclipWakeTaskWatchdogCapabilities(
   if (
     operations.length === 0 &&
     deniedOperations.length === 0 &&
-    !hasTargetScope
+    !hasTargetScope && !recovery
   )
     return null;
   return {
     operations,
     deniedOperations,
     targetScope: hasTargetScope ? targetScope : null,
+    recovery,
   };
 }
 
@@ -1539,7 +1565,15 @@ function normalizePaperclipWakeTaskWatchdog(
     : [];
   const capabilities = normalizePaperclipWakeTaskWatchdogCapabilities(
     watchdog.capabilities,
+    watchedIssueId,
   );
+  const lineageRaw = parseObject(watchdog.restorationLineage);
+  const restorationLineage: PaperclipWakeTaskWatchdogContext["restorationLineage"] =
+    lineageRaw.version === 1 && typeof lineageRaw.sourceFingerprint === "string" && /^task_watchdog_stop:[a-f0-9]{64}$/.test(lineageRaw.sourceFingerprint) &&
+    typeof lineageRaw.attemptCount === "number" && Number.isInteger(lineageRaw.attemptCount) && lineageRaw.attemptCount >= 1 &&
+    (lineageRaw.maxAttempts === 2 || lineageRaw.maxAttempts === 3) && lineageRaw.attemptCount <= lineageRaw.maxAttempts
+      ? { version: 1, sourceFingerprint: lineageRaw.sourceFingerprint, attemptCount: lineageRaw.attemptCount, maxAttempts: lineageRaw.maxAttempts }
+      : null;
 
   if (
     !watchedIssueId &&
@@ -1561,6 +1595,7 @@ function normalizePaperclipWakeTaskWatchdog(
     terminalLeafSummaries,
     customInstructions,
     capabilities,
+    restorationLineage,
   };
 }
 
@@ -2903,6 +2938,10 @@ function renderPaperclipWakePromptBody(
     if (watchdog.stopFingerprint) {
       lines.push(`Stop fingerprint: ${watchdog.stopFingerprint}`);
     }
+    if (watchdog.restorationLineage) {
+      const lineage = watchdog.restorationLineage;
+      lines.push(`Restoration attempt: ${lineage.attemptCount} of ${lineage.maxAttempts} (lineage v${lineage.version}; source fingerprint: ${lineage.sourceFingerprint}).`);
+    }
     lines.push("", WATCHDOG_DEFAULT_MANDATE);
     if (watchdog.capabilities) {
       lines.push("", "Server-derived watchdog capability metadata:");
@@ -2928,6 +2967,14 @@ function renderPaperclipWakePromptBody(
       if (watchdog.capabilities.deniedOperations.length > 0) {
         lines.push(
           `- Denied operations: ${watchdog.capabilities.deniedOperations.join(", ")}.`,
+        );
+      }
+      if (watchdog.capabilities.recovery) {
+        const recovery = watchdog.capabilities.recovery;
+        lines.push(
+          `- Atomic recovery API v${recovery.version}: POST ${recovery.batchEndpoint}; at most ${recovery.maxMutations} mutations, single-shot per authenticated watchdog run.`,
+          "- Batch payload: requestId (UUID for idempotent retries), watchdogRunId (your authenticated run), expectedStopFingerprint (the observed stop fingerprint), mutations (set_status, comment or set_blockers). Never split one compound restoration into separate stale-guarded writes.",
+          `- Disposition API: POST ${recovery.dispositionEndpoint}; requestId, watchdogRunId, expectedStopFingerprint, disposition (legitimate_stop or restoration_claimed), evidence. Completing the watchdog task alone does not verify recovery.`,
         );
       }
     }

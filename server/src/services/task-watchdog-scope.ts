@@ -45,6 +45,7 @@ function readTaskWatchdogContext(contextSnapshot: unknown) {
   return {
     watchedIssueId: readString(taskWatchdog?.watchedIssueId) ?? readString(context?.watchedIssueId),
     stopFingerprint: readString(taskWatchdog?.stopFingerprint) ?? readString(context?.stopFingerprint),
+    runIssueId: readString(context?.issueId) ?? readString(context?.taskId),
   };
 }
 
@@ -109,6 +110,15 @@ export async function resolveTaskWatchdogMutationScope(
       kind: "invalid",
       detail: "Task-watchdog run context is not backed by an active persisted watchdog.",
     };
+  }
+
+  if (!watchdog.watchdogIssueId || taskWatchdog.runIssueId !== watchdog.watchdogIssueId) {
+    return { kind: "invalid", detail: "Task-watchdog capability must belong to the configured reusable watchdog task run." };
+  }
+  const watchdogIssue = await db.select({ id: issues.id, originKind: issues.originKind, originId: issues.originId })
+    .from(issues).where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId))).then((rows) => rows[0] ?? null);
+  if (!watchdogIssue || watchdogIssue.originKind !== TASK_WATCHDOG_ORIGIN_KIND || watchdogIssue.originId !== watchdog.issueId) {
+    return { kind: "invalid", detail: "Configured watchdog task has no matching persisted source identity." };
   }
 
   return {

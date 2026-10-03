@@ -806,6 +806,7 @@ export const upsertIssueWatchdogSchema = z
   .object({
     agentId: z.string().guid(),
     instructions: multilineTextSchema.optional().nullable(),
+    maxAttempts: z.union([z.literal(2), z.literal(3)]).optional(),
   })
   .strict();
 

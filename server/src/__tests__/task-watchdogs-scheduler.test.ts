@@ -459,6 +459,12 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       payload: { version: 1, prompt: "Confirm the stop." },
       createdByAgentId: agentId,
     });
+    // Both unfinished branches have a real parent-owned waiting path. The
+    // completed watchdog task alone is no longer legitimate-stop evidence.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(), companyId, issueId: sourceId, kind: "request_confirmation", status: "pending",
+      payload: { version: 1, prompt: "Confirm the whole subtree stop." }, createdByAgentId: agentId,
+    });
     await seedWatchdog(companyId, sourceId, agentId);
     const { service, wakes } = createService();
 
@@ -529,8 +535,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(afterOldReviewCompletes).toMatchObject({ checked: 1, triggered: 1 });
     const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
-    expect(reviewedWatchdog?.lastReviewedFingerprint).toBe(oldFingerprint);
-    expect(reviewedWatchdog?.lastReviewedFingerprint).not.toBe(newerFingerprint);
+    expect(reviewedWatchdog?.lastReviewedFingerprint).toBeNull();
     expect(reviewedWatchdog?.lastReviewedStopSnapshot).toBeNull();
     const [reopenedWatchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
     expect(reopenedWatchdogIssue).toMatchObject({
@@ -541,11 +546,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .select()
       .from(activityLog)
       .where(and(eq(activityLog.entityId, sourceId), eq(activityLog.action, "issue.task_watchdog_fingerprint_reviewed")));
-    expect(reviewActivities).toHaveLength(1);
-    expect(reviewActivities[0]?.details).toMatchObject({
-      reviewedFingerprint: oldFingerprint,
-      lastObservedFingerprint: newerFingerprint,
-    });
+    expect(reviewActivities).toHaveLength(0);
+    const claimed = await db.select().from(activityLog).where(and(eq(activityLog.entityId, sourceId), eq(activityLog.action, "issue.task_watchdog_restoration_claimed")));
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]?.details).toMatchObject({ stopFingerprint: oldFingerprint, disposition: "restoration_claimed" });
     expect(wakes.length).toBe(2);
   });
 

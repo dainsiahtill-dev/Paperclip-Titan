@@ -748,6 +748,8 @@ export interface IssueWatchdogSummary {
   lastTriggeredAt: Date | null;
   lastCompletedAt: Date | null;
   triggerCount: number;
+  maxAttempts?: 2 | 3;
+  restorationLineage?: import("./watchdog.js").RestorationLineage | null;
   createdAt: Date;
   updatedAt: Date;
 }

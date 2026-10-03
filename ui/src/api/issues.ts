@@ -35,6 +35,8 @@ import type {
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
+import type { RecoveryBatch, RecoveryBatchReceipt } from "@paperclipai/shared/types/watchdog";
+import type { WatchdogDispositionInput } from "@paperclipai/shared/validators/watchdog";
 import { api, ApiError, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
@@ -243,6 +245,10 @@ export const issuesApi = {
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
   deleteWatchdog: (id: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
+  submitWatchdogRecoveryBatch: (id: string, data: RecoveryBatch) =>
+    api.post<RecoveryBatchReceipt>(`/issues/${id}/watchdog/recovery-batches`, data),
+  recordWatchdogDisposition: (id: string, data: WatchdogDispositionInput) =>
+    api.post<IssueWatchdog>(`/issues/${id}/watchdog/disposition`, data),
   markRead: (id: string) =>
     api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) =>

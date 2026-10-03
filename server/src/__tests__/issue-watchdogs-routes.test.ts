@@ -604,7 +604,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     const watchdogAgentId = await seedAgent(companyId, { name: "Interaction Watchdog" });
     const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
     const unrelatedRootId = await seedIssue(companyId, { title: "Unrelated root" });
-    const watchdogIssueId = await seedIssue(companyId, { title: "Reusable watchdog issue" });
+    const watchdogIssueId = await seedIssue(companyId, { title: "Reusable watchdog issue", originKind: "task_watchdog", originId: watchedRootId, parentId: watchedRootId });
     const runId = await seedWatchdogRun({
       companyId,
       watchdogAgentId,

@@ -214,6 +214,8 @@ import type {
   TaskWatchdogServiceDeps,
   taskWatchdogService,
 } from "../services/task-watchdogs.js";
+import { recoveryBatchSchema, watchdogDispositionSchema } from "@paperclipai/shared/validators/watchdog";
+import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import {
   badRequest,
@@ -537,6 +539,9 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       throw unprocessable("Task watchdog service is unavailable");
     },
     disableForIssue: async () => null,
+    applyRecoveryBatch: async () => { throw unprocessable("Task watchdog service is unavailable"); },
+    recordDisposition: async () => { throw unprocessable("Task watchdog service is unavailable"); },
+    drainRecoveryOutbox: async () => {},
     reconcileTaskWatchdogs: async () => ({
       checked: 0,
       triggered: 0,
@@ -570,7 +575,7 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         pendingInteractionsByIssueId: {},
       },
     }),
-  };
+  } as unknown as TaskWatchdogService;
 }
 
 function buildAttachmentContentPath(attachmentId: string): string {
@@ -5191,6 +5196,8 @@ export function issueRoutes(
         });
         return false;
       }
+      if (req.method === "PATCH" && req.route?.path === "/issues/:id" &&
+        !(await assertTaskWatchdogPatchContract(req, res, watchdogScope, issue))) return false;
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
     const boundaryDecision = await decideIssueAccess(
@@ -5280,6 +5287,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
+      executionPolicy?: unknown;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
@@ -5320,6 +5328,8 @@ export function issueRoutes(
         });
         return false;
       }
+      if (req.method === "PATCH" && req.route?.path === "/issues/:id" &&
+        !(await assertTaskWatchdogPatchContract(req, res, watchdogScope, issue))) return false;
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
     const boundaryDecision = await decideIssueAccess(
@@ -5460,6 +5470,43 @@ export function issueRoutes(
         ],
       },
     });
+    return true;
+  }
+
+  async function assertTaskWatchdogPatchContract(
+    req: Request,
+    res: Response,
+    scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
+    issue: { id: string; status: string; assigneeUserId?: string | null; executionPolicy?: unknown },
+  ) {
+    if (scope.kind !== "watchdog") return true;
+    const reusable = issue.id === scope.watchdogIssueId;
+    const commonFields = ["status", "comment", "commentClientRequestId", "attachmentIds", "blockedByIssueIds", "reviewInteractionId", "reviewRequest", "unblockDescriptor"];
+    // Review-container prose stays editable; it has no source completion
+    // authority. Source recovery still uses the bounded field set below.
+    const fields = reusable ? [...commonFields, "title", "description"] : [...commonFields, "assigneeAgentId", "reopen", "resume", "executionPolicy"];
+    const deniedFields = Object.keys(req.body).filter((field) => !fields.includes(field));
+    const statuses = reusable ? ["done", "in_review", "blocked"] : ["todo", "in_progress", "in_review", "blocked"];
+    if (deniedFields.length || (req.body.status != null && !statuses.includes(req.body.status))) {
+      res.status(403).json({ error: "Task-watchdog PATCH may only restore an allowed live/waiting path; cancellation, interrupt and settings changes are forbidden", details: { watchdogId: scope.watchdogId, watchedIssueId: scope.watchedIssueId, deniedFields } });
+      return false;
+    }
+    if (issue.assigneeUserId && (req.body.status != null && req.body.status !== issue.status)) {
+      res.status(403).json({ error: "Task watchdog cannot automatically change human-owned waiting work" });
+      return false;
+    }
+    if (req.body.executionPolicy !== undefined) {
+      const canonical = (value: unknown) => JSON.stringify(value, (_key, candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? Object.fromEntries(Object.entries(candidate).sort(([left], [right]) => left.localeCompare(right))) : candidate);
+      const withoutMonitor = (value: unknown) => {
+        const policy = parseObject(value);
+        return Object.fromEntries(Object.entries({ stages: [], ...policy }).filter(([key]) => key !== "monitor"));
+      };
+      if (canonical(withoutMonitor(req.body.executionPolicy)) !== canonical(withoutMonitor(issue.executionPolicy))) {
+        res.status(403).json({ error: "Task watchdog cannot change execution-policy governance or resource limits" });
+        return false;
+      }
+    }
     return true;
   }
 
@@ -8958,6 +9005,39 @@ export function issueRoutes(
     });
   });
 
+  router.post(
+    "/issues/:id/watchdog/recovery-batches",
+    validateIssueMutationBody(recoveryBatchSchema),
+    async (req, res) => {
+      const source = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!source || !(await assertIssueReadAllowed(req, res, source))) return;
+      if (await assertLowTrustControlPlaneDenied(req, res, source.companyId, source)) return;
+      const receipt = await taskWatchdogsSvc.applyRecoveryBatch(source.id, req.actor, req.body, async ({ db: transaction, issue, mutation }) => {
+        // The persisted watchdog scope grants issue mutation access. Keep the
+        // normal low-trust and recovery-owner restrictions on each effect;
+        // freshness, execution policy, blockers, pause and invokability are
+        // rechecked by the service on this same transaction connection.
+        if (await actorIsLowTrustReview(req, issue.companyId, issue)) throw forbidden("Low-trust actors cannot use this control-plane surface");
+        if (mutation.kind !== "comment") {
+          const activeRecovery = await issueRecoveryActionService(transaction).getActiveForIssue(issue.companyId, issue.id);
+          await requireRecoveryActionAuthority(req, issue, activeRecovery, { source: "issue_update" });
+        }
+      });
+      res.status(receipt.status === "stale" ? 409 : 200).json(receipt);
+    },
+  );
+
+  router.post(
+    "/issues/:id/watchdog/disposition",
+    validateIssueMutationBody(watchdogDispositionSchema),
+    async (req, res) => {
+      const source = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!source || !(await assertIssueReadAllowed(req, res, source))) return;
+      if (await assertLowTrustControlPlaneDenied(req, res, source.companyId, source)) return;
+      res.json(await taskWatchdogsSvc.recordDisposition(source.id, req.actor, req.body));
+    },
+  );
+
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -9004,6 +9084,7 @@ export function issueRoutes(
         {
           agentId: req.body.agentId,
           instructions: req.body.instructions,
+          maxAttempts: req.body.maxAttempts,
           actor: {
             agentId: actor.agentId,
             userId: actor.actorType === "user" ? actor.actorId : null,

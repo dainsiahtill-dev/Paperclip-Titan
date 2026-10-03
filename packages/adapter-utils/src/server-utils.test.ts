@@ -3121,6 +3121,35 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
     fallbackFetchNeeded: false,
   };
 
+  it("delivers versioned recovery endpoints and durable attempt metadata to the provider", () => {
+    const rootId = "12345678-1234-4234-8234-123456789abc";
+    const prompt = renderPaperclipWakePrompt({ ...baseWatchdogPayload, taskWatchdog: {
+      watchedIssueId: rootId, stopFingerprint: "task_watchdog_stop:" + "a".repeat(64),
+      restorationLineage: { version: 1, sourceFingerprint: "task_watchdog_stop:" + "b".repeat(64), attemptCount: 2, maxAttempts: 3 },
+      capabilities: { operations: ["atomic_recovery_batch_max_3"], deniedOperations: ["cancel_active_runs"],
+        recovery: { version: 1, batchEndpoint: `/api/issues/${rootId}/watchdog/recovery-batches`, dispositionEndpoint: `/api/issues/${rootId}/watchdog/disposition`, maxMutations: 3, singleShotPerRun: true },
+      },
+    } });
+    expect(prompt).toContain(`/api/issues/${rootId}/watchdog/recovery-batches`);
+    expect(prompt).toContain(`/api/issues/${rootId}/watchdog/disposition`);
+    expect(prompt).toContain("Restoration attempt: 2 of 3");
+    expect(prompt).toContain("single-shot per authenticated watchdog run");
+    expect(prompt).toContain("expectedStopFingerprint");
+    expect(prompt).toContain("cancel_active_runs");
+  });
+
+  it("refuses unversioned or foreign recovery endpoints in provider context", () => {
+    const rootId = "12345678-1234-4234-8234-123456789abc";
+    const prompt = renderPaperclipWakePrompt({ ...baseWatchdogPayload, taskWatchdog: {
+      watchedIssueId: rootId,
+      restorationLineage: { version: 99, sourceFingerprint: "untrusted", attemptCount: 100, maxAttempts: 100 },
+      capabilities: { operations: ["comment_on_watched_subtree_issues"], recovery: { version: 1, batchEndpoint: "https://external.invalid/secret", dispositionEndpoint: "/api/issues/foreign/watchdog/disposition", maxMutations: 30, singleShotPerRun: false } },
+    } });
+    expect(prompt).not.toContain("https://external.invalid/secret");
+    expect(prompt).not.toContain("/api/issues/foreign/watchdog/disposition");
+    expect(prompt).not.toContain("Restoration attempt:");
+  });
+
   it("injects the watchdog mandate, watched-issue header, and stop fingerprint when taskWatchdog is present", () => {
     const prompt = renderPaperclipWakePrompt({
       ...baseWatchdogPayload,
