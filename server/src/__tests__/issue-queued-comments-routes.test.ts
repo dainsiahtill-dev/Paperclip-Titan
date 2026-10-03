@@ -22,8 +22,12 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
-import { deliverLegacySteering, scheduleLegacySteering } from '../services/live-adapter-steering.js';
+import { deliverLegacySteering, scheduleLegacySteering, scheduleLegacySteeringForAgent } from '../services/live-adapter-steering.js';
+import { NativeRunCoordinatorStore } from '../services/native-runtime/native-run-coordinator-store.js';
 import { preserveQueuedSteeringAcknowledgements } from '../services/queued-steering-result.js';
+import { claimCommentDelivery } from '../services/comment-delivery.js';
+import { adoptDeferredCommentsForLegacyRetry } from '../services/retry-comment-queue.js';
+import { issueCommentDeliveries } from '@paperclipai/db/schema/issue_comment_deliveries';
 import { subscribeCompanyLiveEvents } from '../services/live-events.js';
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
@@ -32,10 +36,13 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const steerNativeSessionMock = vi.hoisted(() => vi.fn());
+const nativeSteeringSnapshotMock = vi.hoisted(() => vi.fn());
+const nativeSteerOriginal = vi.hoisted(() => ({ value: null as null | ((input: any) => Promise<{ turnId: string }>) }));
 vi.mock("../services/native-runtime/native-session-executor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/native-runtime/native-session-executor.js")>();
+  nativeSteerOriginal.value = actual.steerNativeSession;
   steerNativeSessionMock.mockImplementation(actual.steerNativeSession);
-  return { ...actual, steerNativeSession: steerNativeSessionMock };
+  return { ...actual, steerNativeSession: steerNativeSessionMock, captureNativeSteeringOwner: () => Object.assign(() => true, { id: 'fixture-native-owner' }), getNativeSteeringBoundarySnapshot: nativeSteeringSnapshotMock };
 });
 const { NativeSessionSteeringError } = await import("../services/native-runtime/native-session-executor.js");
 
@@ -59,6 +66,8 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
 
   afterEach(async () => {
     adapterExecutionControls.clear();
+    nativeSteeringSnapshotMock.mockReset();
+    steerNativeSessionMock.mockReset().mockImplementation(nativeSteerOriginal.value!);
     // Each case owns the entire disposable database. Clear the full company
     // graph, including attribution rows and constraints added by migrations.
     await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
@@ -180,6 +189,252 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
 
+  async function legacyQueue() {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ runtimeMode: 'legacy' }).where(eq(heartbeatRuns.id, seeded.runId));
+    const owner = createAdapterExecutionControl();
+    adapterExecutionControls.set(seeded.runId, owner);
+    return { ...seeded, owner };
+  }
+
+  async function nativeContextQueue(authorType: 'agent' | 'system' = 'agent') {
+    const seeded = await seedQueue();
+    const senderId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
+    await db.insert(agents).values({ id: senderId, companyId: seeded.companyId, name: 'Original manager', adapterType: 'process', status: 'idle' });
+    await db.update(heartbeatRuns).set({ nativeIssueId: seeded.issueId, nativeSessionId: sessionId, runnerInstanceId: runnerId, responsibleUserId: 'queue-owner', driverKind: 'codex' }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issueComments).set({ authorType, authorAgentId: authorType === 'agent' ? senderId : null, authorUserId: null }).where(inArray(issueComments.id, seeded.commentIds));
+    const identity = await seedDispatchIdentity(seeded);
+    const store = new NativeRunCoordinatorStore(db, { companyId: seeded.companyId, issueId: seeded.issueId, runId: seeded.runId, agentId: seeded.agentId, normalizedSessionId: sessionId, runnerSourceInstanceId: runnerId, completionContractId: randomUUID(), completionContractSha256: 'fixture-contract', completionContractRevision: '1', completionContractCriterionIds: [] });
+    let sequence = 0;
+    const append = async (eventType: string, payload: Record<string, unknown>, itemId?: string) => {
+      sequence += 1;
+      await store.appendEvent({ schema: 'paperclip.prp.event.v1', schemaVersion: 1, sourceKind: 'runner', sourceInstanceId: runnerId, sourceEventId: `${runnerId}:${sequence}`, sourceSeq: sequence, runId: seeded.runId, normalizedSessionId: sessionId, turnId: 'context-turn', eventType, payload, ...(itemId ? { itemId } : {}), priority: 1, emittedAt: new Date().toISOString() } as any);
+      nativeSteeringSnapshotMock.mockResolvedValue({ supported: true, activeTurnId: 'context-turn', sourceCursor: sequence, pendingRuntimeRequests: false });
+    };
+    await append('turn.started', { status: 'inProgress' });
+    // Keep one context handoff in this queue so a completed notification has
+    // an unambiguous causal message, rather than relying on global call counts.
+    await db.update(agentWakeupRequests).set({ payload: { issueId: seeded.issueId, _paperclipWakeContext: { wakeCommentIds: [seeded.commentIds[0]] } } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    return { ...seeded, identity, append };
+  }
+
+  it.each(['agent', 'system'] as const)('automatically hands off native %s context without acquiring the author as a user', async (authorType) => {
+    const seeded = await nativeContextQueue(authorType);
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: 'context-turn' });
+    const before = steerNativeSessionMock.mock.calls.length;
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(() => expect(steerNativeSessionMock.mock.calls.length).toBe(before + 1), { timeout: 1500 });
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status).toBe('cancelled'));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run).toMatchObject({ responsibleUserId: 'queue-owner', activeIdentityContextId: seeded.identity.id, status: 'running' });
+    expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, seeded.runId))).toHaveLength(1);
+    expect(steerNativeSessionMock.mock.calls.at(-1)?.[0].message).toContain('First queued message');
+    expect(steerNativeSessionMock.mock.calls.at(-1)?.[0].message).toContain(authorType === 'agent' ? 'original author: Agent' : 'original author: System');
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(steerNativeSessionMock.mock.calls.length).toBe(before + 1);
+  });
+
+  it('rebuilds a native tool boundary from committed events before handing off after reconnect', async () => {
+    const seeded = await nativeContextQueue();
+    await seeded.append('item.started', { kind: 'commandExecution', channel: 'progress', status: 'inProgress' }, 'tool-1');
+    const before = steerNativeSessionMock.mock.calls.length;
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`)).body.executionWait?.reason).toBe('tool_in_progress'));
+    expect(steerNativeSessionMock.mock.calls.length).toBe(before);
+    nativeSteeringSnapshotMock.mockResolvedValue({ supported: true, activeTurnId: 'context-turn', sourceCursor: 3, pendingRuntimeRequests: false });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`)).body.executionWait?.reason).toBe('native_steering_boundary_unknown'));
+    expect(steerNativeSessionMock.mock.calls.length).toBe(before);
+    await seeded.append('item.completed', { kind: 'commandExecution', channel: 'progress', status: 'completed' }, 'tool-1');
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: 'context-turn' });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(() => expect(steerNativeSessionMock.mock.calls.length).toBe(before + 1));
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status).toBe('cancelled'));
+  });
+
+  it('settles a late native context ACK once while retaining the original user authority', async () => {
+    const seeded = await nativeContextQueue();
+    let acknowledge!: (ack: { turnId: string }) => Promise<void>;
+    steerNativeSessionMock.mockImplementationOnce(async (input) => {
+      await input.authorizeBeforeDispatch();
+      acknowledge = input.onAcknowledged;
+      throw new NativeSessionSteeringError('steering_timeout', 'Fixture delayed ACK');
+    });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await db.select().from(issueCommentDeliveries))[0]?.status).toBe('uncertain'));
+    expect(steerNativeSessionMock).toHaveBeenCalledTimes(1);
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(steerNativeSessionMock).toHaveBeenCalledTimes(1);
+    await acknowledge({ turnId: 'context-turn' });
+    await acknowledge({ turnId: 'context-turn' });
+    expect((await db.select().from(issueCommentDeliveries))[0]).toMatchObject({ status: 'acknowledged', targetTurnId: 'context-turn' });
+    expect((await db.select().from(activityLog)).filter((row) => row.action === 'issue.queued_comment_steered')).toHaveLength(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]).toMatchObject({ responsibleUserId: 'queue-owner', activeIdentityContextId: seeded.identity.id });
+  });
+
+  it('preserves native unsupported and cursor-unknown context for a natural boundary', async () => {
+    const seeded = await nativeContextQueue('system');
+    nativeSteeringSnapshotMock.mockResolvedValue({ supported: false, activeTurnId: null, sourceCursor: null, pendingRuntimeRequests: false });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`)).body.executionWait).toMatchObject({ reason: 'steering_unsupported', message: expect.stringContaining('next turn') }));
+    nativeSteeringSnapshotMock.mockResolvedValue({ supported: true, activeTurnId: 'context-turn', sourceCursor: null, pendingRuntimeRequests: false });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`)).body.executionWait).toMatchObject({ reason: 'native_steering_boundary_unknown', message: expect.stringContaining('next safe boundary') }));
+    expect(steerNativeSessionMock).not.toHaveBeenCalled();
+    expect(await db.select().from(issueCommentDeliveries)).toEqual([]);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0]!)))[0]).toMatchObject({ authorType: 'system', body: 'First queued message' });
+  });
+
+  it('hands off a manager comment manually without treating the manager as an authenticated user', async () => {
+    const seeded = await nativeContextQueue();
+    steerNativeSessionMock.mockImplementationOnce(async (input) => { await input.authorizeBeforeDispatch(); return { turnId: 'context-turn' }; });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const input = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    expect(steerNativeSessionMock).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, seeded.runId))).toHaveLength(1);
+    expect((await db.select().from(activityLog)).filter((row) => row.action === 'issue.queued_comment_steered')).toMatchObject([{ actorType: 'user', actorId: 'queue-owner' }]);
+  });
+
+  it('preserves a reordered queue when a legitimate retry adopts live comments', async () => {
+    const seeded = await legacyQueue();
+    const ordered = [...seeded.commentIds].reverse();
+    await db.update(agentWakeupRequests).set({ payload: { issueId: seeded.issueId, _paperclipWakeContext: { wakeCommentIds: ordered } } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId, source: 'automation', status: 'queued' }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId, runtimeMode: 'legacy', status: 'queued', invocationSource: 'automation', retryOfRunId: seeded.runId, wakeupRequestId: wake.id }).returning();
+    await db.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wake.id));
+    const [currentWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    const adopted = await db.transaction((tx) => adoptDeferredCommentsForLegacyRetry(tx as any, { run, wake: currentWake, issueId: seeded.issueId, now: new Date(), canAdopt: () => true }));
+    expect(adopted?.run.contextSnapshot?.wakeCommentIds).toEqual(ordered);
+  });
+
+  it('recovers a saved queue before intent, but refuses to resend an unknown dispatch after reconstruction', async () => {
+    const seeded = await legacyQueue();
+    const claim = { companyId: seeded.companyId, issueId: seeded.issueId, runId: seeded.runId, queueId: seeded.wakeId, commentId: seeded.commentIds[0]!, turnId: seeded.runId, controllerId: seeded.owner.id, mode: 'acp' as const };
+    expect(await claimCommentDelivery(db, { ...claim, ownerValid: () => false })).toBeNull();
+    expect(await db.select().from(issueCommentDeliveries)).toEqual([]);
+    const receipt = await claimCommentDelivery(db, { ...claim, ownerValid: () => true });
+    expect(receipt?.receipt).toMatchObject({ status: 'dispatching', attemptCount: 1, commentId: seeded.commentIds[0] });
+    expect(Object.keys(receipt!.receipt)).not.toContain('body');
+    const replacement = createAdapterExecutionControl();
+    const send = vi.fn(async () => ({ outcome: 'injected' as const }));
+    replacement.steering = { state: async () => ({ supported: true, active: true, busy: false }), send };
+    adapterExecutionControls.set(seeded.runId, replacement);
+    const client = app(seeded.companyId);
+    const current = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: current.body.revision }).expect(409);
+    expect((await db.select().from(issueCommentDeliveries))[0]).toMatchObject({ status: 'uncertain', attemptCount: 1 });
+    const reconstructedDb = createDb(tempDb!.connectionString);
+    expect(await deliverLegacySteering(reconstructedDb, { runId: seeded.runId, commentId: seeded.commentIds[0] })).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect((await db.select().from(issueCommentDeliveries))[0]).toMatchObject({ status: 'uncertain', attemptCount: 1 });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0]!)))[0].body).toBe('First queued message');
+  });
+
+  it('keeps an externally acknowledged delivery uncertain if completion rolls back', async () => {
+    const seeded = await legacyQueue();
+    const send = vi.fn(async () => ({ outcome: 'injected' as const }));
+    seeded.owner.steering = { state: async () => ({ supported: true, active: true, busy: false }), send };
+    await db.execute(sql`CREATE FUNCTION fixture_fail_steering_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'issue.queued_comment_steered' THEN RAISE EXCEPTION 'fixture completion rollback'; END IF; RETURN NEW; END $$`);
+    await db.execute(sql`CREATE TRIGGER fixture_fail_steering_commit BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION fixture_fail_steering_commit()`);
+    try {
+      expect(await deliverLegacySteering(db, { runId: seeded.runId, commentId: seeded.commentIds[0] })).toBe(0);
+      expect((await db.select().from(issueCommentDeliveries))[0]).toMatchObject({ status: 'uncertain', acknowledgedAt: null });
+      expect(await deliverLegacySteering(db, { runId: seeded.runId, commentId: seeded.commentIds[0] })).toBe(0);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      await db.execute(sql`DROP TRIGGER fixture_fail_steering_commit ON activity_log`);
+      await db.execute(sql`DROP FUNCTION fixture_fail_steering_commit()`);
+    }
+  });
+
+  it('releases native queue locks before a typed provider ACK and commits only one completion', async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    let lockAcquired = false;
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '300ms'`);
+        await tx.select().from(issues).where(eq(issues.id, seeded.issueId)).for('update');
+        await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)).for('update');
+        lockAcquired = true;
+      }).catch(() => undefined);
+      return { turnId: 'turn-1' };
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const input = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+    expect(lockAcquired).toBe(true);
+    expect((await db.select().from(activityLog)).filter((row) => row.action === 'issue.queued_comment_steered')).toHaveLength(1);
+  });
+
+  it('releases issue and run locks before waiting for provider acknowledgement', async () => {
+    const seeded = await legacyQueue();
+    let lockAcquired = false;
+    seeded.owner.steering = {
+      state: async () => ({ supported: true, active: true, busy: false }),
+      send: async () => {
+        const contender = db.transaction(async (tx) => {
+          await tx.execute(sql`SET LOCAL lock_timeout = '300ms'`);
+          await tx.select().from(issues).where(eq(issues.id, seeded.issueId)).for('update');
+          await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)).for('update');
+          lockAcquired = true;
+        });
+        await contender.catch(() => undefined);
+        return { outcome: 'injected' };
+      },
+    };
+    await deliverLegacySteering(db, { runId: seeded.runId, commentId: seeded.commentIds[0] });
+    expect(lockAcquired).toBe(true);
+  });
+
+  it('settles an ACK after eight seconds once without sending another prompt', async () => {
+    const seeded = await legacyQueue();
+    let acknowledge!: (result: { outcome: 'injected' }) => void;
+    const send = vi.fn(() => new Promise<{ outcome: 'injected' }>((resolve) => { acknowledge = resolve; }));
+    seeded.owner.steering = { state: async () => ({ supported: true, active: true, busy: false }), send };
+    const input = { runId: seeded.runId, commentId: seeded.commentIds[0] };
+    expect(await deliverLegacySteering(db, input)).toBe(0);
+    const [uncertain] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect((uncertain.resultJson?.queuedSteeringAcknowledgements as any)[seeded.commentIds[0]!].status).toBe('uncertain');
+    acknowledge({ outcome: 'injected' });
+    await vi.waitFor(async () => {
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect((wake.payload?._paperclipWakeContext as any).wakeCommentIds).toEqual([seeded.commentIds[1]]);
+    }, { timeout: 2000 });
+    expect(await deliverLegacySteering(db, input)).toBe(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId))).filter((row) => row.action === 'issue.queued_comment_steered')).toHaveLength(1);
+  }, 12_000);
+
+  it.each(['edit', 'delete', 'stop', 'reassign', 'supersede', 'lease-expired', 'session-generation', 'turn-superseded'] as const)('fences an ACK after %s without clearing a changed message', async (change) => {
+    const seeded = await legacyQueue();
+    if (change === 'lease-expired') await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, seeded.runId));
+    seeded.owner.steering = {
+      state: async () => ({ supported: true, active: true, busy: false }),
+      send: async () => {
+        if (change === 'edit') await db.update(issueComments).set({ body: 'Edited request', updatedAt: new Date() }).where(eq(issueComments.id, seeded.commentIds[0]!));
+        if (change === 'delete') await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, seeded.commentIds[0]!));
+        if (change === 'stop') seeded.owner.controller.abort();
+        if (change === 'reassign') await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, seeded.issueId));
+        if (change === 'supersede') adapterExecutionControls.set(seeded.runId, createAdapterExecutionControl());
+        if (change === 'lease-expired') await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(0) }).where(eq(heartbeatRuns.id, seeded.runId));
+        if (change === 'session-generation') await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, seeded.issueId));
+        if (change === 'turn-superseded') seeded.owner.steering = { state: async () => ({ supported: true, active: true, busy: false }), send: async () => ({ outcome: 'injected' }) };
+        return { outcome: 'injected' };
+      },
+    };
+    expect(await deliverLegacySteering(db, { runId: seeded.runId, commentId: seeded.commentIds[0] })).toBe(0);
+    const completions = (await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId))).filter((row) => row.action === 'issue.queued_comment_steered');
+    expect(completions).toEqual([]);
+  }, 5000);
+
   it('steers a capable legacy provider in the same run and preserves queued author history', async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: 'claude_local' }).where(eq(agents.id, seeded.agentId));
@@ -195,7 +450,8 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ correlationId: seeded.commentIds[0] });
+    expect(sent[0]?.correlationId).toMatch(/^[a-f0-9]{64}$/);
+    expect((await db.select().from(issueCommentDeliveries))[0]?.correlationId).toBe(sent[0]?.correlationId);
     expect(sent[0]!.text).toContain('First queued message');
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe('running');
     expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0])))[0]).toMatchObject({ authorUserId: 'queue-owner', body: 'First queued message', deletedAt: null });
@@ -289,7 +545,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       entityType: 'issue', entityId: seeded.issueId, runId: seeded.runId,
       details: { commentId: seeded.commentIds[0], targetRunId: seeded.runId, protocol: 'acp' },
     });
-    expect(await Promise.all(committedQueueStates)).toEqual(['coalesced', 'coalesced']);
+    expect(await Promise.all(committedQueueStates)).toEqual(['deferred_issue_execution', 'coalesced']);
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
     expect(activity.filter((row) => row.action === 'issue.queued_comment_steered')).toHaveLength(2);
     expect(activity[0]?.details).toMatchObject({ targetRunId: seeded.runId });
@@ -1070,14 +1326,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .select({ details: activityLog.details })
       .from(activityLog)
       .where(eq(activityLog.action, "issue.queued_comment_steered"));
-    expect(activityRows).toHaveLength(1);
-    const activity = activityRows[0];
-    expect(activity?.details).toMatchObject({
-      commentId: seeded.commentIds[0],
-      targetRunId: seeded.runId,
-      turnId: "turn-acknowledged",
-      duplicate: true,
-    });
+    expect(activityRows).toHaveLength(0);
   });
 
   it("does not reuse an acknowledgement from a different queue", async () => {

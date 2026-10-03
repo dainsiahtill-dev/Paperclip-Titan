@@ -1,0 +1,44 @@
+[
+  {
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "states": [
+      "queued",
+      "preparing",
+      "confirming",
+      "tool_busy",
+      "pending_ack_visible",
+      "late_ack",
+      "unsupported",
+      "uncertain",
+      "natural_boundary",
+      "manual_stop",
+      "run_end"
+    ],
+    "consoleErrors": [],
+    "screenshot": ".tmp/steering-1280.png"
+  },
+  {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "states": [
+      "queued",
+      "preparing",
+      "confirming",
+      "tool_busy",
+      "pending_ack_visible",
+      "late_ack",
+      "unsupported",
+      "uncertain",
+      "natural_boundary",
+      "manual_stop",
+      "run_end"
+    ],
+    "consoleErrors": [],
+    "screenshot": ".tmp/steering-390.png"
+  }
+]

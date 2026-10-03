@@ -122,13 +122,17 @@ describe("execution truth projection", () => {
     expect(project(run({ lastOutputAt: new Date(0) })).phase).toBe("working");
     expect(
       project(run(), coordinator({ leaseExpiresAt: new Date(0) })),
-    ).toMatchObject({ phase: "reconnecting", label: "Confirming execution" });
+    ).toMatchObject({ phase: "confirming", label: "Confirming execution" });
     expect(
-      project(
+      projectExecution(
         run({ runtimeMode: "legacy", processPid: process.pid }),
-        undefined,
+        undefined, [], undefined, now,
       ).phase,
-    ).toBe("working");
+    ).toBe("confirming");
+  });
+  it('does not treat controller preparation or a start timestamp as provider progress', () => {
+    expect(projectExecution(run({ runtimeMode: 'legacy', controllerBootId: 'owner', controllerLeaseExpiresAt: new Date(now.getTime() + 30_000), executionStage: 'preparing', lastUsefulActionAt: null, lastOutputAt: null }), undefined, [], undefined, now)).toMatchObject({ phase: 'preparing', label: 'Preparing', lastConfirmedActivityAt: null });
+    expect(projectExecution(run({ runtimeMode: 'legacy', controllerBootId: 'owner', controllerLeaseExpiresAt: new Date(now.getTime() + 30_000), executionStage: 'dispatching', lastUsefulActionAt: null, lastOutputAt: null }), undefined, [], undefined, now)).toMatchObject({ phase: 'working', lastConfirmedActivityAt: null });
   });
   it("distinguishes provider work, finalization and timed retry", () => {
     expect(

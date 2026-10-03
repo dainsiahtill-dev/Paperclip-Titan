@@ -17,6 +17,11 @@ import type {
 } from "./task-chat-model";
 
 describe("TaskChatRunnerTurn", () => {
+  it('shows an unprojected running execution as unconfirmed', () => {
+    render([], 'running', 'run-1', undefined, false, false, null);
+    expect(container.textContent).toContain('Confirming execution');
+    expect(container.textContent).not.toContain('Thinking');
+  });
   let container: HTMLDivElement;
   let root: Root;
 
@@ -41,7 +46,7 @@ describe("TaskChatRunnerTurn", () => {
     ) => void,
     suppressFinal = false,
     continuedAfterSteering = false,
-    execution?: ExecutionProjection,
+    execution: ExecutionProjection | null = { phase: 'working', label: 'Working', cause: null, lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3, recoveryOwner: null, nextAction: null, permittedActions: ['inspect_run'], predecessorRunId: null, successorRunId: null },
   ) =>
     act(() =>
       root.render(

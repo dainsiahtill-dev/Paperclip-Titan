@@ -1,4 +1,5 @@
 import type { AdapterLiveSteeringControl } from '@paperclipai/adapter-utils';
+import { randomUUID } from 'node:crypto';
 
 /** Live adapter ownership shared by routes and scheduler service instances. */
 export function createAdapterExecutionControl() {
@@ -7,7 +8,7 @@ export function createAdapterExecutionControl() {
   const settled = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { controller, settled, finish, steering: null as AdapterLiveSteeringControl | null };
+  return { id: randomUUID(), controller, settled, finish, steering: null as AdapterLiveSteeringControl | null };
 }
 
 export const adapterExecutionControls = new Map<

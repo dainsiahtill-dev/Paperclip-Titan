@@ -197,7 +197,7 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterLiveSteeringControl {
-  state: () => Promise<{ supported: boolean; active: boolean; busy: boolean }>;
+  state: () => Promise<{ supported: boolean; active: boolean; busy: boolean; turnId?: string }>;
   send: (input: { text: string; correlationId: string }) => Promise<
     { outcome: 'injected' } | { outcome: 'deferred'; reason: string }
   >;

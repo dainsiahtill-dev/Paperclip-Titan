@@ -15,7 +15,7 @@ export function createLiveAcpSteering(turn: SteerableAcpTurn): {
   const control: AdapterLiveSteeringControl = {
     state: async () => {
       const state = await turn.steeringState?.() ?? { supported: false, active: false };
-      return { ...state, busy: tools.size > 0 };
+      return { ...state, busy: tools.size > 0, turnId: turn.requestId };
     },
     send: async (input) => {
       if (tools.size > 0) return { outcome: 'deferred', reason: 'tool_in_progress' };

@@ -183,6 +183,8 @@ import {
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { deliverLegacySteering, getLiveAdapterSteeringState } from '../services/live-adapter-steering.js';
+import { claimCommentDelivery, settleCommentDelivery } from '../services/comment-delivery.js';
+import { deliverNativeContextSteering } from '../services/native-comment-steering.js';
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
 import {
   createQueuedCommentQueue,
@@ -338,6 +340,7 @@ import {
 } from "../services/cross-issue-influence-limit.js";
 import {
   getNativeSessionSteeringState,
+  captureNativeSteeringOwner,
   NativeSessionSteeringError,
   steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
@@ -15556,245 +15559,90 @@ export function issueRoutes(
         res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
         return;
       }
+      const [sourceComment] = await db.select({ authorType: issueComments.authorType, authorUserId: issueComments.authorUserId }).from(issueComments).where(and(eq(issueComments.id, commentId), eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id)));
+      if (sourceComment && sourceComment.authorType !== 'user' && !sourceComment.authorUserId) {
+        const access = await decideIssueAccess(req, issue, 'issue:comment');
+        if (!access.allowed) throw forbidden(access.explanation, authorizationDeniedDetails(access));
+        const delivered = await deliverNativeContextSteering(db, req.body.targetRunId, { issueId: issue.id, queueId: req.body.queueId, commentId, revision: req.body.revision, activityActor: { actorType: actor.actorType, actorId: actor.actorId, agentApiKeyId: actor.agentApiKeyId } });
+        if (!delivered) throw conflict('The handoff is saved for a confirmed tool or turn boundary', { code: 'steering_temporarily_unavailable' });
+        const queue = await buildQueuedCommentQueue({ executor: db, issue, activeRun: await resolveActiveIssueRun(issue), actor });
+        res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+        return;
+      }
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,
         issueId: issue.id,
         messageId: commentId,
       });
-      let steeringDeliveryAttempted = false;
-      let acknowledgedTurnId: string | null = null;
-      let duplicate = false;
-      let queue: IssueQueuedCommentQueue;
+      // Claim and confirmation each hold locks briefly. Provider I/O and late
+      // acknowledgement reconciliation always run outside these transactions.
+      const state = await getNativeSessionSteeringState(req.body.targetRunId);
+      const ownerValid = captureNativeSteeringOwner(req.body.targetRunId);
+      let attempted = false;
+      let claimed: Awaited<ReturnType<typeof claimCommentDelivery>> = null;
       try {
-        queue = await db.transaction(async (tx) => {
-          // A client can lose the successful response after the final queued
-          // message cancels its wake. Lock the original queue and target run
-          // first so that the persisted acknowledgement remains a durable
-          // idempotency record even when no pending queue remains.
-          await tx
-            .select({ id: issueRows.id })
-            .from(issueRows)
-            .where(
-              and(
-                eq(issueRows.id, issue.id),
-                eq(issueRows.companyId, issue.companyId),
-              ),
-            )
-            .for("update");
-          const retryWake = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(
-              and(
-                eq(agentWakeupRequests.id, req.body.queueId),
-                eq(agentWakeupRequests.companyId, issue.companyId),
-                issue.assigneeAgentId
-                  ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId)
-                  : undefined,
-              ),
-            )
-            .for("update")
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          const retryRun =
-            retryWake && readObject(retryWake.payload).issueId === issue.id
-              ? await tx
-                  .select()
-                  .from(heartbeatRuns)
-                  .where(
-                    and(
-                      eq(heartbeatRuns.id, req.body.targetRunId),
-                      eq(heartbeatRuns.companyId, issue.companyId),
-                      eq(heartbeatRuns.agentId, retryWake.agentId),
-                    ),
-                  )
-                  .for("update")
-                  .limit(1)
-                  .then((rows) => rows[0] ?? null)
-              : null;
-          const retryRunContext = readObject(retryRun?.contextSnapshot);
-          const retryRunResult = readObject(retryRun?.resultJson);
-          const retryAcknowledgements = readObject(
-            retryRunResult.queuedSteeringAcknowledgements,
-          );
-          const retryAcknowledgement = readObject(
-            retryAcknowledgements[commentId],
-          );
-          if (
-            retryRun &&
-            (retryRunContext.issueId === issue.id ||
-              retryRunContext.taskId === issue.id) &&
-            retryAcknowledgement.status === "acknowledged" &&
-            retryAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof retryAcknowledgement.turnId === "string"
-                ? retryAcknowledgement.turnId
-                : null;
-            return buildQueuedCommentQueue({
-              executor: tx,
-              issue,
-              activeRun: retryRun.status === "running" ? retryRun : null,
-              actor,
-            });
-          }
-
-          const locked = await lockQueuedCommentState({
-            tx,
-            issue,
-            actor,
-            queueId: req.body.queueId,
-            targetRunId: req.body.targetRunId,
-          });
-          if (!locked.activeRun) {
-            throw conflict("The queued message targets a stale run", {
-              code: "queued_comment_stale_target",
-            });
-          }
-          const runResult = readObject(locked.activeRun.resultJson);
-          const acknowledgements = readObject(
-            runResult.queuedSteeringAcknowledgements,
-          );
-          const priorAcknowledgement = readObject(acknowledgements[commentId]);
-          if (
-            priorAcknowledgement.status === "acknowledged" &&
-            priorAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof priorAcknowledgement.turnId === "string"
-                ? priorAcknowledgement.turnId
-                : null;
-            return buildQueuedCommentQueue({
-              executor: tx,
-              issue,
-              activeRun: locked.activeRun,
-              actor,
-              queueState: locked.queueState,
-            });
-          }
-          assertQueueMutationTarget({
-            queue: locked.queue,
-            queueId: req.body.queueId,
-            revision: req.body.revision,
-          });
-          if (locked.queue.protocol !== "paperclip_runner_v1") {
-            throw conflict("This runner does not support same-turn steering", {
-              code: "steering_unsupported",
-            });
-          }
-          const entry = locked.queue.entries.find(
-            (candidate) => candidate.comment.id === commentId,
-          );
-          if (!entry) {
-            throw conflict("The queued message is no longer pending", {
-              code: "queued_comment_not_pending",
-            });
-          }
-
-          steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (steeringIdentity
-              ? await storedSteeringAcknowledgement(tx, steeringIdentity)
-              : null) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
-          if (steeringIdentity)
-            await acceptSteeredIdentity(tx, steeringIdentity);
-          acknowledgedTurnId = acknowledgement.turnId;
-          const remainingIds = locked.queue.entries
-            .map((candidate) => candidate.comment.id)
-            .filter((candidateId) => candidateId !== commentId);
-          const now = new Date();
-          const nextWake =
-            remainingIds.length === 0
-              ? await tx
-                  .update(agentWakeupRequests)
-                  .set({ status: "cancelled", finishedAt: now, updatedAt: now })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then(() => null)
-              : await tx
-                  .update(agentWakeupRequests)
-                  .set({
-                    payload: withQueuedCommentIdsInWakePayload(
-                      locked.wake.payload,
-                      remainingIds,
-                    ),
-                    updatedAt: now,
-                  })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then((rows) => rows[0] ?? locked.wake);
-          await tx
-            .update(heartbeatRuns)
-            .set({
-              resultJson: {
-                ...runResult,
-                queuedSteeringAcknowledgements: {
-                  ...acknowledgements,
-                  [commentId]: {
-                    status: "acknowledged",
-                    queueId: req.body.queueId,
-                    turnId: acknowledgement.turnId,
-                    acknowledgedAt: now.toISOString(),
-                  },
-                },
-              },
-              updatedAt: now,
-            })
-            .where(eq(heartbeatRuns.id, locked.activeRun.id));
-          return buildQueuedCommentQueue({
-            executor: tx,
-            issue,
-            activeRun: locked.activeRun,
-            actor,
-            queueState: nextWake
-              ? { wake: nextWake, state: "deferred", queueRun: null }
-              : null,
-          });
+        const duplicate = await db.transaction(async (tx) => {
+          await tx.select({ id: issueRows.id }).from(issueRows)
+            .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId))).for("update");
+          const [wake] = await tx.select().from(agentWakeupRequests)
+            .where(and(eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId))).for("update");
+          const [run] = await tx.select().from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, req.body.targetRunId), eq(heartbeatRuns.companyId, issue.companyId))).for("update");
+          const ack = readObject(readObject(readObject(run?.resultJson).queuedSteeringAcknowledgements)[commentId]);
+          if (wake && run && wake.agentId === run.agentId && readObject(wake.payload).issueId === issue.id &&
+            (readObject(run.contextSnapshot).issueId === issue.id || readObject(run.contextSnapshot).taskId === issue.id) &&
+            ack.status === "acknowledged" && ack.queueId === wake.id) return true;
+          const locked = await lockQueuedCommentState({ tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId });
+          if (!locked.activeRun) throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+          assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
+          if (locked.queue.protocol !== "paperclip_runner_v1") throw conflict("This runner does not support same-turn steering", { code: "steering_unsupported" });
+          if (!locked.queue.entries.some((entry) => entry.comment.id === commentId)) throw conflict("The queued message is no longer pending", { code: "queued_comment_not_pending" });
+          return false;
         });
-      } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
-        if (steeringIdentity && !uncertain)
-          await rejectSteeredIdentity(db, steeringIdentity);
-
-        if (error instanceof NativeSessionSteeringError) {
-          throw conflict(error.message, { code: error.code, retryable: true });
+        if (!duplicate) {
+          if (!ownerValid() || !ownerValid.id) throw new NativeSessionSteeringError('steering_temporarily_unavailable', 'The active native session is not attached.');
+          claimed = await claimCommentDelivery(db, {
+            companyId: issue.companyId, issueId: issue.id, runId: req.body.targetRunId,
+            queueId: req.body.queueId, commentId, revision: req.body.revision,
+            turnId: state.activeTurnId, controllerId: ownerValid.id, mode: "native",
+            activityActor: { actorType: actor.actorType, actorId: actor.actorId, agentApiKeyId: actor.agentApiKeyId },
+            ownerValid,
+          });
+          if (!claimed) throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+          if (!claimed.duplicate) {
+            const receipt = claimed.receipt;
+            const acknowledge = async (acknowledgement: { turnId: string }) => {
+              const completed = await settleCommentDelivery(db, {
+                receipt, ownerValid, acknowledgement,
+                onCommit: steeringIdentity ? (tx) => acceptSteeredIdentity(tx, steeringIdentity) : undefined,
+              });
+              if (completed && steeringIdentity) await reconcileSteeredIdentity(db, steeringIdentity);
+              return completed;
+            };
+            attempted = true;
+            const acknowledgement = (steeringIdentity ? await storedSteeringAcknowledgement(db, steeringIdentity) : null) ??
+              await steerNativeSession({
+                runId: req.body.targetRunId, message: claimed.comment.body, correlationId: commentId,
+                expectedTurnId: receipt.targetTurnId,
+                onAcknowledged: async (ack) => { await acknowledge(ack); },
+              });
+            if (!await acknowledge(acknowledgement)) throw conflict("The run or message changed before acknowledgement", { code: "queued_comment_stale_target" });
+          }
         }
+      } catch (error) {
+        const uncertain = attempted && (!(error instanceof NativeSessionSteeringError) || error.code === "steering_timeout");
+        if (claimed && !claimed.duplicate) await settleCommentDelivery(db, {
+          receipt: claimed.receipt, ownerValid,
+          ...(uncertain ? { errorMessage: "Steering acknowledgement could not be confirmed" } :
+            { deferredReason: error instanceof NativeSessionSteeringError ? error.code : "steering_stale_target" }),
+        });
+        if (steeringIdentity && !uncertain) await rejectSteeredIdentity(db, steeringIdentity);
+        if (error instanceof NativeSessionSteeringError) throw conflict(error.message, { code: error.code, retryable: true });
         throw error;
       }
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.queued_comment_steered",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId,
-          targetRunId: req.body.targetRunId,
-          turnId: acknowledgedTurnId,
-          duplicate,
-        },
-      });
-      res.json(
-        await runRedactions.redactForIssue(issue.companyId, issue.id, queue),
-      );
+      const queue = await buildQueuedCommentQueue({ executor: db, issue, activeRun: await resolveActiveIssueRun(issue), actor });
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
 

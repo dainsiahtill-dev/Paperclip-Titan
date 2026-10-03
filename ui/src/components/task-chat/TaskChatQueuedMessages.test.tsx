@@ -117,7 +117,7 @@ describe("TaskChatQueuedMessages", () => {
     expect(next?.map((entry) => entry.position)).toEqual([0, 1]);
   });
 
-  it("promotes only the selected steering row immediately", async () => {
+  it("keeps the selected message visible until the provider acknowledges it", async () => {
     const acknowledgement = deferred<void>();
     const props = render({
       onSteer: vi.fn().mockReturnValue(acknowledgement.promise),
@@ -135,7 +135,7 @@ describe("TaskChatQueuedMessages", () => {
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-2"]',
@@ -146,6 +146,22 @@ describe("TaskChatQueuedMessages", () => {
       acknowledgement.resolve();
       await acknowledgement.promise;
     });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+  });
+
+  it.each([
+    ['steering_acknowledgement_unknown', 'will not be resent'],
+    ['steering_unsupported', 'next turn'],
+    ['steering_temporarily_unavailable', 'tool boundary'],
+    ['queued_comment_stale_target', 'changed'],
+  ])('explains %s without claiming the message was delivered', async (code, text) => {
+    render({ onSteer: vi.fn().mockRejectedValue({ body: { details: { code } } }) });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.click();
+    });
+    expect(container.textContent).toContain(text);
+    expect(container.textContent).toContain('First queued message');
+    expect(container.textContent).not.toContain('Message steered into');
   });
 
   it("keeps a row queued when steering fails and announces the retryable state", async () => {

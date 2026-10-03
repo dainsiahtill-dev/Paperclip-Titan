@@ -1,0 +1,85 @@
+{
+  "version": "154.0.4258.53",
+  "profile": "C:\\Users\\dains\\AppData\\Local\\Temp\\paperclip-steering-flow-pU6XLP",
+  "port": 59811,
+  "owners": [
+    {
+      "ProcessId": 43864,
+      "ParentProcessId": 12124,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072152)/"
+    },
+    {
+      "ProcessId": 43328,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072172)/"
+    },
+    {
+      "ProcessId": 43572,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072291)/"
+    },
+    {
+      "ProcessId": 33672,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072293)/"
+    },
+    {
+      "ProcessId": 4256,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072334)/"
+    },
+    {
+      "ProcessId": 43540,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072453)/"
+    },
+    {
+      "ProcessId": 42600,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072498)/"
+    },
+    {
+      "ProcessId": 14080,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072509)/"
+    },
+    {
+      "ProcessId": 42376,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072518)/"
+    },
+    {
+      "ProcessId": 43792,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072525)/"
+    },
+    {
+      "ProcessId": 21224,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072530)/"
+    },
+    {
+      "ProcessId": 21496,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072533)/"
+    },
+    {
+      "ProcessId": 41756,
+      "ParentProcessId": 43864,
+      "Name": "msedge.exe",
+      "CreationDate": "/Date(1791068072638)/"
+    }
+  ]
+}

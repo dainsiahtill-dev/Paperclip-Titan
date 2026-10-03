@@ -6079,6 +6079,33 @@ export async function getNativeSessionSteeringState(
   };
 }
 
+/** Capture the exact attached owner; Stop and replacement revoke this fence. */
+const nativeSteeringOwnerIds = new WeakMap<ActiveNativeSession, string>();
+const nativeSteeringReadinessListeners = new Set<(db: Db, runId: string) => void>();
+export function registerNativeSteeringReadinessListener(listener: (db: Db, runId: string) => void) {
+  nativeSteeringReadinessListeners.add(listener);
+  return () => { nativeSteeringReadinessListeners.delete(listener); };
+}
+function notifyNativeSteeringReadiness(db: Db, runId: string) {
+  for (const listener of nativeSteeringReadinessListeners) listener(db, runId);
+}
+export async function getNativeSteeringBoundarySnapshot(runId: string) {
+  const owner = activeNativeSessions.get(runId);
+  if (!owner || owner.cancelRequested) return { supported: false, activeTurnId: null, sourceCursor: null, pendingRuntimeRequests: false };
+  const capabilities = await owner.session.capabilities();
+  const snapshot = await owner.session.snapshot();
+  if (activeNativeSessions.get(runId) !== owner || owner.cancelRequested) return { supported: false, activeTurnId: null, sourceCursor: null, pendingRuntimeRequests: false };
+  const cursor = typeof snapshot.cursor === 'string' && /^\d+$/.test(snapshot.cursor) ? Number(snapshot.cursor) : null;
+  return { supported: Boolean(capabilities.steering && owner.session.steer), activeTurnId: snapshot.activeTurnId ?? null, sourceCursor: cursor, pendingRuntimeRequests: Boolean(snapshot.pendingRuntimeRequests?.some((request) => !['resolved', 'cancelled', 'expired'].includes(request.status))) };
+}
+export function captureNativeSteeringOwner(runId: string) {
+  const owner = activeNativeSessions.get(runId);
+  if (owner && !nativeSteeringOwnerIds.has(owner)) nativeSteeringOwnerIds.set(owner, randomUUID());
+  return Object.assign(() => Boolean(owner && activeNativeSessions.get(runId) === owner && !owner.cancelRequested), {
+    id: owner ? nativeSteeringOwnerIds.get(owner)! : null,
+  });
+}
+
 // Receipts live as long as this controller process. Durable identity reservations
 // hold credential acquisition after a restart until a provider receipt is known.
 const steeringDeliveries = new Map<string, Promise<{ turnId: string }>>();
@@ -6093,7 +6120,9 @@ export async function steerNativeSession(input: {
   message: string;
   correlationId: string;
   timeoutMs?: number;
-  onAcknowledged?: () => Promise<void>;
+  expectedTurnId?: string | null;
+  authorizeBeforeDispatch?: () => Promise<void>;
+  onAcknowledged?: (acknowledgement: { turnId: string }) => Promise<void>;
 }): Promise<{ turnId: string }> {
   const active = activeNativeSessions.get(input.runId);
   if (!active) {
@@ -6111,7 +6140,7 @@ export async function steerNativeSession(input: {
   }
   const snapshot = await active.session.snapshot();
   const turnId = snapshot.activeTurnId ?? null;
-  if (!turnId) {
+  if (!turnId || (input.expectedTurnId && turnId !== input.expectedTurnId) || active.cancelRequested || activeNativeSessions.get(input.runId) !== active) {
     throw new NativeSessionSteeringError(
       "steering_stale_turn",
       "The target turn is no longer active.",
@@ -6121,6 +6150,8 @@ export async function steerNativeSession(input: {
   const deliveryKey = `${input.runId}:${input.correlationId}`;
   let delivery = steeringDeliveries.get(deliveryKey);
   if (!delivery) {
+    await input.authorizeBeforeDispatch?.();
+    if (activeNativeSessions.get(input.runId) !== active || active.cancelRequested || (await active.session.snapshot()).activeTurnId !== turnId) throw new NativeSessionSteeringError('steering_stale_turn', 'The target turn changed before dispatch.');
     delivery = active.session
       .steer({
         turnId,
@@ -7399,6 +7430,9 @@ async function executePaperclipNativeSessionWithinScope(
     },
     {
       onCommittedEvent: async (event) => {
+        // This callback runs only after the bound event's durable commit.
+        // Scheduling is observational; every send rebuilds the full cursor.
+        notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
         if (event.eventType === "item.completed" &&
             record(event.payload).kind === "agentMessage" &&
             record(event.payload).channel === "final") {
@@ -7617,6 +7651,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
       },
       onDuplicateEvent: async (event) => {
+        notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
         // A crash can happen after the event commit but before its callback
         // finishes. Recover only idempotent durable projections here; activity,
         // publication, logging, trace, and metric effects remain committed-only.
@@ -8054,6 +8089,7 @@ async function executePaperclipNativeSessionWithinScope(
                   session,
                   cancelRequested: false,
                 });
+                notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
                 if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
                   await session.detachControllerForRestart?.();
                 }

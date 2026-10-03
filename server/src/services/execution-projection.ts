@@ -20,6 +20,10 @@ const executionRunColumns = {
   nativeIssueId: heartbeatRuns.nativeIssueId,
   nextAction: heartbeatRuns.nextAction,
   processPid: heartbeatRuns.processPid,
+  controllerBootId: heartbeatRuns.controllerBootId,
+  controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+  executionStage: heartbeatRuns.executionStage,
+  controllerLeaseConfirmed: sql<boolean>`coalesce(${heartbeatRuns.controllerLeaseExpiresAt} > clock_timestamp(), false)`,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   runtimeMode: heartbeatRuns.runtimeMode,
   scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -32,7 +36,7 @@ const executionRunColumns = {
     'failureRetriesBeforeAiConnectionWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeAiConnectionWait',
     'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
 };
-type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
+type Run = Pick<typeof heartbeatRuns.$inferSelect, Exclude<keyof typeof executionRunColumns, 'controllerLeaseConfirmed'>> & { controllerLeaseConfirmed?: boolean };
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 type Recovery = Pick<
   typeof issueRecoveryActions.$inferSelect,
@@ -166,8 +170,7 @@ export function projectExecution(
     lastConfirmedActivityAt:
       (
         run.lastUsefulActionAt ??
-        run.lastOutputAt ??
-        run.startedAt
+        run.lastOutputAt
       )?.toISOString() ?? null,
     retryAt:
       (coordinator?.nextAttemptAt ?? run.scheduledRetryAt)?.toISOString() ??
@@ -293,18 +296,12 @@ export function projectExecution(
       coordinator?.phase === "observed" &&
       coordinator.leaseExpiresAt &&
       coordinator.leaseExpiresAt > now;
-    let processConfirmed = false;
-    if (run.runtimeMode === "legacy" && run.processPid) {
-      try {
-        process.kill(run.processPid, 0);
-        processConfirmed = true;
-      } catch {
-        /* No execution confirmation. */
-      }
-    }
-    return leaseConfirmed || processConfirmed
+    const controllerConfirmed = run.runtimeMode === 'legacy' && run.controllerBootId &&
+      (run.controllerLeaseConfirmed ?? Boolean(run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now));
+    if (controllerConfirmed && run.executionStage === 'preparing') return set('preparing', 'Preparing');
+    return leaseConfirmed || (controllerConfirmed && run.executionStage === 'dispatching')
       ? set("working", "Working")
-      : set("reconnecting", "Confirming execution");
+      : set("confirming", "Confirming execution");
   }
   return projection;
 }

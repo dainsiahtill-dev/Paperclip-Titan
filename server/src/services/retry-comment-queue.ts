@@ -6,6 +6,7 @@ import {
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "./issue-queued-comment-queue.js";
+import { commentDeliveryUncertaintyForComments } from './comment-delivery.js';
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Wake = typeof agentWakeupRequests.$inferSelect;
@@ -50,14 +51,18 @@ export async function adoptDeferredCommentsForLegacyRetry(
     inArray(issueComments.id, ids), isNull(issueComments.deletedAt),
     sql`nullif(trim(${issueComments.body}), '') is not null`,
   )).orderBy(asc(issueComments.createdAt), asc(issueComments.id));
-  const liveIds = live.map((comment) => comment.id);
+  const liveSet = new Set(live.map((comment) => comment.id));
+  // Wake payload order is canonical, including user reorder; the DB read only
+  // filters deleted comments and must not silently restore creation order.
+  const liveIds = ids.filter((id) => liveSet.has(id));
   if (!liveIds.length) return null;
+  const queuedCommentDeliveryUncertainty = await commentDeliveryUncertaintyForComments(tx, { companyId: run.companyId, issueId, commentIds: liveIds });
 
   const [updatedWake] = await tx.update(agentWakeupRequests).set({
     payload: withQueuedCommentIdsInWakePayload(wake.payload, liveIds), updatedAt: now,
   }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.status, "queued"), eq(agentWakeupRequests.runId, run.id))).returning();
   const [updatedRun] = await tx.update(heartbeatRuns).set({
-    contextSnapshot: withQueuedCommentIdsInRunContext(context, liveIds), updatedAt: now,
+    contextSnapshot: { ...withQueuedCommentIdsInRunContext(context, liveIds), queuedCommentDeliveryUncertainty }, updatedAt: now,
   }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "queued"), eq(heartbeatRuns.wakeupRequestId, wake.id))).returning();
   if (!updatedWake || !updatedRun) throw new Error("Retry queue claim disappeared while locked");
   await tx.update(agentWakeupRequests).set({

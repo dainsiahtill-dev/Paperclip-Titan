@@ -316,16 +316,11 @@ export function TaskChatQueuedMessages({
           ? "Sending queued messages."
           : "Discarding queued message.",
     );
-    if (action === "steer") {
-      setEntries((current) =>
-        current.filter((entry) => entry.comment.id !== commentId),
-      );
-    }
     try {
       if (action === "steer") await onSteer(commentId, queue.revision);
       else if (action === "interrupt") await onInterrupt?.();
       else await onDiscard(commentId, queue.revision);
-      if (action === "discard") {
+      if (action === "discard" || action === "steer") {
         setEntries((current) =>
           current.filter((entry) => entry.comment.id !== commentId),
         );
@@ -342,7 +337,15 @@ export function TaskChatQueuedMessages({
       setAnnouncement("");
       const code = queueActionErrorCode(error);
       setVisibleError(
-        code === "queued_comment_already_dispatching"
+        code === "steering_acknowledgement_unknown" || code === "steering_timeout"
+          ? "Delivery could not be confirmed. Message saved for the next turn; it will not be resent into this turn."
+          : code === "steering_unsupported"
+            ? "This runner cannot accept messages during a turn. Message saved for the next turn."
+            : code === "steering_temporarily_unavailable"
+              ? "Waiting for a safe tool boundary. Message remains queued and will be handed off automatically."
+              : code === "queued_comment_stale_target" || code === "steering_stale_turn" || code === "queued_comment_stale_revision"
+                ? "The run or message changed. Review the refreshed queue and try again."
+                : code === "queued_comment_already_dispatching"
           ? "Too late to discard: this message is already being sent."
           : action === "steer"
             ? "Couldn’t steer. Message is still queued."

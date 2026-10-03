@@ -1,0 +1,46 @@
+{
+  "Profile": "paperclip-steering-edge-MJ6Fcr",
+  "Before": [
+    {
+      "ProcessId": 21344,
+      "ParentProcessId": 14168,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 28172,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 37880,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 37244,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 11808,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 38872,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 22828,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    },
+    {
+      "ProcessId": 27976,
+      "ParentProcessId": 21344,
+      "Name": "msedge.exe"
+    }
+  ],
+  "After": []
+}

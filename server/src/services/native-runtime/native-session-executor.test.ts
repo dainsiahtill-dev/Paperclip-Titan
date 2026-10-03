@@ -5104,6 +5104,37 @@ describe("native session same-turn steering", () => {
     state.release?.();
     await running;
   });
+
+  it('rejects a different expected turn without another provider request', async () => {
+    const { running } = await startActiveSession();
+    await expect(steerNativeSession({ runId: execution.binding.runId, message: 'Exact target only', correlationId: 'stale-target', expectedTurnId: 'previous-turn' })).rejects.toMatchObject({ code: 'steering_stale_turn' });
+    expect(steer).not.toHaveBeenCalled();
+    state.release?.();
+    await running;
+  });
+
+  it('rechecks the exact turn after the durable dispatch authorization yields', async () => {
+    const { running } = await startActiveSession();
+    await expect(steerNativeSession({ runId: execution.binding.runId, message: 'Exact authorized boundary', correlationId: 'yielded-boundary', expectedTurnId: 'provider-turn-1', authorizeBeforeDispatch: async () => { snapshot.mockResolvedValue({ activeTurnId: 'next-turn' }); } })).rejects.toMatchObject({ code: 'steering_stale_turn' });
+    expect(steer).not.toHaveBeenCalled();
+    state.release?.();
+    await running;
+  });
+
+  it('settles the original typed turn acknowledgement after timeout without redispatch', async () => {
+    let acknowledge!: () => void;
+    steer.mockReturnValue(new Promise<void>((resolve) => { acknowledge = resolve; }));
+    const { running } = await startActiveSession();
+    const onAcknowledged = vi.fn(async (_ack: { turnId: string }) => undefined);
+    const input = { runId: execution.binding.runId, message: 'Preserve original target', correlationId: 'late-native', expectedTurnId: 'provider-turn-1', timeoutMs: 5, onAcknowledged };
+    await expect(steerNativeSession(input)).rejects.toMatchObject({ code: 'steering_timeout' });
+    acknowledge();
+    await vi.waitFor(() => expect(onAcknowledged).toHaveBeenCalledWith({ turnId: 'provider-turn-1' }));
+    await expect(steerNativeSession(input)).resolves.toEqual({ turnId: 'provider-turn-1' });
+    expect(steer).toHaveBeenCalledTimes(1);
+    state.release?.();
+    await running;
+  });
 });
 
 describe("native warm session supervision", () => {
