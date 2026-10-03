@@ -203,6 +203,56 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(remaining.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
   });
 
+  it('records one committed legacy steering completion and preserves the board actor', async () => {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ runtimeMode: 'legacy' }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issueComments).set({ authorUserId: 'message-author' }).where(eq(issueComments.id, seeded.commentIds[0]));
+    const sent: string[] = [];
+    const owner = createAdapterExecutionControl();
+    owner.steering = {
+      state: async () => ({ supported: true, active: true, busy: false }),
+      send: async ({ text }) => { sent.push(text); return { outcome: 'injected' }; },
+    };
+    adapterExecutionControls.set(seeded.runId, owner);
+    const notifications: Record<string, unknown>[] = [];
+    const committedCommentIds: Promise<string[] | undefined>[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(seeded.companyId, (event) => {
+      if (event.type === 'activity.logged' && event.payload.action === 'issue.queued_comment_steered') {
+        notifications.push(event.payload);
+        committedCommentIds.push(db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)).then((rows) => {
+          const context = rows[0]?.payload?._paperclipWakeContext as { wakeCommentIds?: string[] } | undefined;
+          return context?.wakeCommentIds;
+        }));
+      }
+    });
+    try {
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      const input = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: queue.body.revision };
+      await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+      const completions = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId))
+        .then((rows) => rows.filter((row) => row.action === 'issue.queued_comment_steered'));
+      expect(completions).toHaveLength(1);
+      expect(completions[0]).toMatchObject({
+        actorType: 'user', actorId: 'queue-owner', runId: seeded.runId,
+        details: { commentId: seeded.commentIds[0], targetRunId: seeded.runId, protocol: 'acp' },
+      });
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0])))[0])
+        .toMatchObject({ authorUserId: 'message-author', body: 'First queued message', deletedAt: null });
+      expect(notifications).toHaveLength(1);
+      expect(await Promise.all(committedCommentIds)).toEqual([[seeded.commentIds[1]]]);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain('original author: Board message-author');
+      await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`).send(input).expect(200);
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId))
+        .then((rows) => rows.filter((row) => row.action === 'issue.queued_comment_steered'))).toHaveLength(1);
+      expect(notifications).toHaveLength(1);
+      expect(sent).toHaveLength(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('automatically delivers Agent handoffs after an observed tool boundary without a user click', async () => {
     const seeded = await seedQueue();
     const senderId = randomUUID();
@@ -1016,11 +1066,12 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       state: null,
       entries: [],
     });
-    const activity = await db
+    const activityRows = await db
       .select({ details: activityLog.details })
       .from(activityLog)
-      .where(eq(activityLog.action, "issue.queued_comment_steered"))
-      .then((rows) => rows[0]);
+      .where(eq(activityLog.action, "issue.queued_comment_steered"));
+    expect(activityRows).toHaveLength(1);
+    const activity = activityRows[0];
     expect(activity?.details).toMatchObject({
       commentId: seeded.commentIds[0],
       targetRunId: seeded.runId,

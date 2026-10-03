@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from '@paperclipai/db';
-import { logActivity, publishActivity, type ActivityPublication } from './activity-log.js';
+import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from './activity-log.js';
 import { adapterExecutionControls } from './adapter-execution-control.js';
 import { issueTreeControlService } from './issue-tree-control.js';
 import { queuedCommentIdsFromWakePayload, queuedCommentQueueRevision, withQueuedCommentIdsInWakePayload } from './issue-queued-comment-queue.js';
@@ -31,6 +31,7 @@ export async function deliverLegacySteering(db: Db, input: {
   queueId?: string;
   commentId?: string;
   revision?: string;
+  activityActor?: Pick<LogActivityInput, 'actorType' | 'actorId' | 'agentApiKeyId'>;
 }): Promise<number> {
   const owner = adapterExecutionControls.get(input.runId);
   if (!owner?.steering || owner.controller.signal.aborted) return 0;
@@ -102,7 +103,7 @@ export async function deliverLegacySteering(db: Db, input: {
         const now = new Date();
         await tx.update(heartbeatRuns).set({ resultJson: { ...result, queuedSteeringAcknowledgements: acknowledgements }, updatedAt: now }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
         await tx.update(agentWakeupRequests).set({ payload: withQueuedCommentIdsInWakePayload(payload, remaining), ...(remaining.length === 0 ? { status: 'coalesced', runId: run.id, finishedAt: now } : {}), updatedAt: now }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId)));
-        await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: 'system', actorId: 'live-adapter-steering', agentId: run.agentId, runId: run.id, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, protocol: 'acp', originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId } }, publications);
+        await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: input.activityActor?.actorType ?? 'system', actorId: input.activityActor?.actorId ?? 'live-adapter-steering', agentApiKeyId: input.activityActor?.agentApiKeyId, agentId: run.agentId, runId: run.id, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { commentId: comment.id, queueId: wake.id, targetRunId: run.id, protocol: 'acp', originalAuthorType: comment.authorType, originalAuthorAgentId: comment.authorAgentId, originalAuthorUserId: comment.authorUserId } }, publications);
         delivered += 1;
       }
     }

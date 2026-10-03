@@ -15535,9 +15535,8 @@ export function issueRoutes(
       if (legacyTarget?.runtimeMode === 'legacy') {
         const access = await decideIssueAccess(req, issue, 'issue:comment');
         if (!access.allowed) throw forbidden(access.explanation, authorizationDeniedDetails(access));
-        const delivered = await deliverLegacySteering(db, { runId: req.body.targetRunId, issueId: issue.id, queueId: req.body.queueId, commentId, revision: req.body.revision });
+        const delivered = await deliverLegacySteering(db, { runId: req.body.targetRunId, issueId: issue.id, queueId: req.body.queueId, commentId, revision: req.body.revision, activityActor: { actorType: actor.actorType, actorId: actor.actorId, agentApiKeyId: actor.agentApiKeyId } });
         if (!delivered) throw conflict('The provider is waiting for a safe tool boundary or cannot accept steering now', { code: 'steering_temporarily_unavailable' });
-        await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId, action: 'issue.queued_comment_steered', entityType: 'issue', entityId: issue.id, details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId, commentId, protocol: 'acp' } });
         const queue = await buildQueuedCommentQueue({ executor: db, issue, activeRun: await resolveActiveIssueRun(issue), actor });
         res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
         return;
