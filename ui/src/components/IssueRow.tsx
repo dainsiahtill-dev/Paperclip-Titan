@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
@@ -241,7 +242,7 @@ export function IssueRow({
           onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
           className="absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
         >
-          <span className="sr-only">Open {identifier}: {issue.title}</span>
+          <span className="sr-only">{v3t("dynamic.openTask", { identifier, title: issue.title })}</span>
         </Link>
 
         {showUnreadSlot ? (
@@ -382,7 +383,7 @@ export function IssueRow({
           "absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
         )}
       >
-        <span className="sr-only">Open {identifier}: {issue.title}</span>
+        <span className="sr-only">{v3t("dynamic.openTask", { identifier, title: issue.title })}</span>
       </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}

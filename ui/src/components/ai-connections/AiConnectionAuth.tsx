@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,11 +64,11 @@ function AuthAttempt({
   };
   return (
     <section
-      aria-label={`Connect ${info.name}`}
+      aria-label={v3t("dynamic.connectProvider", { provider: info.name })}
       className="flex flex-col gap-4"
     >
       <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-semibold">Connect {info.name}</h3>
+        <h3 className="text-sm font-semibold">{v3t("local.connect_1a2303")} {info.name}</h3>
         <p className="text-xs text-muted-foreground">
           {aiMethodLabel(provider, method)}
         </p>
@@ -75,9 +76,9 @@ function AuthAttempt({
       {state.phase === "connected" ? (
         <>
           <p role="status" className="text-sm">
-            Connected. This account is saved in Connections and can be reused.
+            {v3t("local.connected_this_account_is_saved_in_connections_and_can_b_95a419")}
           </p>
-          <Button onClick={onDone}>Use connection</Button>
+          <Button onClick={onDone}>{v3t("local.use_connection_bcb764")}</Button>
         </>
       ) : (
         <>
@@ -85,7 +86,7 @@ function AuthAttempt({
             <p role="status" className="text-sm text-muted-foreground">
               {state.phase === "unsupported"
                 ? state.message
-                : "This provider does not offer a subscription connection."}
+                : v3t("local.this_provider_does_not_offer_a_subscription_connection_0c38d4")}
             </p>
           ) : (
             <>
@@ -96,7 +97,7 @@ function AuthAttempt({
               )}
               {state.phase === "cancelled" && (
                 <p role="status" className="text-sm text-muted-foreground">
-                  Sign-in cancelled. No connection was created.
+                  {v3t("local.sign_in_cancelled_no_connection_was_created_66a4f1")}
                 </p>
               )}
               {method === "api_key" ? (
@@ -105,7 +106,7 @@ function AuthAttempt({
                   value={value}
                   onChange={setValue}
                   onSubmit={submit}
-                  placeholder="Enter API key here"
+                  placeholder={v3t("local.enter_api_key_here_c80c3a")}
                   disabled={busy}
                   autoFocus
                 />
@@ -143,7 +144,7 @@ function AuthAttempt({
                 </ProviderSubscriptionCard>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Sign in with your {info.subscriptionName}.
+                  {v3t("local.sign_in_with_your_9a32ef")} {info.subscriptionName}.
                 </p>
               )}
             </>
@@ -156,30 +157,30 @@ function AuthAttempt({
                 onCancel();
               }}
             >
-              Cancel
+              {v3t("agentDetail.cancel")}
             </Button>
             {!unsupported &&
               (method === "api_key" ? (
                 <Button disabled={busy || !value.trim()} onClick={submit}>
-                  {busy ? "Connecting…" : "Connect"}
+                  {busy ? v3t("local.connecting_72021e") : v3t("local.connect_1a2303")}
                 </Button>
               ) : state.phase === "waiting" ? (
                 provider === "anthropic" ? (
                   <Button disabled={!value.trim()} onClick={submit}>
-                    Submit code
+                    {v3t("local.submit_code_833a3a")}
                   </Button>
                 ) : (
                   <span role="status" className="text-sm text-muted-foreground">
-                    Waiting for sign-in…
+                    {v3t("local.waiting_for_sign_in_20ff19")}
                   </span>
                 )
               ) : (
                 <Button disabled={busy} onClick={onStart}>
                   {busy
-                    ? "Preparing sign-in…"
+                    ? v3t("local.preparing_sign_in_cdca95")
                     : state.phase === "idle"
-                      ? "Sign in"
-                      : "Try again"}
+                      ? v3t("local.sign_in_bfd402")
+                      : v3t("secrets.tryAgain")}
                 </Button>
               ))}
           </div>

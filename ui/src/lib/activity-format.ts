@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
 import { formatReviewPolicyValue } from "./review-policy";
@@ -478,7 +479,7 @@ export function formatActivityVerb(
   });
   if (structuredChange) return structuredChange;
 
-  return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
+  return v3t(`activityVerb.${action.replace(/\./g, "_")}`, { defaultValue: ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ") });
 }
 
 export function formatIssueActivityAction(

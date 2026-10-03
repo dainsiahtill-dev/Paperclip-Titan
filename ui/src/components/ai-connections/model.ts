@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 /** Redacted presentation contracts shared with the production API. */
 import type { AiProvider, AiAuthMethod, AiManagedConnectionSummary, AiConnectionBinding } from "@paperclipai/shared";
 export type { AiProvider, AiAuthMethod, AiConnectionBinding } from "@paperclipai/shared";
@@ -9,18 +10,18 @@ export const AI_PROVIDERS: Record<
 > = {
   anthropic: {
     name: "Claude",
-    subscriptionName: "Claude subscription",
+    subscriptionName: v3t("connectionLabels.claudeSubscription"),
     logo: "/brands/claude-color.svg",
   },
   openai: {
     name: "OpenAI",
-    subscriptionName: "ChatGPT subscription",
+    subscriptionName: v3t("connectionLabels.chatgptSubscription"),
     logo: "/brands/codex-color.svg",
   },
   openrouter: { name: "OpenRouter", logo: "/brands/apps/openrouter.svg" },
   xai: {
     name: "Grok",
-    subscriptionName: "Grok subscription",
+    subscriptionName: v3t("connectionLabels.grokSubscription"),
     logo: "/brands/adapters/grok.svg",
   },
 };
@@ -34,16 +35,16 @@ export interface AiConnectionRequirement {
 }
 
 export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
-  connected: "Connected",
-  needs_attention: "Needs attention",
-  expired: "Expired",
-  revoked: "Revoked",
+  connected: v3t("connectionLabels.connected"),
+  needs_attention: v3t("connectionLabels.needsAttention"),
+  expired: v3t("connectionLabels.expired"),
+  revoked: v3t("connectionLabels.revoked"),
 };
 
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
-    ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
-    : "API key";
+    ? (AI_PROVIDERS[provider].subscriptionName ?? v3t("connectionLabels.subscriptionUnavailable"))
+    : v3t("connectionLabels.apiKey");
 }
 
 export function matchesAiRequirement(
@@ -74,12 +75,12 @@ export function personalAiDefault(
 
 export function aiConnectionProblem(connection?: AiConnectionSummary) {
   if (!connection)
-    return "No connection selected. Connect an account to continue.";
+    return v3t("connectionLabels.noConnection");
   return (
     connection.unavailableReason ??
     (connection.status === "connected"
       ? null
-      : `${AI_CONNECTION_STATUS[connection.status]}. Reconnect this account to continue.`)
+      : v3t("connectionLabels.reconnect", { status: AI_CONNECTION_STATUS[connection.status] }))
   );
 }
 
@@ -94,7 +95,7 @@ export function bindingProblem(
     binding.provider !== requirement.provider ||
     (binding.mode !== "responsible_user" && requirement.method !== undefined && binding.method !== requirement.method)
   )
-    return "Choose a connection compatible with this provider and sign-in method.";
+    return v3t("connectionLabels.compatibleConnection");
   if (binding.mode === "responsible_user")
     return aiConnectionProblem(
       personalAiDefault(connections, requirement, userId),
@@ -107,14 +108,14 @@ export function bindingProblem(
       matchesAiRequirement(item, requirement),
   );
   if (!connection)
-    return "This connection is no longer available for this agent. Choose another connection.";
+    return v3t("connectionLabels.connectionUnavailable");
   if (binding.mode === "shared" && connection.ownership !== "shared")
-    return "Choose a company-shared connection.";
+    return v3t("connectionLabels.sharedConnection");
   if (
     binding.mode === "delegated" &&
     (connection.ownership !== "personal" ||
       connection.ownerUserId !== userId)
   )
-    return "This credential is not shared with you. Choose a connection you can use.";
+    return v3t("connectionLabels.credentialUnavailable");
   return aiConnectionProblem(connection);
 }

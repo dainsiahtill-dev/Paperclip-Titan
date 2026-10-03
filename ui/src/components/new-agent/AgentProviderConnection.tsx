@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
@@ -217,7 +218,7 @@ export function AgentProviderConnection({
   return (
     <div className="min-w-0 max-w-full">
       <ModelSourceTiles
-        label="Connect your model provider"
+        label={v3t("local.connect_your_model_provider_763f7f")}
         sources={[
           {
             id: adapterType,
@@ -250,8 +251,8 @@ export function AgentProviderConnection({
       )}
       {!opened && savedKeys.options.length > 0 && (
         <p className="mt-2 text-sm text-muted-foreground">
-          {savedKeys.options.length} saved API{" "}
-          {savedKeys.options.length === 1 ? "key available" : "keys available"}.
+          {savedKeys.options.length} {v3t("local.saved_api_b9bbaf")}{" "}
+          {savedKeys.options.length === 1 ? v3t("local.key_available_39a65b") : v3t("local.keys_available_2f1061")}.
         </p>
       )}
       {method === "subscription" &&
@@ -278,8 +279,8 @@ export function AgentProviderConnection({
               <OnboardingLoginCard
                 instruction={
                   savedKeys.options.length
-                    ? "Choose a saved API key or enter a new one"
-                    : `Provide your ${provider} API key to connect`
+                    ? v3t("dynamic.chooseSavedKey")
+                    : v3t("dynamic.providerKey", { provider })
                 }
               >
                 <SavedProviderKeySelect
@@ -295,14 +296,14 @@ export function AgentProviderConnection({
                 />
                 {!selectedKey && (
                   <OnboardingCardField
-                    label="API key"
+                    label={v3t("local.api_key_16f0ee")}
                     masked
                     autoFocus
                     value={apiKey}
                     placeholder={
                       storedConnection
-                        ? "Key entered. Retry the connection."
-                        : "Enter API key here"
+                        ? v3t("local.key_entered_retry_the_connection_43912a")
+                        : v3t("local.enter_api_key_here_c80c3a")
                     }
                     onChange={(value) => {
                       setSelectedKeyId("");
@@ -358,10 +359,10 @@ export function AgentProviderConnection({
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
-                  ? "Use your saved Claude subscription for this agent."
+                  ? v3t("local.use_your_saved_claude_subscription_for_this_agent_bb2c11")
                   : canLogin
-                    ? "Use the existing provider connection for this environment."
-                    : "This environment does not support browser sign-in. Choose a sign-in environment or connect with an API key."}
+                    ? v3t("local.use_the_existing_provider_connection_for_this_environmen_c910c4")
+                    : v3t("local.this_environment_does_not_support_browser_sign_in_choose_b62e1e")}
               </p>
             )}
           </div>
@@ -369,7 +370,7 @@ export function AgentProviderConnection({
       </motion.div>
       {method === "subscription" && storedLogin.isError && (
         <p role="alert" className="mt-4 text-sm text-destructive">
-          Could not check your saved Claude subscription. Try again.
+          {v3t("local.could_not_check_your_saved_claude_subscription_try_again_c8c6c2")}
         </p>
       )}
       {error && (
@@ -378,7 +379,7 @@ export function AgentProviderConnection({
         </p>
       )}
       {localEnvironment && health.isError && (
-        <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
+        <p role="alert" className="mt-4 text-sm text-destructive">{v3t("local.could_not_prepare_sign_in_reload_this_page_to_try_again_f89460")}</p>
       )}
       <FooterNav
         onBack={() => {
@@ -387,17 +388,17 @@ export function AgentProviderConnection({
         }}
         primaryLabel={
           opened && needsLogin
-            ? loginPhase === "waiting" ? "Waiting for code"
-              : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+            ? loginPhase === "waiting" ? v3t("dynamic.waitingForCode")
+              : loginPhase === "connecting" ? v3t("dynamic.connecting")
+              : v3t("dynamic.signInProvider", { provider })
             : busy
-            ? "Connecting"
+            ? v3t("dynamic.connecting")
             : method === "subscription" &&
                 (storedLogin.data || savedSubscription)
-              ? "Use saved subscription"
+              ? v3t("connectionLabels.useSavedSubscription")
               : method === "api" && selectedKey
-                ? "Use saved API key"
-                : "Connect"
+                ? v3t("connectionLabels.useSavedApiKey")
+                : v3t("local.connect_1a2303")
         }
         primaryDisabled={
           managedAccount?.disabled ||

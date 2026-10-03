@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile, readlink } from "node:fs/promises";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { z } from "zod";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { environmentService } from "./environments.js";
+import { persistActivity } from "./activity-log.js";
 
 const IDENTITY = "legacy.process_identity_recorded";
 const STOPPED = "legacy.local_process_stopped";
@@ -53,7 +56,7 @@ function absent(pid: number | null): boolean {
 }
 
 async function latest(db: Db, run: Run) {
-  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+  const [event] = await db.select({ seq: heartbeatRunEvents.seq, eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.companyId, run.companyId),
       eq(heartbeatRunEvents.runId, run.id),
@@ -119,5 +122,119 @@ export async function recordLegacyLocalProcessStop(db: Db, observed: Run): Promi
       payload: { ...identity(run), localProcess: true, localNamespace: await legacyLocalProcessNamespace() },
     });
     return true;
+  });
+}
+
+export const stoppedLegacyLocalLeaseSelectorSchema = z.object({
+  companyId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  runId: z.string().uuid(),
+  leaseId: z.string().uuid(),
+  stopReceiptSeq: z.number().int().nonnegative(),
+  expectedStopIdentity: z.object({
+    controllerBootId: z.string().uuid(),
+    processPid: z.number().int().min(2).max(2_147_483_647).nullable(),
+    processGroupId: z.number().int().min(2).max(2_147_483_647).nullable(),
+    processStartedAt: z.string().datetime({ offset: true }),
+    localNamespace: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().refine(value => value.processPid !== null || value.processGroupId !== null),
+}).strict();
+
+export type StoppedLegacyLocalLeaseSelector = z.infer<typeof stoppedLegacyLocalLeaseSelectorSchema>;
+export type LocalLeaseReconciliationRefusal =
+  | "selector_mismatch" | "execution_not_terminal_legacy" | "stop_receipt_mismatch"
+  | "host_namespace_unverified" | "controller_active" | "provider_process_not_stopped"
+  | "lease_not_local_bookkeeping" | "lease_not_active" | "release_failed";
+
+export class LocalLeaseReconciliationError extends Error {
+  constructor(readonly code: LocalLeaseReconciliationRefusal) {
+    super(code);
+    this.name = "LocalLeaseReconciliationError";
+  }
+}
+
+export interface LocalLeaseReconciliationResult {
+  outcome: "eligible" | "released" | "already_released";
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  leaseId: string;
+  stopReceiptSeq: number;
+  leaseStatus: string;
+  cleanupStatus: string | null;
+  releasedAt: string | null;
+}
+
+/** Host maintenance only: retire one Local bookkeeping lease using an existing
+ * exact stop receipt. No process signal, provider cleanup, task mutation or wake. */
+export async function reconcileStoppedLegacyLocalLease(
+  db: Db,
+  input: StoppedLegacyLocalLeaseSelector,
+  options: { apply?: boolean } = {},
+): Promise<LocalLeaseReconciliationResult> {
+  const selector = stoppedLegacyLocalLeaseSelectorSchema.parse(input);
+  const refuse = (code: LocalLeaseReconciliationRefusal): never => {
+    throw new LocalLeaseReconciliationError(code);
+  };
+  return db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    await transaction.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
+    const [issue] = await transaction.select().from(issues).where(and(
+      eq(issues.id, selector.issueId), eq(issues.companyId, selector.companyId),
+    )).for("update").limit(1);
+    const [run] = await transaction.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, selector.runId), eq(heartbeatRuns.companyId, selector.companyId),
+    )).for("update").limit(1);
+    if (!issue || !run || issue.assigneeAgentId !== selector.agentId || run.agentId !== selector.agentId ||
+        (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== selector.issueId) return refuse("selector_mismatch");
+    if (run.runtimeMode !== "legacy" || !["succeeded", "failed", "timed_out", "cancelled", "interrupted"].includes(run.status)) {
+      return refuse("execution_not_terminal_legacy");
+    }
+    if (!matches(run, selector.expectedStopIdentity)) return refuse("stop_receipt_mismatch");
+    const receipt = await latest(tx, run);
+    // Event sequence is supplied by the operator, but the latest event and its
+    // process identity come from the immutable server ledger, never the selector.
+    if (receipt?.seq !== selector.stopReceiptSeq || receipt.eventType !== STOPPED ||
+        receipt.payload?.localProcess !== true || !await legacyProcessStopConfirmed(tx, run)) return refuse("stop_receipt_mismatch");
+    const namespace = await legacyLocalProcessNamespace();
+    if (!namespace || namespace !== selector.expectedStopIdentity.localNamespace || receipt.payload?.localNamespace !== namespace) {
+      return refuse("host_namespace_unverified");
+    }
+    if (!run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt.getTime() > Date.now()) return refuse("controller_active");
+    if (!absent(run.processPid) || !absent(run.processGroupId === null ? null : -run.processGroupId)) {
+      return refuse("provider_process_not_stopped");
+    }
+    const [lease] = await transaction.select().from(environmentLeases).where(and(
+      eq(environmentLeases.id, selector.leaseId), eq(environmentLeases.companyId, selector.companyId),
+      eq(environmentLeases.heartbeatRunId, selector.runId), eq(environmentLeases.issueId, selector.issueId),
+    )).for("update").limit(1);
+    if (!lease || lease.metadata?.agentId !== selector.agentId) return refuse("selector_mismatch");
+    const [environment] = lease.environmentId ? await transaction.select().from(environments)
+      .where(eq(environments.id, lease.environmentId)).for("update").limit(1) : [];
+    if (!environment || environment.driver !== "local" || lease.metadata?.driver !== "local" ||
+        (lease.provider !== null && lease.provider !== "local") || lease.providerLeaseId !== null) {
+      return refuse("lease_not_local_bookkeeping");
+    }
+    const result = (outcome: LocalLeaseReconciliationResult["outcome"], status = lease.status,
+      cleanupStatus = lease.cleanupStatus, releasedAt = lease.releasedAt): LocalLeaseReconciliationResult => ({
+      outcome, companyId: selector.companyId, issueId: selector.issueId, agentId: selector.agentId,
+      runId: selector.runId, leaseId: selector.leaseId, stopReceiptSeq: selector.stopReceiptSeq,
+      leaseStatus: status, cleanupStatus, releasedAt: releasedAt?.toISOString() ?? null,
+    });
+    if (lease.status === "released" && lease.cleanupStatus === "success" && lease.releasedAt) return result("already_released");
+    if (lease.status !== "active" || lease.releasedAt !== null || lease.cleanupStatus === "failed") return refuse("lease_not_active");
+    if (options.apply !== true) return result("eligible");
+    const released = await environmentService(tx).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    if (!released?.releasedAt || released.status !== "released" || released.cleanupStatus !== "success") return refuse("release_failed");
+    await persistActivity(tx, {
+      companyId: selector.companyId, actorType: "system", actorId: "local_lease_maintenance",
+      agentId: selector.agentId, runId: selector.runId, action: "environment.local_lease_reconciled",
+      entityType: "environment_lease", entityId: selector.leaseId,
+      details: { issueId: selector.issueId, environmentId: lease.environmentId, stopReceiptSeq: selector.stopReceiptSeq,
+        stopIdentity: selector.expectedStopIdentity, previousStatus: lease.status, status: "released" },
+    });
+    return result("released", released.status, released.cleanupStatus, released.releasedAt);
   });
 }

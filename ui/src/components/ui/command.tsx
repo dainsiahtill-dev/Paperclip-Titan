@@ -1,5 +1,7 @@
 "use client"
 
+import { v3t } from "@/i18n"
+
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
 import { SearchIcon, XIcon } from "lucide-react"
@@ -31,8 +33,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title = v3t("dynamic.commandPalette"),
+  description = v3t("dynamic.searchCommands"),
   children,
   className,
   showCloseButton = true,

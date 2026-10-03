@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,8 +25,8 @@ export function ManagedAiConnectionRow({
     <p className="text-xs text-muted-foreground">
       {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
       {connection.credentialPolicy === "per_user"
-        ? "Personal"
-        : "Company shared"}
+        ? v3t("local.personal_845f92")
+        : v3t("local.company_shared_47e5dc")}
     </p>
   );
 }
@@ -83,8 +84,8 @@ export function ManagedAiConnectionDetails({
     return (
       <p role="status" className="text-sm text-muted-foreground">
         {accounts.isPending || grants.isPending
-          ? "Loading AI account…"
-          : "This account is not available to you."}
+          ? v3t("local.loading_ai_account_91a8f4")
+          : v3t("local.this_account_is_not_available_to_you_407f13")}
       </p>
     );
   return (
@@ -99,7 +100,7 @@ export function ManagedAiConnectionDetails({
           <div className="space-y-2">
             {runs.error && (
               <p role="alert">
-                Could not load active runs. Retry before revoking.
+                {v3t("local.could_not_load_active_runs_retry_before_revoking_240429")}
               </p>
             )}
             {runs.data?.map((run) => (
@@ -116,7 +117,7 @@ export function ManagedAiConnectionDetails({
                   disabled={stop.isPending}
                   onClick={() => stop.mutate(run.id)}
                 >
-                  Stop run
+                  {v3t("local.stop_run_b7ec68")}
                 </Button>
               </div>
             ))}

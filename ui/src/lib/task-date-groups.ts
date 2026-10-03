@@ -1,9 +1,11 @@
+import { v3t } from "@/i18n";
+
 export type TaskDateGroup = "today" | "yesterday" | "earlier";
 
 export const taskDateGroupLabels: Record<TaskDateGroup, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  earlier: "Earlier",
+  today: v3t("dynamic.today"),
+  yesterday: v3t("dynamic.yesterday"),
+  earlier: v3t("dynamic.earlier"),
 };
 
 function localCalendarOrdinal(date: Date): number {

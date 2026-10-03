@@ -1,3 +1,4 @@
+import { v3t } from "@/i18n";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +31,7 @@ export function CollectionToolbar({
   actions,
   feedback,
   className,
-  ariaLabel = "Collection controls",
+  ariaLabel = v3t("dynamic.collectionControls"),
 }: CollectionToolbarProps) {
   return (
     <div
