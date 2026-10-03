@@ -55,7 +55,7 @@ import {
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { workspaceGitOperationScheduler, WorkspaceGitScanError } from "./workspace-git-operation-scheduler.js";
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -400,6 +400,16 @@ async function pathExists(value: string | null | undefined) {
 }
 
 async function runGit(args: string[], cwd: string) {
+  if (args[0] === "rev-list" || args[0] === "merge-base") {
+    try {
+      return await workspaceGitOperationScheduler.run({ workspacePath: cwd, args, operation: `execution_workspaces.${args[0]}`, cacheTtlMs: 0 });
+    } catch (error) {
+      // Ancestry exit 1 means divergence. Preserve that semantic result while
+      // deadlines, output bounds and physical owners stay with the scheduler.
+      if (error instanceof WorkspaceGitScanError && (error.details as { exitCode?: unknown } | undefined)?.exitCode === 1) throw Object.assign(new Error("Git ancestry read reported divergence"), { code: 1 });
+      throw error;
+    }
+  }
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 

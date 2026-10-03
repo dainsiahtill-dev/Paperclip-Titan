@@ -1,0 +1,30 @@
+{
+  "synthetic": true,
+  "tracked": 1002,
+  "trackedArchive": 1000,
+  "untracked": 1000,
+  "ignored": 1000,
+  "seedingMs": 486.489061,
+  "scans": [
+    {
+      "operation": "measurement_status",
+      "queueWaitMs": 1,
+      "executionMs": 17
+    },
+    {
+      "operation": "measurement_tracked",
+      "queueWaitMs": 10,
+      "executionMs": 7
+    }
+  ],
+  "totals": {
+    "started": 2,
+    "succeeded": 2,
+    "failed": 0,
+    "timedOut": 0,
+    "cancelled": 0,
+    "saturated": 0,
+    "cacheHits": 0,
+    "singleFlightJoins": 7
+  }
+}

@@ -588,8 +588,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     let statusScanCount = 0;
     const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
       .mockImplementation(async (input) => {
-        statusScanCount += 1;
-        if (statusScanCount > 1) throw new Error("scan timed out");
+        if (input.args[0] === "status") {
+          statusScanCount += 1;
+          if (statusScanCount > 1) throw new Error("scan timed out");
+        }
         return originalRun(input);
       });
 
@@ -4610,6 +4612,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   it("warns about dirty and unmerged git worktrees and reports cleanup actions", async () => {
+    const scans = vi.spyOn(workspaceGitOperationScheduler, "run");
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
     const worktreePath = path.join(path.dirname(repoRoot), `paperclip-worktree-${randomUUID()}`);
@@ -4718,5 +4721,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const legacyReadiness = await svc.getCloseReadiness(executionWorkspaceId);
     expect(legacyReadiness?.git?.createdByRuntime).toBe(false);
     expect(legacyReadiness?.plannedActions.map((action) => action.kind)).not.toContain("git_branch_delete");
+    expect(scans.mock.calls.some(([input]) => input.args[0] === "rev-list" && input.cacheTtlMs === 0)).toBe(true);
+    expect(scans.mock.calls.some(([input]) => input.args[0] === "merge-base" && input.cacheTtlMs === 0)).toBe(true);
   }, 20_000);
 });
