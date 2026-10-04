@@ -2782,8 +2782,6 @@ async function birthtimeSurvivesProbe(dirPath) {
     ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
   } catch {
     ownedIdentity = null;
-  } finally {
-    await handle.close().catch(() => undefined);
   }
   if (!ownedIdentity) {
     // fstat on this call's own just-opened descriptor failed. This call then
@@ -2793,6 +2791,7 @@ async function birthtimeSurvivesProbe(dirPath) {
     // entry instead of this call's own file. Fail closed right here instead
     // of falling through to the birthtime comparison below, so a failed
     // identity read can never let this probe report success.
+    await handle.close().catch(() => undefined);
     return "its own probe file's identity could not be read from the open file descriptor";
   }
   // The one gap the fs API cannot close: this lstat and the removal below
@@ -2801,14 +2800,21 @@ async function birthtimeSurvivesProbe(dirPath) {
   // the probe path, including a pre-existing file it renames into place,
   // and the removal call below removes whatever entry is there when it
   // runs.
-  const currentStats = await fs.lstat(probePath).catch(() => null);
-  const stillOwned =
-    currentStats !== null &&
-    currentStats.dev === ownedIdentity.dev &&
-    currentStats.ino === ownedIdentity.ino &&
-    currentStats.ctimeMs === ownedIdentity.ctimeMs;
-  if (stillOwned) {
-    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  // Keep the descriptor open through this check: after close, an unlinked
+  // inode can be reused with the same coarse filesystem timestamp, allowing
+  // a peer's different file or symlink to appear to be the owned probe.
+  try {
+    const currentStats = await fs.lstat(probePath).catch(() => null);
+    const stillOwned =
+      currentStats !== null &&
+      currentStats.dev === ownedIdentity.dev &&
+      currentStats.ino === ownedIdentity.ino &&
+      currentStats.ctimeMs === ownedIdentity.ctimeMs;
+    if (stillOwned) {
+      await fs.rm(probePath, { force: true }).catch(() => undefined);
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
   }
   let after;
   try {
