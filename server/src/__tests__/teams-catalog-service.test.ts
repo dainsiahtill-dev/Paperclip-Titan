@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import type { CatalogTeam } from "@paperclipai/shared";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -39,7 +40,10 @@ const {
 } = await import("../services/teams-catalog.js");
 
 const CORE_EXEC_TEAM_ID = "paperclipai:bundled:company-defaults:core-exec-team";
-const CORE_EXEC_TEAM_HASH = "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1";
+// Independent expected data comes from the shipped catalog manifest, rather
+// than the service under test or a digest pinned to old template bytes.
+const shippedCatalog = JSON.parse(readFileSync(new URL("../../../packages/teams-catalog/generated/catalog.json", import.meta.url), "utf8")) as { teams: CatalogTeam[] };
+const CORE_EXEC_TEAM_HASH = shippedCatalog.teams.find((team) => team.id === CORE_EXEC_TEAM_ID)!.contentHash;
 
 function agentWithCatalogTeam(originHash: string | null, extra: Record<string, unknown> = {}) {
   return {
