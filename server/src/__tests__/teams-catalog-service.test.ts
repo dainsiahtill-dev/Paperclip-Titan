@@ -174,6 +174,36 @@ describe("teamsCatalogService", () => {
     ]);
     await expect(teamsCatalogService({} as any).prepareCatalogTeamSource("company-1", "core-exec-team", { targetManagerSlug: "contextos" })).rejects.toMatchObject({ status: 409 });
   });
+  it.each(["未知 Legacy Engineer", "missing-engineer", "!!!"])("rejects unmatched manager selectors without choosing a fallback (%s)", async (selector) => {
+    mockAgentService.list.mockResolvedValue([{ id: "manager-1", companyId: "company-1", name: "Legacy Engineer" }]);
+    await expect(teamsCatalogService({} as any).prepareCatalogTeamSource("company-1", "core-exec-team", { targetManagerSlug: selector })).rejects.toMatchObject({ status: 404 });
+  });
+  it("resolves exact Unicode manager display names before ambiguous ASCII aliases", async () => {
+    mockAgentService.list.mockResolvedValue([
+      { id: "manager-1", companyId: "company-1", name: "模型与 ContextOS 主管" },
+      { id: "manager-2", companyId: "company-1", name: "ContextOS 与上下文存储工程师" },
+    ]);
+    const prepared = await teamsCatalogService({} as any).prepareCatalogTeamSource("company-1", "core-exec-team", { targetManagerSlug: "ContextOS 与上下文存储工程师" });
+    expect(prepared.source.files[".paperclip.yaml"]).toContain('reportsToExistingAgentId: "manager-2"');
+  });
+  it.each([
+    [false, false, false], [false, false, true], [false, true, false], [false, true, true],
+    [true, false, false], [true, false, true], [true, true, false], [true, true, true],
+  ])("resolves manager UUID before display/alias keys (reverse=%s, selectorUpper=%s, nameUpper=%s)", async (reverse, selectorUpper, nameUpper) => {
+    const id = "abcdefab-1111-4111-8111-abcdefabcdef";
+    const original = { id, companyId: "company-1", name: "Legacy Engineer" };
+    const shadow = { id: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", companyId: "company-1", name: nameUpper ? id.toUpperCase() : id };
+    mockAgentService.list.mockResolvedValue(reverse ? [shadow, original] : [original, shadow]);
+    const prepared = await teamsCatalogService({} as any).prepareCatalogTeamSource("company-1", "core-exec-team", { targetManagerSlug: selectorUpper ? id.toUpperCase() : id });
+    expect(prepared.source.files[".paperclip.yaml"]).toContain(`reportsToExistingAgentId: "${id}"`);
+  });
+  it("cannot select a foreign manager UUID through a same-company display name", async () => {
+    const foreignId = "abcdefab-1111-4111-8111-abcdefabcdef";
+    mockAgentService.list.mockResolvedValue([{ id: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", companyId: "company-2", name: foreignId }]);
+    await expect(teamsCatalogService({} as any).prepareCatalogTeamSource("company-2", "core-exec-team", { targetManagerSlug: foreignId.toUpperCase() })).rejects.toMatchObject({ status: 404 });
+    mockAgentService.getById.mockResolvedValue({ id: foreignId, companyId: "company-1", name: "Foreign manager" });
+    await expect(teamsCatalogService({} as any).prepareCatalogTeamSource("company-2", "core-exec-team", { targetManagerAgentId: foreignId })).rejects.toMatchObject({ status: 403 });
+  });
 
   it("previews through company portability in agent-safe mode", async () => {
     const svc = teamsCatalogService({} as any);

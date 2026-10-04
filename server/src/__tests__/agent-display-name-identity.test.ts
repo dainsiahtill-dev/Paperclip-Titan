@@ -142,6 +142,53 @@ describe("exact agent display names and stable identity", () => {
     expect(() => resolvePortableExportAgentSelection(rows, ["contextos"], true)).toThrow(/ambiguous/i);
     expect(resolvePortableExportAgentSelection(rows, [rows[0]!.id], true).agents).toEqual([rows[0]]);
   });
+  it.each(["未知 Legacy Engineer", "missing-engineer"])("rejects unmatched export selectors and preserves exact display-name selection (%s)", async (selector) => {
+    const co = await company(); const svc = agentService(db);
+    await svc.create(co.id, { name: "Legacy Engineer" });
+    await svc.create(co.id, { name: "  精确研发主管  " });
+    const portability = companyPortabilityService(db);
+    const include = { company: false, agents: true, projects: false, issues: false, skills: false };
+    await expect(portability.exportBundle(co.id, { include, agents: [selector] })).rejects.toMatchObject({ status: 404 });
+    const exact = await portability.exportBundle(co.id, { include, agents: ["  精确研发主管  "] });
+    expect(exact.manifest.agents.map(agent => agent.name)).toEqual(["  精确研发主管  "]);
+    const legacy = await portability.exportBundle(co.id, { include, agents: ["legacy-engineer"] });
+    expect(legacy.manifest.agents.map(agent => agent.name)).toEqual(["Legacy Engineer"]);
+  });
+  it.each([
+    { label: "omitted", selectors: undefined },
+    { label: "empty array", selectors: [] },
+    { label: "blank entries", selectors: ["", " "] },
+  ])("keeps intentional empty export selection as all portable employees ($label)", ({ selectors }) => {
+    const rows = [
+      { id: randomUUID(), name: "Legacy Engineer", status: "idle", metadata: null },
+      { id: randomUUID(), name: "精确研发", status: "idle", metadata: null },
+    ];
+    expect(resolvePortableExportAgentSelection(rows, selectors, true).agents).toEqual(rows);
+  });
+  it.each([
+    [false, false, false], [false, false, true], [false, true, false], [false, true, true],
+    [true, false, false], [true, false, true], [true, true, false], [true, true, true],
+  ])("resolves canonical export UUID before display/alias keys (reverse=%s, selectorUpper=%s, nameUpper=%s)", (reverse, selectorUpper, nameUpper) => {
+    const id = "abcdefab-1111-4111-8111-abcdefabcdef";
+    const original = { id, name: "Legacy Engineer", status: "idle", metadata: null };
+    const shadow = { id: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", name: nameUpper ? id.toUpperCase() : id, status: "idle", metadata: null };
+    const rows = reverse ? [shadow, original] : [original, shadow];
+    const selected = resolvePortableExportAgentSelection(rows, [selectorUpper ? id.toUpperCase() : id], true);
+    expect(selected.agents).toEqual([original]);
+    expect(selected.warnings).toEqual([]);
+  });
+  it("does not use a foreign UUID as a display-name export fallback across companies", async () => {
+    const home = await company(); const foreign = await company(); const svc = agentService(db);
+    const original = await svc.create(home.id, { name: "Original employee" });
+    const shadow = await svc.create(foreign.id, { name: original.id.toUpperCase() });
+    const portability = companyPortabilityService(db);
+    const include = { company: false, agents: true, projects: false, issues: false, skills: false };
+    const own = await portability.exportBundle(home.id, { include, agents: [original.id.toUpperCase()] });
+    expect(own.manifest.agents.map(agent => agent.name)).toEqual([original.name]);
+    await expect(portability.exportBundle(foreign.id, { include, agents: [original.id] })).rejects.toMatchObject({ status: 404 });
+    const explicit = await portability.exportBundle(foreign.id, { include, agents: [shadow.id] });
+    expect(explicit.manifest.agents.map(agent => agent.name)).toEqual([shadow.name]);
+  });
   it("approves invites with exact names and leaves duplicate requests pending", async () => {
     const co = await company(); const svc = agentService(db); const a = app();
     await svc.create(co.id, { name: "模型与 ContextOS 主管", role: "ceo", runtimeConfig: { heartbeat: { enabled: false } } });

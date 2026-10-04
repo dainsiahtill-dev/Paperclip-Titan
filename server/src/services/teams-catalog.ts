@@ -20,7 +20,7 @@ import type {
   CompanyPortabilityPreviewResult,
   CompanyPortabilitySource,
 } from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
@@ -747,16 +747,35 @@ export function teamsCatalogService(db: Db) {
     options: CatalogTeamImportOptions,
   ): Promise<CatalogTargetManagerReference | null> {
     if (options.targetManagerSlug) {
-      const slug = normalizeAgentUrlKey(options.targetManagerSlug);
-      if (!slug) throw unprocessable("Target manager slug is invalid.");
+      const reference = options.targetManagerSlug.trim();
       const managers = await agents.list(companyId);
-      const matches = managers.filter((candidate) => normalizeAgentUrlKey(candidate.name) === slug);
-      if (matches.length > 1) {
-        throw conflict("Target manager slug is ambiguous; select an agent ID.", { code: "agent_reference_ambiguous" });
+      const managerById = new Map(managers.map((manager) => [
+        isUuidLike(manager.id) ? manager.id.toLowerCase() : manager.id,
+        manager,
+      ]));
+      let manager = managerById.get(isUuidLike(reference) ? reference.toLowerCase() : reference);
+      if (!manager && isUuidLike(reference)) throw notFound("Target manager agent not found");
+      if (!manager) {
+        const exactMatches = managers.filter((candidate) =>
+          candidate.name === options.targetManagerSlug || candidate.name === reference,
+        );
+        if (exactMatches.length > 1) {
+          throw conflict("Target manager name is ambiguous; select an agent ID.", { code: "agent_reference_ambiguous" });
+        }
+        manager = exactMatches[0];
       }
-      const manager = matches[0];
+      if (!manager) {
+        if (/[^\x20-\x7e]/.test(reference)) throw notFound("Target manager agent not found");
+        const slug = normalizeAgentUrlKey(reference);
+        if (!slug) throw notFound("Target manager agent not found");
+        const matches = managers.filter((candidate) => normalizeAgentUrlKey(candidate.name) === slug);
+        if (matches.length > 1) {
+          throw conflict("Target manager slug is ambiguous; select an agent ID.", { code: "agent_reference_ambiguous" });
+        }
+        manager = matches[0];
+      }
       if (!manager) throw notFound("Target manager agent not found");
-      return { agentId: manager.id, slug };
+      return { agentId: manager.id, slug: normalizeAgentUrlKey(manager.name) ?? manager.id };
     }
     if (!options.targetManagerAgentId) return null;
     const manager = await agents.getById(options.targetManagerAgentId);
