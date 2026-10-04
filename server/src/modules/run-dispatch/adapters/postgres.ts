@@ -299,7 +299,10 @@ export function createPostgresRunDispatchAdapter(
       projectId: readNonEmptyString(input.contextSnapshot.projectId),
     });
     facts.budgetBlock = budgetBlock
-      ? { reason: budgetBlock.reason, scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId }
+      ? { reason: budgetBlock.reason, scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
+          ...("code" in budgetBlock && typeof budgetBlock.code === "string" ? { code: budgetBlock.code } : {}),
+          ...("resourceIssueId" in budgetBlock && typeof budgetBlock.resourceIssueId === "string" ? { resourceIssueId: budgetBlock.resourceIssueId } : {}),
+        }
       : null;
     if (facts.budgetBlock) return { agentFound: true, facts };
 

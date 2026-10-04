@@ -133,6 +133,20 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     });
   }
 
+  it("preserves the actual unknown-token blocker and its resource scope in scheduled retry facts", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true, resourceLimits: { maxTokensPerIssue: 1500000 } } }).where(eq(issues.id, issueId));
+    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId, agentId, invocationSource: "automation", status: "interrupted", startedAt: new Date(Date.now() - 60000), finishedAt: new Date(Date.now() - 30000), errorCode: "server_shutdown_interrupted", contextSnapshot: { issueId } });
+    const runId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot: { issueId } });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId, now: new Date() })).toMatchObject({
+      allowed: false, errorCode: "budget_blocked",
+      details: { resourceCode: "issue_token_usage_unknown", resourceIssueId: issueId },
+    });
+  });
+
   async function seedRun(input: {
     companyId: string;
     agentId: string;

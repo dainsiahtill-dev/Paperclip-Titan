@@ -870,7 +870,9 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         const resourceBlock = await getIssueResourceBlock(db, { companyId, issueId: context.issueId, excludeRunId: context.runId });
         if (resourceBlock) return { scopeType: "agent" as const, scopeId: agentId, scopeName: agent.name,
           resourceIssueId: resourceBlock.resourceIssueId, code: resourceBlock.code,
-          reason: `Task resource limit reached (${resourceBlock.code}). Preserve progress and ask its owner to revise the resource policy.` };
+          reason: resourceBlock.code === "issue_token_usage_unknown"
+            ? "Task token usage is unknown (issue_token_usage_unknown). Reconcile authoritative usage for the source runs before continuing."
+            : `Task resource limit reached (${resourceBlock.code}). Preserve progress and ask its owner to revise the resource policy.` };
       }
       const resourceMetricBlock = async () => {
         const policies = await db.select().from(budgetPolicies).where(and(

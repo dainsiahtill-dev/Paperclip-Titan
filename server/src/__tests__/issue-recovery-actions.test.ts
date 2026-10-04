@@ -693,6 +693,28 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("explains unknown token usage without claiming numeric budget exhaustion or reassigning its source owner", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true, resourceLimits: { maxTokensPerIssue: 1500000 } } }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: coderId, invocationSource: "automation", runtimeMode: "native", status: "interrupted",
+      errorCode: "server_shutdown_interrupted", startedAt: new Date(Date.now() - 120000), finishedAt: new Date(Date.now() - 60000), contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [source] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(source).toMatchObject({ status: "blocked", assigneeAgentId: coderId });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("issue_token_usage_unknown");
+    expect(comments[0]!.body).toMatch(/reconcile.*usage/i);
+    expect(comments[0]!.body).not.toContain("over budget");
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(action).toMatchObject({ ownerType: "board", returnOwnerAgentId: coderId });
+  });
+
   it("stands down after an operator interrupt cancellation", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({

@@ -68,6 +68,18 @@ function baseStalenessFacts(): QueuedRunFacts {
 }
 
 describe("decideScheduledRetryGate", () => {
+  it("retains an unknown-token resource cause without claiming a numeric budget overrun", () => {
+    const facts = {
+      ...baseGateFacts(),
+      budgetBlock: { reason: "Task token usage is unknown.", scopeType: "agent", scopeId: "agent-1", code: "issue_token_usage_unknown", resourceIssueId: "root-resource-issue" },
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toMatchObject({
+      allowed: false,
+      errorCode: "budget_blocked",
+      reason: "Task token usage is unknown.",
+      details: { scopeType: "agent", scopeId: "agent-1", resourceCode: "issue_token_usage_unknown", resourceIssueId: "root-resource-issue" },
+    });
+  });
   it("allows the current reviewer and rejects a replaced participant", () => {
     const facts: ScheduledRetryFacts = {
       ...baseGateFacts(), issueStatus: "in_review", issueAssigneeAgentId: "implementor",

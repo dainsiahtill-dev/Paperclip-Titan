@@ -2074,11 +2074,11 @@ export function recoveryService(
     return userResolvedInteraction === null;
   }
 
-  async function isInvocationBudgetBlocked(
+  async function getInvocationBudgetBlock(
     issue: typeof issues.$inferSelect,
     agentId: string,
   ) {
-    const budgetBlock = await budgets.getInvocationBlock(
+    return budgets.getInvocationBlock(
       issue.companyId,
       agentId,
       {
@@ -2086,7 +2086,10 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+  }
+
+  async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
+    return Boolean(await getInvocationBudgetBlock(issue, agentId));
   }
 
   async function reconcileUnassignedBlockingIssues() {
@@ -4427,7 +4430,8 @@ export function recoveryService(
           continue;
         }
       }
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      const invocationBudgetBlock = await getInvocationBudgetBlock(issue, agentId);
+      if (invocationBudgetBlock) {
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4450,7 +4454,7 @@ export function recoveryService(
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
                 : undefined,
             comment:
-              "Paperclip cannot safely continue automatic recovery because the original recovery target is over budget. " +
+              "Paperclip cannot safely continue automatic recovery. " + invocationBudgetBlock.reason + " " +
               "The source assignment is unchanged and the board must choose the next action.",
           });
           if (updated) {
