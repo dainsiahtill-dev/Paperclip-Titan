@@ -195,7 +195,7 @@ function makeReflectionCoachAgent(overrides: Record<string, unknown> = {}) {
 }
 
 describe("agent instructions bundle routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -269,6 +269,13 @@ describe("agent instructions bundle routes", () => {
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
       },
     });
+
+    // Prepare the real router before requests begin. Cold imports can outlive
+    // a request test and otherwise observe the next case's shared mocks.
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
   });
 
   it("returns bundle metadata", async () => {
