@@ -628,7 +628,9 @@ export function documentService(db: Db) {
       createdByUserId?: string | null;
     }) => {
       const key = normalizeDocumentKey(input.key);
-      return db.transaction(async (tx) => {
+      const publications: import("./activity-log.js").ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, input.issueId)).for("update");
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -703,6 +705,10 @@ export function documentService(db: Db) {
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
 
+        if (existing.latestBody !== revision.body || existing.format !== revision.format) {
+          const { deliveryAuthorityService } = await import("./delivery-authority.js");
+          await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(existing.companyId, input.issueId, publications);
+        }
         return {
           restoredFromRevisionId: revision.id,
           restoredFromRevisionNumber: revision.revisionNumber,
@@ -719,6 +725,9 @@ export function documentService(db: Db) {
           },
         };
       });
+      const { publishActivity } = await import("./activity-log.js");
+      for (const publication of publications) publishActivity(publication);
+      return result;
     },
 
     lockIssueDocument: async (input: {
@@ -822,7 +831,9 @@ export function documentService(db: Db) {
 
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
-      return db.transaction(async (tx) => {
+      const publications: import("./activity-log.js").ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -842,12 +853,17 @@ export function documentService(db: Db) {
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
+        const { deliveryAuthorityService } = await import("./delivery-authority.js");
+        await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(existing.companyId, issueId, publications);
         return {
           ...existing,
           body: existing.latestBody,
           latestRevisionId: existing.latestRevisionId ?? null,
         };
       });
+      const { publishActivity } = await import("./activity-log.js");
+      for (const publication of publications) publishActivity(publication);
+      return result;
     },
   };
 }

@@ -169,6 +169,11 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
   }
 
   async function assessment(companyId: string, issueId: string, candidate?: Issue, forMutation = false): Promise<DeliveryAssessment> {
+    const definition = await resolveDeliveryDefinition(db, companyId, issueId, candidate);
+    if (definition.mode !== "verified_delivery") {
+      const [currentNative] = await db.select().from(completionContracts).where(and(eq(completionContracts.companyId, companyId), eq(completionContracts.issueId, issueId))).orderBy(desc(completionContracts.revision)).limit(1);
+      return { version: 1, mode: "agent_claim_policy", contractId: currentNative?.id ?? null, contractRevision: currentNative?.revision ?? 0, contractHash: currentNative?.canonicalSha256 ?? null, criteria: [], canComplete: true, reviewerAgentIds: [] };
+    }
     if (!inTransaction) return db.transaction((tx) => deliveryAuthorityService(tx as unknown as Db, true).assessment(companyId, issueId, candidate, forMutation));
     await lockInputs(companyId, issueId, candidate, forMutation);
     const current = await materializeContract(companyId, issueId, candidate);
@@ -200,6 +205,7 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
       const actorType = actor.type === "board" || actor.type === "user" ? "user" : actor.type === "agent" ? "agent" : null;
       const actorId = actorType === "user" ? actor.userId ?? actor.actorId : actor.agentId;
       if (!actorType || !actorId) throw forbidden("Authenticated delivery reviewer required");
+      if ((await resolveDeliveryDefinition(typed, companyId, issueId)).mode !== "verified_delivery") throw conflict("Independent delivery decisions require verified_delivery mode");
       const [previous] = await tx.select().from(issueDeliveryDecisions).where(and(eq(issueDeliveryDecisions.companyId, companyId), eq(issueDeliveryDecisions.issueId, issueId), eq(issueDeliveryDecisions.requestId, input.requestId)));
       if (previous) {
         if (previous.requestDigest !== requestDigest || previous.actorType !== actorType || previous.actorId !== actorId) throw conflict("Delivery decision request ID was already used for different content");
@@ -222,6 +228,7 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
         if (!interaction || interaction.status !== "resolved" || (actorType === "agent" ? interaction.resolvedByAgentId !== actorId || interaction.resolvedByRunId !== actor.runId : interaction.resolvedByUserId !== actorId)) throw forbidden("Review interaction must be an actual resolved verdict by this reviewer in this scope");
       }
       const current = await deliveryAuthorityService(typed, true).assessment(companyId, issueId, undefined, true);
+      if (!current.contractId || !current.contractHash) throw conflict("Current verified delivery contract is required");
       const criterion = current.criteria.find((entry) => entry.id === input.criterionId);
       if (!criterion) throw unprocessable("Unknown delivery criterion");
       if (current.contractHash !== input.expectedContractHash || criterion.criterionDigest !== input.expectedCriterionDigest || criterion.workProductId !== product.id || material.materialVersion !== input.expectedMaterialVersion || material.contentDigest !== input.expectedContentDigest) throw conflict("Delivery decision is stale; inspect the current criterion and material again");
@@ -296,6 +303,12 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
       currentId = issue.parentId;
     }
   }
+  async function invalidateIssueScopes(companyId: string, issueId: string, publications: ActivityPublication[]) {
+    const ids = await productScope(companyId, issueId, "subtree");
+    try { await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids))).orderBy(issues.id).for("update", { noWait: true }); }
+    catch (error) { rethrowDeliveryInputLock(error); }
+    for (const id of ids) await invalidateMaterialScopes(companyId, id, publications);
+  }
   async function invalidateProjectScopes(companyId: string, projectId: string, publications: ActivityPublication[]) {
     const scoped = await db.execute(sql`with recursive scope as (select id from issues where company_id=${companyId} and project_id=${projectId} union select child.id from issues child join scope on child.parent_id=scope.id where child.company_id=${companyId}) select id from scope`);
     const ids = (scoped as unknown as Array<{id: string}>).map((row) => row.id);
@@ -304,5 +317,5 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
     catch (error) { rethrowDeliveryInputLock(error); }
     for (const id of ids) await invalidateMaterialScopes(companyId, id, publications);
   }
-  return { assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes, invalidateProjectScopes };
+  return { assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes, invalidateProjectScopes, invalidateIssueScopes };
 }

@@ -40,9 +40,9 @@ export interface DeliveryCriterionAssessment extends DeliveryCriterion {
 export interface DeliveryAssessment {
   version: 1;
   mode: DeliveryMode;
-  contractId: string;
+  contractId: string | null;
   contractRevision: number;
-  contractHash: string;
+  contractHash: string | null;
   criteria: DeliveryCriterionAssessment[];
   canComplete: boolean;
   reviewerAgentIds: string[];

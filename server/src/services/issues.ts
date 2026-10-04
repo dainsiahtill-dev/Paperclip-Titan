@@ -10963,6 +10963,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        const deliveryPolicyValue = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>).deliveryPolicy ?? null : null;
+        if (JSON.stringify(deliveryPolicyValue(receiptExisting.executionPolicy)) !== JSON.stringify(deliveryPolicyValue(updated.executionPolicy))) {
+          await deliveryAuthorityService(tx as unknown as Db, true).invalidateIssueScopes(updated.companyId, updated.id, activityPublications);
+        }
         if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
           const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
           await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);

@@ -386,4 +386,50 @@ describeDb("delivery authority API boundary", () => {
       expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
     } finally { deliveryWakeup = null; }
   });
+
+  it("reads ordinary delivery summaries without superseding the actual native contract", async () => {
+    const s = await seedExecutor();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, s.issueId));
+    const initial = await ensureNativeCompletionContract({ db, companyId: s.companyId, issue: issue!, actorId: s.agentId });
+    await request(s.app).get(`/api/issues/${s.issueId}/delivery-assessment`).expect(200);
+    await request(s.app).get(`/api/issues/${s.issueId}/delivery-assessment`).expect(200);
+    const current = await ensureNativeCompletionContract({ db, companyId: s.companyId, issue: issue!, actorId: s.agentId });
+    expect(current.row.id).toBe(initial.row.id);
+    expect(current.row.revision).toBe(initial.row.revision);
+    expect(await db.select().from(completionContracts).where(eq(completionContracts.issueId, s.issueId))).toHaveLength(1);
+  });
+
+  it("reopens completed work when its accepted linked document is removed", async () => {
+    const s = await verifiedFixture();
+    const doc = (await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "Real document", format: "markdown", body: "Current inspected document" }).expect(201)).body;
+    await request(s.app).patch(`/api/work-products/${s.productId}`).send({ metadata: { documentId: doc.id } }).expect(200);
+    await acceptAll(s);
+    await request(s.board).delete(`/api/issues/${s.issueId}/documents/output`).expect(200);
+    expect((await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body.canComplete).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+    expect(await db.select().from(issueDeliveryDecisions).where(eq(issueDeliveryDecisions.issueId, s.issueId))).toHaveLength(2);
+  });
+
+  it("invalidates completed descendants when their inherited reviewer authority changes", async () => {
+    const s = await verifiedFixture(), childId = randomUUID();
+    await db.insert(issues).values({ id: childId, companyId: s.companyId, parentId: s.issueId, title: "Inherited independent review", status: "todo", assigneeAgentId: s.agentId, executionPolicy: { stages: [], deliveryPolicy: { version: 1, mode: "verified_delivery", criteria: s.policy.criteria } } });
+    const product = (await request(s.board).post(`/api/issues/${childId}/work-products`).send({ type: "document", provider: "custom", title: "Child content", summary: "Actual child document content", isPrimary: true }).expect(201)).body;
+    const assessment = (await request(s.board).get(`/api/issues/${childId}/delivery-assessment`).expect(200)).body;
+    for (const criterion of assessment.criteria) await request(s.reviewer).post(`/api/issues/${childId}/delivery-decisions`).send({ ...s.decisionBody(criterion.id, assessment), workProductId: product.id }).expect(201);
+    await request(s.app).patch(`/api/issues/${childId}`).send({ status: "done" }).expect(200);
+    await request(s.board).put(`/api/issues/${s.issueId}/delivery-policy`).send({ ...s.policy, reviewerAgentIds: [s.agentId] }).expect(200);
+    expect((await request(s.board).get(`/api/issues/${childId}/delivery-assessment`)).body.canComplete).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, childId)))[0]!.status).toBe("in_review");
+  });
+
+  it("reopens completed work when restoring different linked document bytes", async () => {
+    const s = await verifiedFixture();
+    const first = (await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "First", format: "markdown", body: "Original document bytes" }).expect(201)).body;
+    await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "Second", format: "markdown", body: "Current independently reviewed bytes", baseRevisionId: first.latestRevisionId }).expect(200);
+    await request(s.app).patch(`/api/work-products/${s.productId}`).send({ metadata: { documentId: first.id } }).expect(200);
+    await acceptAll(s);
+    await request(s.board).post(`/api/issues/${s.issueId}/documents/output/revisions/${first.latestRevisionId}/restore`).send({}).expect(200);
+    expect((await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body.canComplete).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+  });
 });
