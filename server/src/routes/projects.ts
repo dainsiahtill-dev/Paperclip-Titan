@@ -597,6 +597,7 @@ export function projectRoutes(db: Db) {
             throw new Error("Workspace job selection is required");
           }
           return await runWorkspaceJobForControl({
+            db,
             actor: {
               id: actor.agentId ?? null,
               name: actor.actorType === "user" ? "Board" : "Agent",

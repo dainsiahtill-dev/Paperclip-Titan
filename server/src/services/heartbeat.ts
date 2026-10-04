@@ -43,7 +43,8 @@ export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { consumeSuppressedRetryResume, listVerifiedRetryHolds, persistRetrySuppression, readVerifiedRetryDisposition, readVerifiedRetrySupersession, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { renderPaperclipWakePrompt, resolvePaperclipInstanceRootForAdapter, withWorkspaceProcessGuard } from "@paperclipai/adapter-utils/server-utils";
+import { workspaceWriteOwnershipService } from "./workspace-write-ownership.js";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -1007,21 +1008,21 @@ export interface SharedWorkspaceHolder {
 // never mutate the same working tree concurrently.
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
-  holder: SharedWorkspaceHolder;
+  holder: SharedWorkspaceHolder | null;
   projectWorkspaceId: string;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
   constructor(input: {
-    holder: SharedWorkspaceHolder;
+    holder: SharedWorkspaceHolder | null;
     projectWorkspaceId: string;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
   }) {
     super(
-      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+      input.holder ? `Shared project workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
-      }) is still running`,
+      }) is still running` : "Physical workspace is busy; its previous writer has not supplied verified namespace drain",
     );
     this.name = "WorkspaceBusyDeferral";
     this.holder = input.holder;
@@ -16361,8 +16362,8 @@ export function heartbeatService(
         },
         workspaceBusy: {
           projectWorkspaceId: deferral.projectWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.holder?.runId ?? null,
+          holderIssueId: deferral.holder?.issueId ?? null,
           deferralAttempt: deferral.deferralAttempt,
         },
       },
@@ -16424,8 +16425,8 @@ export function heartbeatService(
             : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
         payload: {
           projectWorkspaceId: deferral.projectWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.holder?.runId ?? null,
+          holderIssueId: deferral.holder?.issueId ?? null,
           deferralAttempt: deferral.deferralAttempt,
           retryScheduled: scheduleOutcome === "scheduled",
         },
@@ -20404,6 +20405,8 @@ export function heartbeatService(
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
+    const physicalOwnership = workspaceWriteOwnershipService(db);
+    let physicalWorkspaceOwner: Parameters<typeof physicalOwnership.guard>[0] | null = null;
     let resourceDeadline: ReturnType<typeof armIssueRunDeadline> | null = null;
     let resourceStopCode: string | null = null;
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
@@ -21439,6 +21442,15 @@ export function heartbeatService(
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
       }));
+      if (effectiveExecutionWorkspaceMode === "shared_workspace") {
+        const reason = sharedWorkspaceConcurrency === "allow" ? "workspace_write_shared_allow_unsupported"
+          : selectedEnvironmentForConfig?.driver !== "local" ? "workspace_write_shared_remote_unsupported"
+            : !["codex_local", "claude_local", "hermes_local"].includes(agent.adapterType) ? "workspace_write_shared_adapter_unsupported" : null;
+        if (reason) throw new ConfigurationIncompleteFailure(
+          "Protected shared writing requires a supported local legacy adapter and serialize policy. Select a task-owned isolated workspace for parallel work.",
+          { configurationIncomplete: { reason, issueId } },
+        );
+      }
       // A live holder is always consulted for shared workspaces. Depending on policy and the final
       // execution target it either remains the existing deferral gate or becomes dispatch context.
       // Holder staleness and the workspace_busy retry ladder are intentionally unchanged for every
@@ -21458,11 +21470,7 @@ export function heartbeatService(
           const environmentDriver =
             selectedEnvironmentForConfig?.driver ?? null;
           const shouldSerialize =
-            sharedWorkspaceConcurrency === "serialize" ||
-            (sharedWorkspaceConcurrency === "auto" &&
-              (executionForcedToKubernetes ||
-                (environmentDriver !== "local" &&
-                  environmentDriver !== "ssh")));
+            sharedWorkspaceConcurrency !== "allow";
           if (shouldSerialize) {
             throw new WorkspaceBusyDeferral({
               holder: workspaceHolder,
@@ -23409,6 +23417,20 @@ export function heartbeatService(
         });
         let nativeExecution: NativeExecutionInput | null = null;
         let nativeRunnerInstanceId: string | null = null;
+        if (effectiveExecutionWorkspaceMode === "shared_workspace" && (nativeRuntimeResolution.kind === "native" || executionTarget?.kind === "remote")) throw new ConfigurationIncompleteFailure(
+            "Protected shared writing does not support retained native or remote runners. Select a task-owned isolated workspace.",
+            { configurationIncomplete: { reason: "workspace_write_shared_lifetime_unsupported", issueId } },
+          );
+        if (executionTarget?.kind !== "remote") {
+          const guardedWriter = nativeRuntimeResolution.kind === "legacy" && ["codex_local", "claude_local", "hermes_local"].includes(agent.adapterType);
+          const claim = await physicalOwnership.claim({ cwd: executionWorkspace.cwd, companyId: agent.companyId, issueId, runId: run.id, observeUnprotected: !guardedWriter });
+          if (claim.outcome === "busy") throw new WorkspaceBusyDeferral({ holder: null,
+            projectWorkspaceId: issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? run.id,
+            deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
+            wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+          });
+          if (guardedWriter) physicalWorkspaceOwner = claim.owner;
+        }
         if (nativeRuntimeResolution.kind === "native") {
           if (!issueRef) {
             throw new Error("native_runtime_ineligible: issue is required");
@@ -24696,7 +24718,14 @@ export function heartbeatService(
                 (markDispatchStarted) => {
                   runtimeConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, runtimeConfig);
                   legacyAdapterEntered = true;
-                  return adapter.execute({
+                  const instanceRoot = resolvePaperclipInstanceRootForAdapter();
+                  const managedHome = managedAiRuntime ? readNonEmptyString(parseObject(managedAiRuntime.config.env).CODEX_HOME) : null;
+                  const privateRoots = [path.join(instanceRoot, "companies", agent.companyId, "codex-home"),
+                    path.join(instanceRoot, "companies", agent.companyId, "agents", agent.id, "codex-home"),
+                    ...(runScratch ? [runScratch.dir] : []), ...(managedHome ? [managedHome] : [])];
+                  const workspaceProcessGuard = physicalWorkspaceOwner ? physicalOwnership.guard(physicalWorkspaceOwner, executionControl.controller.signal, privateRoots) : undefined;
+                  const executeAdapter = () => adapter.execute({
+                    workspaceProcessGuard,
                     runId: run.id,
                     agent,
                     runtime: runtimeForAdapter,
@@ -24777,6 +24806,7 @@ export function heartbeatService(
                     },
                     authToken: authToken ?? undefined,
                   });
+                  return workspaceProcessGuard ? withWorkspaceProcessGuard(workspaceProcessGuard, executeAdapter) : executeAdapter();
                 },
               );
             if (!guardedDispatch.dispatched) return;
@@ -24825,6 +24855,7 @@ export function heartbeatService(
             }
           }
         } catch (adapterErr) {
+          if (isWorkspaceBusyDeferral(adapterErr) || adapterErr instanceof ConfigurationIncompleteFailure) throw adapterErr;
           if (adapterErr instanceof NativeControllerDetachedForRestartError) {
             // Preserve the provider and its run for the new controller. This
             // also keeps generic teardown from terminalizing/releasing its lease.
@@ -25732,6 +25763,7 @@ export function heartbeatService(
           nativeSessionResumeScheduled = true;
           return;
         }
+        if (isWorkspaceBusyDeferral(err) || err instanceof ConfigurationIncompleteFailure) throw err;
         if (err instanceof NativeRunnerOwnershipUnverifiedError) {
           nativeOwnershipHeld = true;
           const heldRun = await getRun(run.id);
@@ -26470,6 +26502,9 @@ export function heartbeatService(
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
         }
       } finally {
+        if (physicalWorkspaceOwner) await physicalOwnership.releaseIfStopped(physicalWorkspaceOwner).catch(error => {
+          logger.warn({ runId: run.id, err: error }, "Physical workspace ownership retained until exact namespace drain");
+        });
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
         // A failed owned Stop remains visible until this exact executor settles,

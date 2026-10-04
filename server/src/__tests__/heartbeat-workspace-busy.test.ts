@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -45,10 +46,13 @@ import {
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const WORKSPACE_BUSY_TEST_ADAPTER = "workspace_busy_test";
+// Register a private fixture at a supported local lifetime boundary. No real
+// Hermes executable or provider is invoked by these control-plane tests.
+const WORKSPACE_BUSY_TEST_ADAPTER = "hermes_local";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -76,6 +80,7 @@ describe("computeWorkspaceBusyRetryDelayMs", () => {
 });
 
 describeEmbeddedPostgres("shared-workspace run serialization", () => {
+  let physicalReady: (() => void) | undefined;
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -88,11 +93,20 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
     workspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-busy-"));
+    execFileSync("git", ["init", "--quiet", workspaceCwd]);
     registerServerAdapter({
       type: WORKSPACE_BUSY_TEST_ADAPTER,
       execute: async (input) => {
         executedRunIds.push(input.runId);
         executedInputs.set(input.runId, input);
+        if (physicalReady) {
+          expect(input.workspaceProcessGuard).toBeDefined();
+          return runChildProcess(input.runId, "/bin/sh", ["-c", "printf ready; sleep 0.8; printf first > physical-effect"], {
+            cwd: input.workspaceProcessGuard!.root, env: {}, timeoutSec: 2, graceSec: 1,
+            signal: input.signal, onSpawn: input.onSpawn,
+            onLog: async (stream, text) => { await input.onLog(stream, text); if (text.includes("ready")) physicalReady?.(); },
+          });
+        }
         return {
           exitCode: 0,
           signal: null,
@@ -118,6 +132,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       .set({ status: "cancelled", finishedAt: new Date() })
       .where(eq(heartbeatRuns.status, "running"));
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    physicalReady = undefined;
     await cleanupFixture();
     executedRunIds.length = 0;
     executedInputs.clear();
@@ -372,34 +387,9 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     };
   }
 
-  it("auto dispatches alongside a local holder and adds coordination context", async () => {
+  it("auto defers alongside a local holder before provider dispatch", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
-    });
-
-    const run = await heartbeat.invoke(
-      fixture.agentId,
-      "assignment",
-      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
-      "system",
-    );
-    expect(run).not.toBeNull();
-
-    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.status).toBe("succeeded");
-    expect(executedRunIds).toContain(run!.id);
-    expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
-    );
-    expect(executedInputs.get(run!.id)?.context.paperclipTaskMarkdown).toContain(
-      "expect concurrent mutations, coordinate via commits",
-    );
-  });
-
-  it("auto defers when the final environment driver is sandbox", async () => {
-    const fixture = await seedWorkspaceFixture({
-      issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
-      agentEnvironmentDriver: "sandbox",
     });
 
     const run = await heartbeat.invoke(
@@ -415,7 +405,45 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).not.toContain(run!.id);
   });
 
-  it("auto defers when instance policy forces Kubernetes", async () => {
+  it("actual heartbeat launches only one writer for two workspace IDs pointing at the same file", async () => {
+    const fixture = await seedWorkspaceFixture({ holderProjectWorkspaceId: randomUUID() });
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, fixture.holderRunId));
+    await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null }).where(eq(issues.id, fixture.holderIssueId));
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, fixture.holderAgentId));
+    const ready = new Promise<void>(resolve => { physicalReady = resolve; });
+    const first = await heartbeat.invoke(fixture.holderAgentId, "assignment", { issueId: fixture.holderIssueId, wakeReason: "issue_assigned" }, "system");
+    expect(first).not.toBeNull(); await ready;
+    const second = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system");
+    expect(second).not.toBeNull();
+    const deferred = await waitForRunToLeaveActiveStates(second!.id);
+    expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(second!.id);
+    expect((deferred?.resultJson as any)?.workspaceBusy?.holderRunId ?? null).toBeNull();
+    expect((await waitForRunToLeaveActiveStates(first!.id))?.status).toBe("succeeded");
+    expect(await fs.readFile(path.join(workspaceCwd, "physical-effect"), "utf8")).toBe("first");
+  });
+
+  it("refuses unsupported protected sandbox writing before provider dispatch", async () => {
+    const fixture = await seedWorkspaceFixture({
+      issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
+      agentEnvironmentDriver: "sandbox",
+    });
+
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+    expect(finishedRun?.errorCode).toBe("configuration_incomplete");
+    expect(finishedRun?.resultJson).toMatchObject({ configurationIncomplete: { reason: "workspace_write_shared_remote_unsupported" } });
+    expect(executedRunIds).not.toContain(run!.id);
+  });
+
+  it("refuses unsupported protected Kubernetes writing before provider dispatch", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "auto" },
     });
@@ -439,7 +467,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(finishedRun?.errorCode).toBe("configuration_incomplete");
     expect(executedRunIds).not.toContain(run!.id);
   });
 
@@ -461,7 +489,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).not.toContain(run!.id);
   });
 
-  it("allow passes the busy gate for a sandbox environment and adds coordination context", async () => {
+  it("rejects explicit shared allow without rewriting the stored policy", async () => {
     const fixture = await seedWorkspaceFixture({
       issueWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" },
       agentEnvironmentDriver: "sandbox",
@@ -476,11 +504,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
-    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
-    expect(executedRunIds).toContain(run!.id);
-    expect((finishedRun?.contextSnapshot as Record<string, unknown>)?.paperclipTaskMarkdown).toContain(
-      `shared workspace is concurrently held by run ${fixture.holderRunId}`,
-    );
+    expect(finishedRun?.errorCode).toBe("configuration_incomplete");
+    expect(finishedRun?.resultJson).toMatchObject({ configurationIncomplete: { reason: "workspace_write_shared_allow_unsupported" } });
+    expect(executedRunIds).not.toContain(run!.id);
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.executionWorkspaceSettings).toMatchObject({ sharedWorkspaceConcurrency: "allow" });
     const retryRuns = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)

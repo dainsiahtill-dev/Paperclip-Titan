@@ -557,7 +557,11 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
+  await ctx.onCancellationReady?.();
+  ctx.signal?.throwIfAborted();
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+    workspaceProcessGuard: ctx.workspaceProcessGuard,
+    signal: ctx.signal,
     cwd,
     env,
     timeoutSec,

@@ -580,6 +580,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             throw new Error("Execution workspace needs a local path before Paperclip can run workspace commands");
           }
           return await runWorkspaceJobForControl({
+            db,
             actor: {
               id: actor.agentId ?? null,
               name: actor.actorType === "user" ? "Board" : "Agent",

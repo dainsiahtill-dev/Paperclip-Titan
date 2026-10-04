@@ -4657,11 +4657,15 @@ export async function ensureCommandResolvable(
   throw new Error(`Command not found in PATH: "${command}"`);
 }
 
+export { withWorkspaceProcessGuard } from "./workspace-process-guard.js";
+import { currentWorkspaceProcessGuard, runGuardedWorkspaceProcess } from "./workspace-process-guard.js";
+
 export async function runChildProcess(
   runId: string,
   command: string,
   args: string[],
   opts: {
+    workspaceProcessGuard?: import("./workspace-process-guard.js").WorkspaceProcessGuard;
     signal?: AbortSignal;
     cwd: string;
     env: Record<string, string>;
@@ -4680,6 +4684,8 @@ export async function runChildProcess(
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
+  const workspaceGuard = currentWorkspaceProcessGuard() ?? opts.workspaceProcessGuard;
+  if (workspaceGuard) return runGuardedWorkspaceProcess(workspaceGuard, runId, command, args, opts);
   opts.signal?.throwIfAborted();
   const onLogError =
     opts.onLogError ??

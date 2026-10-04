@@ -393,6 +393,17 @@ Migration `0274_agent_chat.sql` adds conversation identity/state and session gen
 
 ## Legacy controller ownership
 
+Migration `0287_aromatic_union_jack.sql` adds `workspace_write_owners` for local
+physical source-directory ownership. Its active unique resource key spans
+company/project aliases; a short realm transaction lock also excludes overlapping
+parent/child roots. The immutable ownership generation, process namespace identity,
+stop receipt and lifecycle history survive controller expiry and entity deletion.
+Company, issue and run identities deliberately have no cascading foreign keys:
+deleting logical records must not admit another writer while a physical process
+may remain. No TTL or terminal-status reclaim is defined. See
+`operations/2026-10-05-workspace-write-ownership.md` for supported adapters,
+unprotected observations and verified-drain requirements.
+
 Legacy run claims atomically record `controller_boot_id`, a database-clock
 `controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
 The lease renews independently of output. A different container must not infer

@@ -403,6 +403,7 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  if (ctx.workspaceProcessGuard && ctx.config.engine !== "cli") throw new Error("Protected shared workspace requires explicit engine=cli; ACP lifetime is unsupported");
   const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
     return {
@@ -417,6 +418,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
   if (engineSelection.engine === "acp") {
+    if (ctx.workspaceProcessGuard) throw new Error("Protected shared workspace does not support the ACP process lifetime");
     return executeClaudeAcp(ctx);
   }
 
@@ -994,6 +996,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+      workspaceProcessGuard: ctx.workspaceProcessGuard,
       cwd,
       env,
       stdin: prompt,

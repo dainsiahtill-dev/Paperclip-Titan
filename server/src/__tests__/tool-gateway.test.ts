@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import { and, eq } from "drizzle-orm";
 import request from "supertest";
@@ -42,6 +45,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
+  workspaceWriteOwners,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
@@ -55,6 +59,7 @@ import {
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
+import { workspaceWriteOwnershipService } from "../services/workspace-write-ownership.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -550,6 +555,9 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Private test DB only; production entity deletion deliberately retains
+    // these safety tombstones. Each completed stdio fixture has drained.
+    await db.delete(workspaceWriteOwners);
     await db.delete(activityLog);
     await db.delete(toolCallEvents);
     await db.delete(toolRuntimeSlots);
@@ -1682,6 +1690,26 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
     });
+  });
+
+  it("refuses a separate HTTP stdio writer before its argv effect when a physical owner holds the root", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pc-stdio-owner-"));
+    try {
+      const company = await createCompany(db), agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const frozen = run.runnerProfileJson as Record<string, any>;
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...frozen, governedStdioV1: { ...frozen.governedStdioV1, cwd } } }).where(eq(heartbeatRuns.id, run.id));
+      const local = await createLocalStdioMcpTool(db, company.id, { applicationKey: "owner-fixture", connectionName: "Owner fixture", toolName: "echo", title: "Fixture",
+        stdioScript: 'require("node:fs").writeFileSync("stdio-effect", "unsafe"); process.exit(0);' });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+      await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: local.catalogEntry.id });
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      expect((await workspaceWriteOwnershipService(db).claim({ cwd, companyId: company.id, runId: run.id })).outcome).toBe("claimed");
+      await expect(gateway.executeTool({ sessionToken: session.token,
+        tool: expectedConnectedToolName({ applicationKey: "owner-fixture", connectionId: local.connection.id, toolName: "echo" }), parameters: {} })).rejects.toMatchObject({ reasonCode: "workspace_write_owner_busy" });
+      expect(await fs.readdir(cwd)).toEqual([]);
+    } finally { await fs.rm(cwd, { recursive: true, force: true }); }
   });
 
   it("passes only approved env values to local stdio MCP processes", async () => {

@@ -88,6 +88,7 @@ import {
 } from "./acpx-engine/startup-timing.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
+import { currentWorkspaceProcessGuard } from "./workspace-process-guard.js";
 import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
@@ -271,6 +272,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
 }
 
 export interface AdapterExecutionTargetProcessOptions {
+  workspaceProcessGuard?: import("./workspace-process-guard.js").WorkspaceProcessGuard;
   signal?: AbortSignal;
   cwd: string;
   env: Record<string, string>;
@@ -859,6 +861,7 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  if ((currentWorkspaceProcessGuard() || options.workspaceProcessGuard) && target?.kind === "remote") throw new Error("Protected local workspace cannot dispatch a remote process");
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
@@ -913,6 +916,7 @@ export async function runAdapterExecutionTargetProcess(
       : options.env;
 
   return await runChildProcess(runId, command, args, {
+    workspaceProcessGuard: options.workspaceProcessGuard,
     signal: options.signal,
     cwd: options.cwd,
     env,
@@ -933,6 +937,7 @@ export async function runAdapterExecutionTargetShellCommand(
   command: string,
   options: AdapterExecutionTargetShellOptions,
 ): Promise<RunProcessResult> {
+  if (currentWorkspaceProcessGuard() && target?.kind === "remote") throw new Error("Protected local workspace cannot dispatch a remote shell");
   const onLog = options.onLog ?? (async () => {});
   if (target?.kind === "remote") {
     const startedAt = new Date().toISOString();

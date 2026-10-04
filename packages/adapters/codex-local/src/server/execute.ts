@@ -569,6 +569,7 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  if (ctx.workspaceProcessGuard && ctx.config.engine !== "cli") throw new Error("Protected shared workspace requires explicit engine=cli; ACP lifetime is unsupported");
   ctx = { ...ctx, config: enforceAgentSafetyPreset("codex_local", ctx.config.sandboxMode === "read-only" ? { safetyPreset: "audit" } : {}, ctx.config) };
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -584,6 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
   if (engineSelection.engine === "acp") {
+    if (ctx.workspaceProcessGuard) throw new Error("Protected shared workspace does not support the ACP process lifetime");
     return executeCodexAcp(ctx);
   }
 
@@ -1338,6 +1340,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          workspaceProcessGuard: ctx.workspaceProcessGuard,
           cwd,
           env,
           stdin: prompt,

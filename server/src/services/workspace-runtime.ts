@@ -8,6 +8,9 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AdapterRuntimeServiceReport } from "@paperclipai/adapter-utils";
 import type { Db } from "@paperclipai/db";
+import { currentWorkspaceProcessGuard, withWorkspaceProcessGuard } from "@paperclipai/adapter-utils/workspace-process-guard";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { workspaceWriteOwnershipService } from "./workspace-write-ownership.js";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
@@ -875,6 +878,18 @@ async function executeProcess(input: {
   stdoutBytes: number;
   stderrBytes: number;
 }> {
+  const guard = currentWorkspaceProcessGuard();
+  if (guard) {
+    const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+    const result = await runChildProcess(randomUUID(), input.command, input.args, { cwd: input.cwd,
+      env: Object.fromEntries(Object.entries(input.env ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+      timeoutSec: 0, graceSec: 1,
+      onLog: async (stream, chunk) => { (stream === "stdout" ? stdout : stderr).append(chunk); },
+    });
+    const out = stdout.finish(), err = stderr.finish();
+    return { stdout: out.text, stderr: err.text, code: result.exitCode, stdoutTruncated: out.truncated, stderrTruncated: err.truncated, stdoutBytes: out.totalBytes, stderrBytes: err.totalBytes };
+  }
   const proc = await new Promise<{
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;
@@ -5022,6 +5037,7 @@ function resolveWorkspaceCommandExecution(input: {
 }
 
 export async function runWorkspaceJobForControl(input: {
+  db: Db;
   actor: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -5041,8 +5057,12 @@ export async function runWorkspaceJobForControl(input: {
     throw new Error(`Workspace job "${resolved.name}" is missing command`);
   }
 
-  await ensureServerWorkspaceLinksCurrent(resolved.cwd);
-  return await recordWorkspaceCommandOperation(input.recorder, {
+  const ownership = workspaceWriteOwnershipService(input.db);
+  const claim = await ownership.claim({ cwd: input.workspace.cwd, companyId: input.actor.companyId, issueId: input.issue?.id, runId: randomUUID() });
+  if (claim.outcome === "busy") throw conflict("Workspace has an undrained physical writer", { code: "workspace_write_owner_busy" });
+  try { return await withWorkspaceProcessGuard(ownership.guard(claim.owner), async () => {
+    await ensureServerWorkspaceLinksCurrent(resolved.cwd);
+    return await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: resolved.command,
     cwd: resolved.cwd,
@@ -5055,6 +5075,7 @@ export async function runWorkspaceJobForControl(input: {
     },
     successMessage: `Completed workspace job "${resolved.name}"\n`,
   });
+  }); } finally { await ownership.releaseIfStopped(claim.owner); }
 }
 
 function resolveServiceScopeId(input: {
@@ -6386,6 +6407,12 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
+    if (currentWorkspaceProcessGuard()) throw conflict("A long-lived uncontained runtime service cannot join a protected writer lifetime", { code: "workspace_write_service_lifetime_unsupported" });
+    if (input.db) {
+      const observation = await workspaceWriteOwnershipService(input.db).claim({ cwd: input.workspace.cwd,
+        companyId: input.agent.companyId, issueId: input.issue?.id, runId: startedByRunId ?? record.id, observeUnprotected: true });
+      if (observation.outcome === "busy") throw conflict("Workspace has an undrained physical writer", { code: "workspace_write_owner_busy" });
+    }
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });

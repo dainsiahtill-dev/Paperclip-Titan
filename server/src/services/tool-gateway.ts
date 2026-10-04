@@ -279,6 +279,8 @@ export interface ToolGatewayDescriptor extends AgentToolDescriptor {
   providerMetadata?: ConnectedMcpGatewayMetadata | Record<string, unknown>;
 }
 
+import { workspaceWriteOwnershipService } from "./workspace-write-ownership.js";
+
 export interface ToolGatewaySession {
   id: string;
   token: string;
@@ -4933,6 +4935,12 @@ export function createToolGatewayService(
         },
       );
     }
+    // HTTP tool calls have no adapter ALS. Register this uncontained lifetime
+    // before spawn; parent-only MCP exit cannot release a source writer hold.
+    const physicalClaim = await workspaceWriteOwnershipService(db).claim({ cwd: profile.cwd,
+      companyId: input.session.companyId, issueId: input.session.issueId,
+      runId: input.session.runId ?? (/^[0-9a-f-]{36}$/i.test(input.session.id) ? input.session.id : randomUUID()), observeUnprotected: true });
+    if (physicalClaim.outcome === "busy") throw new ToolGatewayHttpError(409, "Workspace has an undrained physical writer; writable local stdio cannot join that lifetime.", "workspace_write_owner_busy");
     const child = spawn(input.template.command, input.template.args, {
       cwd: profile.cwd,
       env: input.env,

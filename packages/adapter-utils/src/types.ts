@@ -222,6 +222,8 @@ export interface AdapterLiveSteeringControl {
 }
 
 export interface AdapterExecutionContext {
+  /** Host-owned physical writer capability; never copied into config/context. */
+  workspaceProcessGuard?: import("./workspace-process-guard.js").WorkspaceProcessGuard;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
