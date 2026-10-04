@@ -2,12 +2,25 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { doctor } from "../commands/doctor.js";
 import { writeConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
+const fixtureInstallHome = vi.hoisted(() => ({
+  homeDir: undefined as string | undefined,
+  paperclipHome: undefined as string | undefined,
+}));
+
+vi.mock("../install-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../install-store.js")>();
+  return {
+    ...actual,
+    resolveInstallStorePaths: (options: Parameters<typeof actual.resolveInstallStorePaths>[0] = {}) =>
+      actual.resolveInstallStorePaths({ ...fixtureInstallHome, ...options }),
+  };
+});
 
 async function availablePort(): Promise<number> {
   const server = net.createServer();
@@ -22,6 +35,8 @@ async function availablePort(): Promise<number> {
 
 function createTempConfig(serverPort: number): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-doctor-"));
+  fixtureInstallHome.homeDir = root;
+  fixtureInstallHome.paperclipHome = path.join(root, ".paperclip");
   const configPath = path.join(root, ".paperclip", "config.json");
   const runtimeRoot = path.join(root, "runtime");
 
@@ -88,6 +103,8 @@ function createTempConfig(serverPort: number): string {
 
 describe("doctor", () => {
   beforeEach(() => {
+    fixtureInstallHome.homeDir = undefined;
+    fixtureInstallHome.paperclipHome = undefined;
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -95,6 +112,11 @@ describe("doctor", () => {
   });
 
   afterEach(() => {
+    if (fixtureInstallHome.homeDir) {
+      fs.rmSync(fixtureInstallHome.homeDir, { recursive: true, force: true });
+    }
+    fixtureInstallHome.homeDir = undefined;
+    fixtureInstallHome.paperclipHome = undefined;
     process.env = { ...ORIGINAL_ENV };
   });
 

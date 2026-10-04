@@ -1,6 +1,6 @@
 # UI gate fixture verification — 2026-10-04
 
-Scope: eight UI test files on `3ba9e742de3b775cebbd60e3f24e667fb2699609`, in the isolated `delivery-ui-gates-20261004` worktree. Production UI/server behavior, admission rules, navigation, locale, timeouts, token allowlist, and provider configuration were unchanged.
+First checkpoint scope: eight UI test files on `3ba9e742de3b775cebbd60e3f24e667fb2699609`, in the isolated `delivery-ui-gates-20261004` worktree. Production UI/server behavior, admission rules, navigation, locale, timeouts, token allowlist, and provider configuration were unchanged.
 
 ## Baseline and causes
 
@@ -46,3 +46,13 @@ Full result on Node 24.13.0: **673 files / 6,879 tests** in **425.32 seconds**, 
 Read-only boundary probes preserve all CLI source and assertions: the intended Node 24.21.0 passes all 13 install-store tests without edits; doctor remains failing because the ambient user-home managed shim is found while the isolated Paperclip home lacks its manifest. The unchanged doctor test passes 1/1 with a fresh HOME applied only to that child process (6.24 seconds). Logs: `/tmp/paperclip-cli-boundary-2421-20261004.log` and `/tmp/paperclip-cli-doctor-isolated-home-20261004.log`. The fixture's explicit install-store home/path seam and the full 485-test CLI gate are a separate approved follow-up.
 
 CompanySettings follow-up UI typecheck, token gates, and `git diff --check` all exit 0. No production build/browser check was repeated by this worker.
+
+## Doctor fixture and complete CLI coverage
+
+The approved doctor fixture follow-up binds the real `resolveInstallStorePaths` function through its existing explicit `homeDir` and `paperclipHome` options to the already created per-test configuration root. All other install-store exports, managed-install checks, repair operations, and assertions remain real and unchanged. Its temporary root is removed in teardown. The fixture does not rewrite the ambient HOME or user configuration; there is no install-store production change.
+
+The fixed doctor test passes 1/1 in 6.39 seconds with the ambient HOME retained. The complete CLI source-only lane then passes **62/62 files, 485/485 tests**, **87.34 seconds**, exit 0, with no unhandled errors or skipped tests. Exact Node: `/home/dains/.paperclip/runtime/node-v24.21.0/bin/node`, v24.21.0. Exact PATH: `/home/dains/.paperclip/runtime/node-v24.21.0/bin:/home/dains/.local/bin:/home/dains/.cargo/bin:/usr/local/bin:/usr/bin:/bin`. pnpm is `/mnt/c/Users/dains/AppData/Roaming/npm/pnpm`. Command: `pnpm exec vitest run --exclude '**/dist/**' --project paperclipai --maxWorkers=4 cli/src`. External database/provider keys are unset; Paperclip home/config/instance ID use a new worker-owned `/tmp` scope. Log: `/tmp/paperclip-cli-full-2421-20261004.log`.
+
+Thus the measured broad evidence is all 6,394 UI tests passing in the combined source-only run, followed by all 485 CLI tests passing in the intended Node 24.21 lane. No validations were skipped or timed out to obtain these results.
+
+The optional local CLI typecheck attempt failed because this offline, ignore-scripts workspace lacks the built `@paperclipai/paperclip-runner` and `/live` declarations; server imports report TS2307 and cascading implicit-any errors. There are no doctor-test diagnostics. This worker does not claim a green CLI typecheck or production build. Log: `/tmp/paperclip-cli-doctor-types-20261004.log`. The parent must verify the combined commit in its built workspace before final release qualification.
