@@ -16,6 +16,7 @@ import {
 } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
@@ -43,17 +44,44 @@ const wakeup = vi.hoisted(() =>
     ) => null,
   ),
 );
+const heldServices = vi.hoisted(() => new Set<{ drainActiveRunExecutions(): Promise<void> }>());
+const forbiddenAdapterDispatch = vi.hoisted(() => vi.fn(async () => { throw new Error("Attachment fixture must never dispatch an adapter"); }));
+const forbiddenNativeBackend = vi.hoisted(() => vi.fn(() => { throw new Error("Attachment fixture must never open a provider backend"); }));
+vi.mock("../adapters/index.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../adapters/index.js")>();
+  return { ...actual, getServerAdapter: (type: string) => ({
+    ...actual.getServerAdapter(type),
+    execute: forbiddenAdapterDispatch,
+  }) };
+});
 // Only dispatch is replaced: this fixture exercises real HTTP, DB comment
 // binding, wake construction and private byte staging, but launches no agent.
-vi.mock("../services/heartbeat.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../services/heartbeat.js")>()),
-  heartbeatService: () => ({
-    wakeup,
-    getRun: async () => null,
-    getActiveRunForAgent: async () => null,
-    reportRunActivity: async () => undefined,
-  }),
-}));
+vi.mock("../services/heartbeat.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat.js")>();
+  return { ...actual, heartbeatService: (db: ReturnType<typeof createDb>) => {
+    const held = async () => { throw new Error("Attachment fixture holds dispatch before claim"); };
+    const real = actual.heartbeatService(db, {
+      beforeChatControlRecoveryCheck: held,
+      beforeNativeRuntimeSelection: held,
+      nativeSessionBackendFactory: forbiddenNativeBackend,
+    });
+    heldServices.add(real);
+    return {
+      ...real, wakeup,
+      resumeOrdinaryCommentWakeRequests: async (input: { queueId?: string; issueId?: string } = {}) => {
+        const admitted = await real.resumeOrdinaryCommentWakeRequests(input);
+        const [saved] = input.queueId ? await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId)).limit(1) : [];
+        const receipt = saved?.payload?._ordinaryCommentWake as { pending?: boolean } | undefined;
+        if (saved && receipt?.pending === false) {
+          // Observe actual admission of the persisted request; never synthesize
+          // a receipt or flip its pending marker in this mock.
+          await wakeup(saved.agentId, { contextSnapshot: saved.payload?._paperclipWakeContext as Record<string, unknown> });
+        }
+        return admitted;
+      },
+    };
+  } };
+});
 
 describe("Board upload receipt to native wake staging", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -78,6 +106,10 @@ describe("Board upload receipt to native wake staging", () => {
     );
   }, 90_000);
   afterAll(async () => {
+    await Promise.all([...heldServices].map(service => service.drainActiveRunExecutions()));
+    heldServices.clear();
+    expect(forbiddenAdapterDispatch).not.toHaveBeenCalled();
+    expect(forbiddenNativeBackend).not.toHaveBeenCalled();
     await temporary?.cleanup();
     if (root) await rm(root, { recursive: true, force: true });
   });
@@ -185,6 +217,11 @@ describe("Board upload receipt to native wake staging", () => {
       );
       expect(issue!.status).toBe("todo");
       await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());
+      if (method === "post") {
+        const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `ordinary-comment:${comment!.id}`)).limit(1);
+        expect(saved).toMatchObject({ companyId, agentId, status: "queued", payload: { _ordinaryCommentWake: { pending: false, commentId: comment!.id } } });
+        expect(saved!.runId).not.toBeNull();
+      }
 
       const runId = randomUUID();
       const emitted = wakeup.mock.calls.find(
