@@ -116,6 +116,7 @@ import {
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
+import { RunRetrySupersession } from "../components/RunRetrySupersession";
 import { RunnerInspector } from "../components/RunnerInspector";
 import { HoneycombRunLink } from "../components/HoneycombRunLink";
 import {
@@ -3408,6 +3409,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType: primaryAdapterT
           git workspace it could not validate, wired to the same reconcile / repair / re-issue /
           break-glass handlers as the task detail page. */}
       <RunWorkspaceRecoverySurface run={run} />
+      <RunRetrySupersession run={run} onContinued={(runId, agentId) => navigate(`/agents/${agentId}/runs/${runId}`)} />
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">

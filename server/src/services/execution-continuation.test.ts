@@ -12,6 +12,7 @@ import {
   issueRecoveryActions,
   heartbeatRunEvents,
   workspaceOperations,
+  activityLog,
   issueComments,
   issueThreadInteractions,
   issues,
@@ -178,6 +179,7 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, runId));
         await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
         await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+        await db.delete(activityLog).where(eq(activityLog.entityId, runId));
       }
     });
     it("carries completed managed command observations without certifying engineering verification", async () => {

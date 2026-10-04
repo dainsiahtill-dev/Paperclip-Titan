@@ -1,7 +1,7 @@
 /** Durable, server-owned wait. A configuration toggle is not resume authority. */
 export interface ExecutionRetryDisposition {
   version: 1;
-  state: "blocked" | "resumed";
+  state: "blocked" | "resumed" | "superseded";
   code: "heartbeat_wake_on_demand_disabled";
   sourceRunId: string;
   issueId: string | null;
@@ -14,6 +14,16 @@ export interface ExecutionRetryDisposition {
   recoveryActionId: string | null;
   resumedByUserId?: string;
   successorRunId?: string;
+  supersessionRequestId?: string;
+}
+
+/** A fresh board decision, separately from retrying the original budget/scope. */
+export interface RetrySupersessionRequest {
+  requestId: string;
+  expectedIssueRevision: string;
+  expectedAssigneeAgentId: string;
+  residualObjective: string;
+  maxRunSeconds: number;
 }
 
 /** Observed facts only; no engineering stage is certified from a model summary. */
@@ -35,6 +45,7 @@ export interface ExecutionCheckpointEnvelope {
   commandEvidence: Array<{ operationId: string; runId: string; commandSha256: string; exitCode: number; logSha256: string | null; finishedAt: string }>;
   remainingBudget: {
     reset: false;
+    additionalWallTime?: { requestId: string; maxRunSeconds: number; certification: "operator_authorized" };
     certification: "observed" | "unverified";
     sourceDeadlineAt: string | null;
     remainingWallTimeMs: number | null;

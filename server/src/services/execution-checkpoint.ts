@@ -7,14 +7,16 @@ import { readVerifiedRetryDisposition, retryScopeFingerprints, retrySourceFinger
 import { nativeSha256 } from "./native-runtime/canonical.js";
 
 export async function buildExecutionCheckpoint(db: Db, input: { source: typeof heartbeatRuns.$inferSelect;
-  issue: typeof issues.$inferSelect; agentId: string; completedActions: NonNullable<ExecutionContinuationEnvelope["completedActions"]> }): Promise<ExecutionCheckpointEnvelope> {
+  issue: typeof issues.$inferSelect; agentId: string; completedActions: NonNullable<ExecutionContinuationEnvelope["completedActions"]>;
+  authorizedScope?: { workspaceFingerprint: string; scopeFingerprint: string; requestId: string; maxRunSeconds: number } }): Promise<ExecutionCheckpointEnvelope> {
   const { source, issue } = input;
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, issue.companyId), eq(agents.id, input.agentId)));
   if (!agent) throw new Error("continuation_task_ownership_changed");
   const scope = await retryScopeFingerprints(db, issue, agent);
   const disposition = await readVerifiedRetryDisposition(db, source);
-  if (disposition && (disposition.sourceFingerprint !== retrySourceFingerprint(source) ||
-    disposition.workspaceFingerprint !== scope.workspaceFingerprint || disposition.scopeFingerprint !== scope.scopeFingerprint))
+  const expectedScope = input.authorizedScope ?? disposition;
+  if (expectedScope && (expectedScope.workspaceFingerprint !== scope.workspaceFingerprint || expectedScope.scopeFingerprint !== scope.scopeFingerprint ||
+    (!input.authorizedScope && disposition?.sourceFingerprint !== retrySourceFingerprint(source))))
     throw new Error("continuation_checkpoint_scope_changed");
   const materials = await readContinuationMaterials(db, issue.companyId, issue.id);
   const operations = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, issue.companyId),
@@ -38,6 +40,8 @@ export async function buildExecutionCheckpoint(db: Db, input: { source: typeof h
     commandEvidence: operations.map(row => ({ operationId: row.id, runId: source.id, commandSha256: nativeSha256(row.command),
       exitCode: row.exitCode!, logSha256: row.logSha256, finishedAt: row.finishedAt!.toISOString() })),
     remainingBudget: { reset: false, certification: policies.length && policies.every(policy => policy.unknownUsageCount === 0) ? "observed" : "unverified",
+      ...(input.authorizedScope ? { additionalWallTime: { requestId: input.authorizedScope.requestId,
+        maxRunSeconds: input.authorizedScope.maxRunSeconds, certification: "operator_authorized" as const } } : {}),
       sourceDeadlineAt, remainingWallTimeMs: sourceDeadlineAt ? Math.max(0, Date.parse(sourceDeadlineAt) - Date.now()) : null,
       policies, blockedCode: block?.code ?? null } };
 }

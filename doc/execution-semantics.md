@@ -1008,6 +1008,42 @@ recovers. The failed cleanup keeps the execution hold in place. Retry does not r
 the automatic limit or clean up another task's leases. Provider shutdown must
 still be confirmed before a new conversation is admitted.
 
+### Disabled retry suppression and new remaining-work decisions
+
+A disabled on-demand retry keeps a durable source-scoped wait. Its terminal
+status, artifacts, error, deadline and spent automatic attempts remain recorded.
+The system audit, written in the same transaction as suppression, owns this
+disposition; adapter events and result JSON are display projections and cannot
+create or remove it. Run detail exposes the audit-derived `retryDisposition`
+separately from adapter result data so the operator action survives missing or
+forged result projections. Enabling wakes, editing settings/status, reassignment, and
+ordinary later messages do not automatically retire the wait.
+
+The board's exact-source Retry also supports authenticated, audit-verified
+suppressed `interrupted` and `cancelled` sources. Unverified sources keep their
+existing retry restrictions. Retrying the original scope revalidates current
+owner, task revision, workspace/material scope and physical stop evidence and
+retains its original deadline and attempt counters.
+
+When scope/owner changed or that deadline expired, **Authorize remaining work**
+on the run page lets an operator review the current task and owner, enter a new
+remaining-work objective, and explicitly enter additional wall time. It sends
+`retrySupersession` on the existing board-only exact-retry API, binding a request
+ID, current task revision/assignee, residual objective and wall-time budget.
+Admission snapshots current scope/material/workspace under the task/source
+locks, checks current policies and ownership, and atomically records one user
+decision and one successor. Duplicate requests adopt that successor across
+restart; conflicting or stale decisions return a readable `409`. This decision
+does not reset aggregate tokens, automatic attempts, monthly budgets, or the
+old source's deadline. Unknown physical ownership remains held.
+
+Continuation checkpoints preserve registered material digests, managed command
+observations and pre-existing recorded API receipt references. They do not give
+those API references a new independent authentication boundary or certify
+engineering stage completion from a model summary. Unsupported stages remain
+pending/unverified; the newly authorized wall-time decision is carried
+separately from the old source budget.
+
 ### Explicit Recovery Action
 
 Paperclip opens an explicit recovery action when the system can identify a problem but cannot safely complete the work itself.

@@ -81,16 +81,18 @@ export function readTrustedLegacyUsageCheckpoint(run: Pick<typeof heartbeatRuns.
   };
 }
 
-export async function readIssueResourcePolicies(db: Db, companyId: string, issueId: string) {
+export async function readIssueResourcePolicies(db: Db, companyId: string, issueId: string, lock = false) {
   const policies: Array<{ issueId: string; title: string; status: string; executionState: unknown; monitorPolicy: unknown; limits: IssueResourceLimits }> = [];
   const visited = new Set<string>();
   let current: string | null = issueId;
   while (current) {
     if (visited.has(current) || visited.size >= 100) throw new Error("issue_resource_scope_invalid");
     visited.add(current);
-    const row: Pick<typeof issues.$inferSelect, "id" | "parentId" | "title" | "status" | "executionPolicy" | "executionState"> | null = await db.select({ id: issues.id, parentId: issues.parentId, title: issues.title,
+    const query = db.select({ id: issues.id, parentId: issues.parentId, title: issues.title,
       status: issues.status, executionPolicy: issues.executionPolicy, executionState: issues.executionState })
-      .from(issues).where(and(eq(issues.id, current), eq(issues.companyId, companyId))).limit(1).then((rows) => rows[0] ?? null);
+      .from(issues).where(and(eq(issues.id, current), eq(issues.companyId, companyId))).limit(1);
+    const row: Pick<typeof issues.$inferSelect, "id" | "parentId" | "title" | "status" | "executionPolicy" | "executionState"> | null =
+      await (lock ? query.for("share") : query).then(rows => rows[0] ?? null);
     if (!row) throw new Error("issue_resource_scope_missing");
     const raw = object(row.executionPolicy).resourceLimits;
     if (raw != null) {

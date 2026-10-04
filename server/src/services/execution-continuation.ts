@@ -14,6 +14,7 @@ import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { buildExecutionCheckpoint } from "./execution-checkpoint.js";
+import { readVerifiedRetrySupersession } from "./execution-retry-disposition.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -315,8 +316,11 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  const supersession = sourceRunId && input.runId ? await readVerifiedRetrySupersession(db, companyId, sourceRunId, input.runId) : null;
+  if (supersession && supersession.expectedAssigneeAgentId !== input.agentId) throw new Error("continuation_checkpoint_scope_changed");
   return {
-    ...(sourceRun ? { checkpoint: await buildExecutionCheckpoint(db, { source: sourceRun.run, issue, agentId: input.agentId, completedActions }) } : {}),
+    ...(sourceRun ? { checkpoint: await buildExecutionCheckpoint(db, { source: sourceRun.run, issue, agentId: input.agentId, completedActions,
+      ...(supersession ? { authorizedScope: supersession } : {}) }) } : {}),
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations
@@ -334,7 +338,7 @@ export async function buildExecutionContinuation(input: {
       sourceRunId,
     },
     originCommentIds,
-    objective: latestRequest?.body ?? issue.description ?? issue.title,
+    objective: supersession?.residualObjective ?? latestRequest?.body ?? issue.description ?? issue.title,
     messages,
     interactionOutcomes: interactions
       .filter((row) => row.status !== "pending")

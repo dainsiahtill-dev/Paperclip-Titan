@@ -30,6 +30,7 @@ import type {
   AgentApiKeyScope,
   AgentQuotaFallbackStatus,
   QuotaFallbackBackup,
+  RetrySupersessionRequest,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
@@ -258,6 +259,7 @@ export const agentsApi = {
     id: string,
     failedRunId: string,
     companyId: string,
+    retrySupersession?: RetrySupersessionRequest,
   ) => {
     const result = await api.post<
       AgentWakeupResponse | ChatFailedRunRetryResponse
@@ -266,6 +268,7 @@ export const agentsApi = {
       triggerDetail: "manual",
       reason: "retry_failed_run",
       failedRunId,
+      ...(retrySupersession ? { retrySupersession } : {}),
     });
     if ("id" in result) return { runId: result.id, issueId: null };
     if ("actionId" in result) {

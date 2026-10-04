@@ -39,7 +39,8 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { consumeSuppressedRetryResume, persistRetrySuppression, readVerifiedRetryDisposition, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
+import { consumeSuppressedRetryResume, listVerifiedRetryHolds, persistRetrySuppression, readVerifiedRetryDisposition, readVerifiedRetrySupersession, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
+import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -3641,6 +3642,7 @@ interface WakeupOptions {
   ordinaryCommentWakeRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
+  retrySupersession?: RetrySupersessionRequest;
   durableChatRequest?: DurableChatWakeupRequest;
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -10667,7 +10669,7 @@ export function heartbeatService(
   async function getRun(
     runId: string,
     opts?: { unsafeFullResultJson?: boolean },
-  ) {
+  ): Promise<(typeof heartbeatRuns.$inferSelect & { retryDisposition?: ExecutionRetryDisposition | null }) | null> {
     const safeForLegacyEncoding =
       !opts?.unsafeFullResultJson && (await hasUnsafeTextProjectionDatabase());
     return db
@@ -10680,7 +10682,12 @@ export function heartbeatService(
       )
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+      .then(async (rows) => {
+        const run = rows[0];
+        if (!run) return null;
+        return { ...run, retryDisposition: ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+          ? await readVerifiedRetryDisposition(db, run) : null };
+      });
   }
 
   async function recordCurrentHeartbeatRunRuntimeProgress(
@@ -20293,8 +20300,9 @@ export function heartbeatService(
     }
 
     let legacyAdapterEntered = false;
-    let run = await getRun(runId);
-    if (!run) return;
+    const initialExecutionRun = await getRun(runId);
+    if (!initialExecutionRun) return;
+    let run = initialExecutionRun;
     if (run.status !== "queued" && run.status !== "running") return;
 
     if (run.status === "queued") {
@@ -20550,7 +20558,10 @@ export function heartbeatService(
       const resourcePolicies = issueId ? await readIssueResourcePolicies(db, agent.companyId, issueId) : [];
       const runSeconds = resourcePolicies.flatMap((policy) => policy.limits.maxRunSeconds ? [policy.limits.maxRunSeconds] : []);
       const runTokenCaps = resourcePolicies.flatMap((policy) => policy.limits.maxTokensPerRun ? [policy.limits.maxTokensPerRun] : []);
-      const maxRunSeconds = runSeconds.length ? Math.min(...runSeconds) : null;
+      const budgetSourceRunId = run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId);
+      const authorizedSupersession = budgetSourceRunId ? await readVerifiedRetrySupersession(db, run.companyId, budgetSourceRunId, run.id) : null;
+      const policyRunSeconds = runSeconds.length ? Math.min(...runSeconds) : null;
+      const maxRunSeconds = authorizedSupersession ? Math.min(policyRunSeconds ?? authorizedSupersession.maxRunSeconds, authorizedSupersession.maxRunSeconds) : policyRunSeconds;
       const maxRunTokens = runTokenCaps.length ? Math.min(...runTokenCaps) : null;
       if (maxRunSeconds) {
         const prior = parseObject(context.resourceDeadline);
@@ -20563,7 +20574,7 @@ export function heartbeatService(
         const inheritedDeadline = typeof inherited.deadlineAt === "string" && Number.isFinite(Date.parse(inherited.deadlineAt))
           ? Date.parse(inherited.deadlineAt) : null;
         const deadlineAt = prior.runId === run.id && typeof prior.deadlineAt === "string" && Number.isFinite(Date.parse(prior.deadlineAt))
-          ? Date.parse(prior.deadlineAt) : inheritedDeadline ?? (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
+          ? Date.parse(prior.deadlineAt) : (!authorizedSupersession ? inheritedDeadline : null) ?? (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
         context.resourceDeadline = { runId: run.id, deadlineAt: new Date(deadlineAt).toISOString(), maxRunSeconds };
         resourceDeadline = armIssueRunDeadline({ deadlineAt, stop: async () => {
           if (!executionControl.controller.signal.aborted) {
@@ -26623,10 +26634,12 @@ export function heartbeatService(
 
     if (opts.failedRunId) {
       const failed = await getRun(opts.failedRunId);
+      const verifiedSuppression = failed ? await readVerifiedRetryDisposition(db, failed) : null;
       if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
           reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
-          !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
-          !["failed", "timed_out"].includes(failed.status) ||
+          !failed || failed.companyId !== agent.companyId || (!opts.retrySupersession && failed.agentId !== agentId) ||
+          !(["failed", "timed_out"].includes(failed.status) ||
+            (["interrupted", "cancelled"].includes(failed.status) && verifiedSuppression)) ||
           (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId) {
         throw conflict("The selected failed run cannot be retried for this task.");
       }
@@ -27355,7 +27368,7 @@ export function heartbeatService(
 
           const suppressedResume = opts.failedRunId ? await validateSuppressedRetryResume(tx as unknown as Db, {
             companyId: issue.companyId, issueId: issue.id, agentId, sourceRunId: opts.failedRunId,
-            actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason }) : null;
+            actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason, retrySupersession: opts.retrySupersession }) : null;
           if (opts.failedRunId) {
             // The issue lock makes double-clicks and network retries adopt the
             // same successor, including after it has already finished.
@@ -27366,12 +27379,9 @@ export function heartbeatService(
             )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
           }
-          const suppressedCandidates = await tx.select().from(heartbeatRuns).where(and(
-            eq(heartbeatRuns.companyId, issue.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
-            sql`${heartbeatRuns.resultJson}->'retryDisposition'->>'state' = 'blocked'`,
-          ));
-          for (const suppressedSource of suppressedCandidates) {
-            if (opts.failedRunId !== suppressedSource.id && await readVerifiedRetryDisposition(tx as unknown as Db, suppressedSource))
+          const suppressedCandidates = await listVerifiedRetryHolds(tx as unknown as Db, issue.companyId, issue.id);
+          for (const { source: suppressedSource } of suppressedCandidates) {
+            if (opts.failedRunId !== suppressedSource.id)
               return { kind: "skipped" as const };
           }
 
@@ -28329,7 +28339,7 @@ export function heartbeatService(
           if (suppressedResume) {
             enrichedContextSnapshot.retryOfRunId = suppressedResume.source.id;
             const deadline = parseObject(suppressedResume.source.contextSnapshot?.resourceDeadline);
-            if (typeof deadline.deadlineAt === "string") enrichedContextSnapshot.resourceDeadline = { ...deadline, runId: explicitContinuationRunId };
+            if (!suppressedResume.supersession && typeof deadline.deadlineAt === "string") enrichedContextSnapshot.resourceDeadline = { ...deadline, runId: explicitContinuationRunId };
           }
 
           const requestValues = {
@@ -28448,7 +28458,7 @@ export function heartbeatService(
 
           if (opts.failedRunId && suppressedResume) {
             await consumeSuppressedRetryResume(tx as unknown as Db, suppressedResume.source, suppressedResume.disposition,
-              opts.requestedByActorId!, newRun.id);
+              opts.requestedByActorId!, newRun.id, suppressedResume.supersession);
           }
 
           await tx

@@ -154,6 +154,8 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  /** Server-audit projection; adapter result JSON cannot supply this authority. */
+  retryDisposition?: import("./execution-continuation.js").ExecutionRetryDisposition | null;
   execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;

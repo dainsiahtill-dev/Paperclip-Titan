@@ -12,6 +12,7 @@ import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { readVerifiedRetryDisposition } from "../services/execution-retry-disposition.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
@@ -5762,6 +5763,7 @@ export function agentRoutes(
     }
 
     let wakePayload = req.body.payload ?? null;
+    if (req.body.retrySupersession && !req.body.failedRunId) throw badRequest("A remaining-work decision must name the exact suppressed source run.");
     if (req.body.failedRunId) {
       assertBoard(req);
       if (
@@ -5779,11 +5781,13 @@ export function agentRoutes(
       if (
         !failedRun ||
         failedRun.companyId !== agent.companyId ||
-        failedRun.agentId !== agent.id
+        (!req.body.retrySupersession && failedRun.agentId !== agent.id)
       ) {
         throw notFound("Failed run not found");
       }
-      if (!["failed", "timed_out"].includes(failedRun.status)) {
+      if (!["failed", "timed_out"].includes(failedRun.status) &&
+        !(["interrupted", "cancelled"].includes(failedRun.status) &&
+          await readVerifiedRetryDisposition(db, failedRun))) {
         throw conflict("Only a failed run can be retried.");
       }
       const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
@@ -5822,6 +5826,7 @@ export function agentRoutes(
             .then((rows) => rows[0])
         : null;
       if (chatBinding) {
+        if (req.body.retrySupersession) throw conflict("This connected chat requires its existing authorized chat recovery path.");
         if (!options.chatRunRetries || !req.actor.userId) {
           throw conflict("Chat retry authorization is unavailable.", {
             code: "chat_failed_run_retry_requires_authorized_context",
@@ -5874,6 +5879,7 @@ export function agentRoutes(
     }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
+      retrySupersession: req.body.retrySupersession,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",

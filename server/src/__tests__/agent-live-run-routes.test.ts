@@ -221,6 +221,9 @@ function createFailedChatRetryDb(chatBound = true) {
       predicates.push(new PgDialect().sqlToQuery(condition));
       return query;
     }),
+    // These route fixtures have no server suppression authority. Ordered audit
+    // reads must model an empty real result rather than an incomplete builder.
+    orderBy: vi.fn(async () => []),
     limit: vi.fn(async () => (chatBound ? [{ id: "chat-conversation" }] : [])),
   };
   const tx = { transactionMarker: "exact-retry-transaction" };

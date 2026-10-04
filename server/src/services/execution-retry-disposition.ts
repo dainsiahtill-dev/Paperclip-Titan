@@ -1,7 +1,7 @@
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { agents, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, projectWorkspaces, type Db } from "@paperclipai/db";
-import type { ExecutionRetryDisposition } from "@paperclipai/shared";
+import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { conflict } from "../errors.js";
@@ -9,32 +9,67 @@ import { getConversationOwnershipBlocker } from "./conversation-continuation.js"
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { readContinuationMaterials } from "./continuation-materials.js";
+import { readIssueResourcePolicies } from "./issue-resource-limits.js";
 
 const dispositionSchema = z.object({
-  version: z.literal(1), state: z.enum(["blocked", "resumed"]),
+  version: z.literal(1), state: z.enum(["blocked", "resumed", "superseded"]),
   code: z.literal("heartbeat_wake_on_demand_disabled"), sourceRunId: z.string().uuid(),
   issueId: z.string().uuid().nullable(), agentId: z.string().uuid(), issueRevision: z.string().nullable(),
   sourceFingerprint: z.string(), workspaceFingerprint: z.string(), scopeFingerprint: z.string(),
   requiresExplicitResume: z.literal(true), recoveryActionId: z.string().uuid().nullable(),
   resumedByUserId: z.string().optional(), successorRunId: z.string().uuid().optional(),
+  supersessionRequestId: z.string().uuid().optional(),
 });
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export function readRetryDisposition(result: unknown): ExecutionRetryDisposition | null {
   const parsed = dispositionSchema.safeParse(object(result).retryDisposition);
   return parsed.success ? parsed.data : null;
 }
-/** A provider-shaped JSON value cannot mint a server suppression or resume decision. */
+/** System audit is the producer boundary; run events and result JSON are projections. */
 export async function readVerifiedRetryDisposition(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "resultJson">) {
-  const disposition = readRetryDisposition(run.resultJson);
-  if (!disposition || disposition.sourceRunId !== run.id || disposition.agentId !== run.agentId) return null;
-  const { resumedByUserId: _, successorRunId: __, ...original } = disposition;
-  const [receipt] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.agentId, run.agentId),
-    eq(heartbeatRunEvents.eventType, "lifecycle"), eq(heartbeatRunEvents.stream, "system"),
-    isNull(heartbeatRunEvents.sourceEventId), isNull(heartbeatRunEvents.sourceInstanceId), isNull(heartbeatRunEvents.sourceSeq),
-    sql`${heartbeatRunEvents.payload} @> ${JSON.stringify({ retrySuppression: { ...original, state: "blocked" } })}::jsonb`,
-  )).limit(1);
-  return receipt ? disposition : null;
+  const records = await db.select().from(activityLog).where(and(eq(activityLog.companyId, run.companyId),
+    eq(activityLog.entityType, "heartbeat_run"), eq(activityLog.entityId, run.id),
+    inArray(activityLog.action, ["issue.retry_suppressed", "issue.retry_resumed", "issue.retry_superseded"])))
+    .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+  const original = records.find(record => record.action === "issue.retry_suppressed" && record.actorType === "system" && record.actorId === "heartbeat");
+  const suppressed = readRetryDisposition({ retryDisposition: original?.details?.retryDisposition });
+  if (!suppressed || suppressed.sourceRunId !== run.id || suppressed.agentId !== run.agentId || suppressed.state !== "blocked") return null;
+  for (const record of records) {
+    if (record.actorType !== "user" || !record.actorId.trim() || record.action === "issue.retry_suppressed") continue;
+    const decision = readRetryDisposition({ retryDisposition: record.details?.retryDisposition });
+    if (decision && decision.sourceRunId === suppressed.sourceRunId && decision.sourceFingerprint === suppressed.sourceFingerprint &&
+      record.details?.suppressionAuditId === original!.id) return decision;
+  }
+  return suppressed;
+}
+
+export async function listVerifiedRetryHolds(db: Db, companyId: string, issueId: string) {
+  const sources = await db.select({ run: heartbeatRuns }).from(heartbeatRuns).innerJoin(activityLog, and(
+    eq(activityLog.companyId, heartbeatRuns.companyId), eq(activityLog.entityId, sql`${heartbeatRuns.id}::text`),
+    eq(activityLog.entityType, "heartbeat_run"), eq(activityLog.action, "issue.retry_suppressed"),
+    eq(activityLog.actorType, "system"), eq(activityLog.actorId, "heartbeat")))
+    .where(and(eq(heartbeatRuns.companyId, companyId), sql`${activityLog.details}->'retryDisposition'->>'issueId' = ${issueId}`));
+  const held: Array<{ source: typeof heartbeatRuns.$inferSelect; disposition: ExecutionRetryDisposition }> = [];
+  for (const { run } of sources) {
+    const disposition = await readVerifiedRetryDisposition(db, run);
+    if (disposition?.state === "blocked") held.push({ source: run, disposition });
+  }
+  return held;
+}
+
+type SupersessionDecision = RetrySupersessionRequest & { sourceRunId: string; successorRunId?: string; requestFingerprint: string;
+  workspaceFingerprint: string; scopeFingerprint: string };
+export async function readVerifiedRetrySupersession(db: Db, companyId: string, sourceRunId: string, successorRunId: string) {
+  const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceRunId)));
+  if (!source) return null;
+  const disposition = await readVerifiedRetryDisposition(db, source);
+  if (disposition?.state !== "superseded" || disposition.successorRunId !== successorRunId) return null;
+  const records = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "heartbeat_run"),
+    eq(activityLog.entityId, sourceRunId), eq(activityLog.action, "issue.retry_superseded"), eq(activityLog.actorType, "user")))
+    .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+  const decision = records.map(record => object(record.details?.retrySupersession) as unknown as SupersessionDecision)
+    .find(value => value.sourceRunId === sourceRunId && value.successorRunId === successorRunId && value.requestId === disposition.supersessionRequestId);
+  return decision && typeof decision.residualObjective === "string" && Number.isSafeInteger(decision.maxRunSeconds) && decision.maxRunSeconds > 0 ? decision : null;
 }
 export function retrySourceFingerprint(run: typeof heartbeatRuns.$inferSelect) {
   const { retryDisposition: _, ...result } = object(run.resultJson);
@@ -42,13 +77,19 @@ export function retrySourceFingerprint(run: typeof heartbeatRuns.$inferSelect) {
     error: run.error, errorCode: run.errorCode, context: run.contextSnapshot, result, logSha256: run.logSha256,
     scheduledRetryAttempt: run.scheduledRetryAttempt, usage: run.usageJson });
 }
-export async function retryScopeFingerprints(db: Db, issue: typeof issues.$inferSelect | null, agent: typeof agents.$inferSelect) {
-  const projectRows = issue?.projectId ? await db.select().from(projectWorkspaces)
+export async function retryScopeFingerprints(db: Db, issue: typeof issues.$inferSelect | null, agent: typeof agents.$inferSelect, lock = false) {
+  const projectQuery = issue?.projectId ? db.select().from(projectWorkspaces)
     .where(and(eq(projectWorkspaces.companyId, agent.companyId), eq(projectWorkspaces.projectId, issue.projectId)))
-    .orderBy(asc(projectWorkspaces.id)) : [];
-  const execution = issue?.executionWorkspaceId ? await db.select().from(executionWorkspaces)
-    .where(and(eq(executionWorkspaces.companyId, agent.companyId), eq(executionWorkspaces.id, issue.executionWorkspaceId))) : [];
+    .orderBy(asc(projectWorkspaces.id)) : null;
+  const projectRows = projectQuery ? await (lock ? projectQuery.for("share") : projectQuery) : [];
+  const executionQuery = issue?.executionWorkspaceId ? db.select().from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, agent.companyId), eq(executionWorkspaces.id, issue.executionWorkspaceId))) : null;
+  const execution = executionQuery ? await (lock ? executionQuery.for("share") : executionQuery) : [];
+  const policyQuery = issue?.projectId ? db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
+    .where(and(eq(projects.companyId, agent.companyId), eq(projects.id, issue.projectId))) : null;
+  const projectPolicy = policyQuery ? await (lock ? policyQuery.for("share") : policyQuery) : [];
   const workspaceFingerprint = nativeSha256({ projectId: issue?.projectId ?? null,
+    projectPolicy: projectPolicy[0]?.policy ?? null,
     projectWorkspaceId: issue?.projectWorkspaceId ?? null, executionWorkspaceId: issue?.executionWorkspaceId ?? null,
     preference: issue?.executionWorkspacePreference ?? null, settings: issue?.executionWorkspaceSettings ?? null,
     projectRows: projectRows.map(({ id, cwd, repoUrl, repoRef, defaultRef, sourceType, remoteProvider, remoteWorkspaceRef, metadata }) =>
@@ -60,7 +101,8 @@ export async function retryScopeFingerprints(db: Db, issue: typeof issues.$infer
     title: issue?.title ?? null, description: issue?.description ?? null, parentId: issue?.parentId ?? null,
     goalId: issue?.goalId ?? null, executionPolicy: issue?.executionPolicy ?? null,
     overrides: issue?.assigneeAdapterOverrides ?? null, sessionGeneration: issue?.conversationSessionGeneration ?? null,
-    materials: issue ? await readContinuationMaterials(db, agent.companyId, issue.id) : [] });
+    resourcePolicies: issue ? (await readIssueResourcePolicies(db, agent.companyId, issue.id, lock)).map(({ issueId, limits }) => ({ issueId, limits })) : [],
+    materials: issue ? await readContinuationMaterials(db, agent.companyId, issue.id, lock) : [] });
   return { workspaceFingerprint, scopeFingerprint };
 }
 
@@ -107,7 +149,7 @@ export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.
       eventType: "lifecycle", stream: "system", level: "warn", message: reason, payload: { retrySuppression: disposition } });
     await persistActivity(lockedDb, { companyId: source.companyId, actorType: "system", actorId: "heartbeat",
       action: "issue.retry_suppressed", entityType: "heartbeat_run", entityId: source.id, issueId,
-      details: { sourceRunId: source.id, recoveryActionId, code: disposition.code } });
+      details: { sourceRunId: source.id, recoveryActionId, code: disposition.code, retryDisposition: disposition } });
     return disposition;
   });
 }
@@ -116,20 +158,34 @@ export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.
 export async function validateSuppressedRetryResume(db: Db, input: {
   companyId: string; issueId: string; agentId: string; sourceRunId: string;
   actorType?: string | null; actorId?: string | null; reason: string | null;
-}) {
+  retrySupersession?: RetrySupersessionRequest;
+}): Promise<{ source: typeof heartbeatRuns.$inferSelect; disposition: ExecutionRetryDisposition; supersession?: SupersessionDecision } | null> {
   const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.sourceRunId))).for("update");
   const disposition = source ? await readVerifiedRetryDisposition(db, source) : null;
-  if (!disposition) return null;
+  if (!disposition) {
+    if (input.retrySupersession) throw conflict("This source has no server-owned suppressed work to supersede.");
+    return null;
+  }
   const [issue] = await db.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
   if (input.actorType !== "user" || !input.actorId || input.reason !== "retry_failed_run" ||
-    !source || source.agentId !== input.agentId || disposition.sourceRunId !== source.id || disposition.issueId !== input.issueId ||
+    !source || (!input.retrySupersession && source.agentId !== input.agentId) || disposition.sourceRunId !== source.id || disposition.issueId !== input.issueId ||
     !issue || issue.hiddenAt || issue.assigneeAgentId !== input.agentId || ["done", "cancelled"].includes(issue.status) || !agent)
     throw conflict("The suppressed retry no longer belongs to this current task and owner.", { code: "retry_resume_scope_changed" });
-  if (disposition.state === "resumed") return { source, disposition };
+  if (disposition.state === "resumed") {
+    if (input.retrySupersession) throw conflict("The original retry already has a successor; this is not a new-work decision.");
+    return { source, disposition };
+  }
+  if (disposition.state === "superseded") {
+    const prior = disposition.successorRunId ? await readVerifiedRetrySupersession(db, input.companyId, source.id, disposition.successorRunId) : null;
+    if (!input.retrySupersession || !prior || prior.requestFingerprint !== nativeSha256(input.retrySupersession))
+      throw conflict("This source already has a different authorized successor.", { code: "retry_supersession_conflict" });
+    return { source, disposition, supersession: prior };
+  }
   const scope = await retryScopeFingerprints(db, issue, agent);
-  if (disposition.issueRevision !== issue.updatedAt.toISOString() || disposition.sourceFingerprint !== retrySourceFingerprint(source) ||
+  if (!input.retrySupersession && (disposition.issueRevision !== issue.updatedAt.toISOString() || disposition.sourceFingerprint !== retrySourceFingerprint(source) ||
     disposition.workspaceFingerprint !== scope.workspaceFingerprint || disposition.scopeFingerprint !== scope.scopeFingerprint)
+    )
     throw conflict("The source or task scope changed. Review and authorize a new remaining-work decision before resuming.", { code: "retry_resume_scope_changed" });
   if (object(object(agent.runtimeConfig).heartbeat).wakeOnDemand === false)
     throw conflict("Enable on-demand wakes before explicitly retrying this source run.", { code: disposition.code });
@@ -144,15 +200,36 @@ export async function validateSuppressedRetryResume(db: Db, input: {
   if (activeAction.some(action => action.id !== disposition.recoveryActionId))
     throw conflict("Another recovery incident owns this task's next action.", { code: "retry_resume_other_incident" });
   const deadline = object(source.contextSnapshot?.resourceDeadline).deadlineAt;
-  if (typeof deadline === "string" && Number.isFinite(Date.parse(deadline)) && Date.parse(deadline) <= Date.now())
+  if (!input.retrySupersession && typeof deadline === "string" && Number.isFinite(Date.parse(deadline)) && Date.parse(deadline) <= Date.now())
     throw conflict("The original run deadline is exhausted. Pending verification and reporting require a newly authorized budget.", { code: "retry_resume_budget_exhausted" });
+  if (input.retrySupersession) {
+    const request = input.retrySupersession;
+    if (request.expectedIssueRevision !== issue.updatedAt.toISOString() || request.expectedAssigneeAgentId !== issue.assigneeAgentId)
+      throw conflict("The task changed. Refresh its current scope and owner before authorizing remaining work.", { code: "retry_supersession_stale" });
+    const caps = (await readIssueResourcePolicies(db, input.companyId, issue.id)).flatMap(policy => policy.limits.maxRunSeconds ? [policy.limits.maxRunSeconds] : []);
+    if (!Number.isSafeInteger(request.maxRunSeconds) || request.maxRunSeconds <= 0 || request.maxRunSeconds > 604800 ||
+      (caps.length && request.maxRunSeconds > Math.min(...caps))) throw conflict("The additional wall-time budget exceeds the current task policy.", { code: "retry_supersession_budget_invalid" });
+    return { source, disposition, supersession: { ...request, ...scope, sourceRunId: source.id, requestFingerprint: nativeSha256(request) } };
+  }
   return { source, disposition };
 }
 
 export async function consumeSuppressedRetryResume(db: Db, source: typeof heartbeatRuns.$inferSelect,
-  disposition: ExecutionRetryDisposition, actorId: string, successorRunId: string) {
+  disposition: ExecutionRetryDisposition, actorId: string, successorRunId: string, supersession?: SupersessionDecision) {
   if (disposition.state !== "blocked") throw conflict("This suppressed source already has a successor.");
-  const resumed: ExecutionRetryDisposition = { ...disposition, state: "resumed", resumedByUserId: actorId, successorRunId };
+  if (supersession) {
+    const [currentIssue] = await db.select().from(issues).where(and(eq(issues.companyId, source.companyId), eq(issues.id, disposition.issueId!)));
+    const [currentAgent] = await db.select().from(agents).where(and(eq(agents.companyId, source.companyId), eq(agents.id, supersession.expectedAssigneeAgentId))).for("share");
+    if (!currentIssue || !currentAgent || currentIssue.assigneeAgentId !== currentAgent.id || ["done", "cancelled"].includes(currentIssue.status))
+      throw conflict("The current task owner changed before the decision committed.", { code: "retry_supersession_stale" });
+    // Lock registered DB material/config/policy versions until commit. This is
+    // not a filesystem lease; dispatch still revalidates before provider work.
+    const currentScope = await retryScopeFingerprints(db, currentIssue, currentAgent, true);
+    if (currentScope.scopeFingerprint !== supersession.scopeFingerprint || currentScope.workspaceFingerprint !== supersession.workspaceFingerprint)
+      throw conflict("The scope changed before the decision committed. Refresh and authorize the current remaining work.", { code: "retry_supersession_stale" });
+  }
+  const resumed: ExecutionRetryDisposition = { ...disposition, state: supersession ? "superseded" : "resumed", resumedByUserId: actorId, successorRunId,
+    ...(supersession ? { supersessionRequestId: supersession.requestId } : {}) };
   await db.update(heartbeatRuns).set({ resultJson: { ...object(source.resultJson), retryDisposition: resumed }, updatedAt: new Date() })
     .where(and(eq(heartbeatRuns.companyId, source.companyId), eq(heartbeatRuns.id, source.id)));
   if (disposition.recoveryActionId) await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date(), updatedAt: new Date(),
@@ -160,7 +237,11 @@ export async function consumeSuppressedRetryResume(db: Db, source: typeof heartb
     evidence: { sourceRunId: source.id, retryDisposition: resumed }, wakePolicy: null })
     .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, disposition.recoveryActionId),
       eq(issueRecoveryActions.sourceIssueId, disposition.issueId!), eq(issueRecoveryActions.fingerprint, source.id), eq(issueRecoveryActions.cause, "retry_suppressed")));
-  await persistActivity(db, { companyId: source.companyId, actorType: "user", actorId, action: "issue.retry_resumed",
+  await persistActivity(db, { companyId: source.companyId, actorType: "user", actorId, action: supersession ? "issue.retry_superseded" : "issue.retry_resumed",
     entityType: "heartbeat_run", entityId: source.id, issueId: disposition.issueId,
-    details: { sourceRunId: source.id, successorRunId, recoveryActionId: disposition.recoveryActionId } });
+    details: { sourceRunId: source.id, successorRunId, recoveryActionId: disposition.recoveryActionId, retryDisposition: resumed,
+      ...(supersession ? { retrySupersession: { ...supersession, successorRunId } } : {}),
+      suppressionAuditId: (await db.select({ id: activityLog.id }).from(activityLog).where(and(eq(activityLog.companyId, source.companyId),
+        eq(activityLog.entityId, source.id), eq(activityLog.entityType, "heartbeat_run"), eq(activityLog.action, "issue.retry_suppressed"),
+        eq(activityLog.actorType, "system"), eq(activityLog.actorId, "heartbeat"))).limit(1))[0]?.id } });
 }

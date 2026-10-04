@@ -223,6 +223,9 @@ export const wakeAgentSchema = z.object({
   reason: z.string().optional().nullable(),
   /** Select an exact failed run; its chat request and actor are server-derived. */
   failedRunId: z.string().uuid().optional(),
+  retrySupersession: z.object({ requestId: z.string().uuid(), expectedIssueRevision: z.string().datetime(),
+    expectedAssigneeAgentId: z.string().uuid(), residualObjective: z.string().trim().min(20).max(12000),
+    maxRunSeconds: z.number().int().positive().max(604800) }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
