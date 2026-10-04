@@ -1646,7 +1646,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <option value="">Custom</option>
               {AGENT_SAFETY_PRESETS.map((preset) => <option key={preset} value={preset} disabled={preset === "audit" && adapterType !== "codex_local"}>{preset === "audit" ? "Audit (Codex CLI only)" : preset.charAt(0).toUpperCase() + preset.slice(1)}</option>)}
             </select>
-            <p className="text-xs text-muted-foreground">Audit: read-only source files. Implementation/testing: serialize shared workspace runs. Current concurrency: {Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS)}.</p>
+            <p className="text-xs text-muted-foreground">Audit: source files inside the Codex sandbox are read-only; external tools keep separate permissions. Implementation/testing: serialize shared workspace runs. Current concurrency: {Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS)}.</p>
           </Field>}
           {showAdapterTypeField && (
             <Field label={v3t("agentConfig.adapterType")} hint={help.adapterType}>

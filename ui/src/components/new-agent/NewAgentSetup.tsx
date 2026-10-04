@@ -816,7 +816,7 @@ function Setup({
                             {AGENT_SAFETY_PRESETS.map((preset) => <option key={preset} value={preset} disabled={preset === "audit" && adapterType !== "codex_local"}>{preset === "audit" ? "Audit (Codex CLI only)" : preset.charAt(0).toUpperCase() + preset.slice(1)}</option>)}
                           </select>
                           <p id="agent-safety-policy" className="text-sm text-muted-foreground">
-                            {safetyPreset === "audit" ? "Read-only source files; Codex CLI permission profile. Native and ACP are unsupported." : safetyPreset === "implementation" || safetyPreset === "testing" ? "Writable workspace; shared workspace runs serialize. Project isolation stays in effect." : "Workspace policy follows the project. Control-plane permissions stay unchanged."} Concurrent runs: 1.
+                            {safetyPreset === "audit" ? "Read-only source files inside the Codex sandbox. External tools keep their own permissions. Native and ACP are unsupported." : safetyPreset === "implementation" || safetyPreset === "testing" ? "Writable workspace; shared workspace runs serialize. Project isolation stays in effect." : "Workspace policy follows the project. Control-plane permissions stay unchanged."} Concurrent runs: 1.
                           </p>
                         </Field>
                         {aiProviderForAdapter(brandType) && (
