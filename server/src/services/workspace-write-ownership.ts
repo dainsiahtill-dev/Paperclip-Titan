@@ -10,9 +10,12 @@ export type WorkspaceOwnerHandle = Pick<Owner, "id" | "companyId" | "runId" | "g
 const overlaps = (a: string, b: string) => { const rel = path.relative(a, b); return !rel || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)); };
 const privateResources = (owner: Owner) => owner.history.flatMap(event => event.event === "private_roots_reserved" && Array.isArray(event.roots)
   ? event.roots as Array<{ root: string; resourceKey: string }> : []);
-const ownerResources = (owner: Owner) => [{ root: owner.canonicalRoot, resourceKey: owner.resourceKey }, ...privateResources(owner),
-  ...owner.history.flatMap(event => event.kind === "UNPROTECTED_SERVICE" && Array.isArray(event.roots) ? event.roots as Array<{ root: string; resourceKey: string }> : [])];
-const resourceConflict = (owner: Owner, root: { root: string; resourceKey: string }) => ownerResources(owner).some(held => held.resourceKey === root.resourceKey || overlaps(held.root, root.root) || overlaps(root.root, held.root));
+const serviceResources = (owner: Owner) => owner.history.flatMap(event => event.kind === "UNPROTECTED_SERVICE" && Array.isArray(event.roots) ? event.roots as Array<{ root: string; resourceKey: string }> : []);
+type Resource = { root: string; resourceKey: string };
+const sameResource = (a: Resource, b: Resource) => a.root === b.root && a.resourceKey === b.resourceKey;
+const rootsConflict = (a: Resource, b: Resource) => a.resourceKey === b.resourceKey || overlaps(a.root, b.root) || overlaps(b.root, a.root);
+const ownerResources = (owner: Owner) => [{ root: owner.canonicalRoot, resourceKey: owner.resourceKey }, ...privateResources(owner), ...serviceResources(owner)];
+const resourceConflict = (owner: Owner, root: Resource) => ownerResources(owner).some(held => rootsConflict(held, root));
 
 export async function physicalWorkspaceIdentity(cwd: string) {
   if (process.platform !== "linux") throw new Error("workspace_write_ownership_unsupported_host");
@@ -165,8 +168,19 @@ export function workspaceWriteOwnershipService(db: Db) {
         const held = await tx.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.realm, roots[0]!.realm), isNull(workspaceWriteOwners.releasedAt))).for("update");
         const owner = held.find(row => row.id === handle.id && row.generation === handle.generation && row.companyId === handle.companyId && row.runId === handle.runId);
         if (!owner || owner.state !== "reserved") throw new Error("workspace_write_private_root_owner_unverified");
-        if (roots.some(root => held.some(row => resourceConflict(row, root)))) throw new Error("workspace_write_private_root_source_overlap");
-        await tx.update(workspaceWriteOwners).set({ history: [...owner.history, { event: "private_roots_reserved", roots, at: new Date().toISOString() }] }).where(selector(handle));
+        const retained = privateResources(owner);
+        if (roots.some(root => held.some(row => {
+          if (row.id !== owner.id || row.generation !== owner.generation) return resourceConflict(row, root);
+          // Only an exact private resource in this generation is reentrant.
+          // The owner's source/service roots and nonidentical private overlaps
+          // still conflict; other owners always retain their full exclusion.
+          return [{ root: row.canonicalRoot, resourceKey: row.resourceKey }, ...serviceResources(row)].some(resource => rootsConflict(resource, root))
+            || retained.some(resource => !sameResource(resource, root) && rootsConflict(resource, root));
+        }))) throw new Error("workspace_write_private_root_source_overlap");
+        const added = roots.filter((root, index) => !retained.some(resource => sameResource(resource, root))
+          && roots.findIndex(candidate => sameResource(candidate, root)) === index);
+        if (!added.length) return;
+        await tx.update(workspaceWriteOwners).set({ history: [...owner.history, { event: "private_roots_reserved", roots: added, at: new Date().toISOString() }] }).where(selector(handle));
       });
     },
     async bindLaunch(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {

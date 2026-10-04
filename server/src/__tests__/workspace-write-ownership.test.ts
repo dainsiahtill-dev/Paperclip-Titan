@@ -115,6 +115,48 @@ it("reserved private runtime roots cannot become another writer's source workspa
   await expect(service.reservePrivateRoots(owner, [second.cwd])).rejects.toThrow("private_root_source_overlap");
 });
 
+it("reuses one durable private-home reservation for sequential contained launches and requires the latest drain", async () => {
+  const { cwd, service, owner } = await claimFixture();
+  const home = await fs.mkdtemp(path.join(root, "sequential-home-"));
+  const effects = path.join(home, "effects");
+  const guard = service.guard(owner, undefined, [home]);
+  const launches: WorkspaceLaunchIdentity[] = [], drains: WorkspaceLaunchIdentity[] = [];
+  const bind = guard.bindLaunch, drain = guard.recordDrain;
+  guard.bindLaunch = async identity => {
+    expect(await fs.readFile(effects, "utf8").catch(() => "")).toBe(launches.length === 0 ? "" : "first");
+    await bind(identity); launches.push(identity);
+  };
+  guard.recordDrain = async identity => { await drain(identity); drains.push(identity); };
+  const options = { cwd, env: { PRIVATE_HOME: home }, timeoutSec: 2, graceSec: 1, onLog: async () => {} };
+  const first = await withWorkspaceProcessGuard(guard, () => runChildProcess("private-first", "/bin/sh", ["-c", 'printf first >> "$PRIVATE_HOME/effects"'], options));
+  expect(first.exitCode, first.stderr).toBe(0); expect(drains).toHaveLength(1);
+  expect(await service.claim({ cwd, companyId: randomUUID(), runId: randomUUID() })).toEqual({ outcome: "busy" });
+  expect(await service.claim({ cwd: home, companyId: randomUUID(), runId: randomUUID() })).toEqual({ outcome: "busy" });
+  await expect(service.reservePrivateRoots(owner, [cwd])).rejects.toThrow("private_root_source_overlap");
+  const other = await claimFixture();
+  await expect(service.reservePrivateRoots(other.owner, [home])).rejects.toThrow("private_root_source_overlap");
+
+  let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
+  const second = withWorkspaceProcessGuard(guard, () => runChildProcess("private-second", "/bin/sh", ["-c", 'printf ready; sleep 0.4; printf second >> "$PRIVATE_HOME/effects"'], {
+    ...options, onLog: async (_stream, text) => { if (text.includes("ready")) ready(); },
+  }));
+  try {
+    await Promise.race([started, second.then(() => { throw new Error("Second launch exited without readiness"); })]);
+    expect(launches).toHaveLength(2); expect(launches[1]!.launchId).not.toBe(launches[0]!.launchId);
+    await expect(service.recordDrain(owner, drains[0]!)).rejects.toThrow("transition_rejected");
+    await expect(service.releaseIfStopped(owner)).rejects.toThrow("transition_rejected");
+    expect(await service.claim({ cwd: home, companyId: randomUUID(), runId: randomUUID() })).toEqual({ outcome: "busy" });
+    expect((await second).exitCode).toBe(0);
+    expect(drains).toEqual(launches);
+    expect(await fs.readFile(effects, "utf8")).toBe("firstsecond");
+    const current = (await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, owner.id)))[0]!;
+    expect(current.history.filter(event => event.event === "private_roots_reserved")).toHaveLength(1);
+    expect(current.stopReceipt?.launchId).toBe(launches[1]!.launchId);
+    await service.releaseIfStopped(owner);
+    expect((await service.claim({ cwd: home, companyId: randomUUID(), runId: randomUUID() })).outcome).toBe("claimed");
+  } finally { await second.catch(() => undefined); }
+});
+
 it("pre-PC06 board services block protected aliases while delayed descendants can still write", async () => {
   const cwd = await fs.mkdtemp(path.join(root, "old-service-")), alias = `${cwd}-alias`;
   await fs.symlink(cwd, alias);

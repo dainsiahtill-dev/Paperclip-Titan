@@ -116,6 +116,12 @@ unsupported layout fails explicitly. Host jobs currently inherit the restricted
 filesystem: commands requiring additional executable/cache mounts may need a
 separately validated host runtime layout.
 
+A reserved owner may reuse the same canonical and physical private directory in
+the same generation across sequential contained launches. Repeated reservation
+does not append duplicate history or release the directory between launches.
+Its source/service roots, nonidentical private overlaps, other owners and unknown
+holds still conflict. Final release requires the latest launch's verified drain.
+
 The physical fixtures cover actual delayed writes, same-file heartbeat
 contention across workspace IDs, alias/company contention, escaped `setsid`
 children, controller death before and after ACK, DB identity-commit failure,
