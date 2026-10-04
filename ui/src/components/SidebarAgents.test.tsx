@@ -612,7 +612,7 @@ describe("SidebarAgents", () => {
 
     const editLink = Array.from(document.body.querySelectorAll("a"))
       .find((element) => element.textContent?.includes("Edit agent"));
-    expect(editLink?.getAttribute("href")).toBe("/agents/alpha/configuration");
+    expect(editLink?.getAttribute("href")).toBe("/agents/agent-1/configuration");
     expect(document.body.textContent).toContain("Pause agent");
 
     const pauseItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))

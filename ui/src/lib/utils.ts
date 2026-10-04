@@ -218,12 +218,12 @@ export function issueUrl(issue: { id: string; identifier?: string | null }): str
   return `/issues/${issue.identifier ?? issue.id}`;
 }
 
-/** Build an agent route URL using the short URL key when available. */
+/** Canonical route reference uses immutable identity, including legacy DTOs. */
 export function agentRouteRef(agent: { id: string; urlKey?: string | null; name?: string | null }): string {
-  return agent.urlKey ?? deriveAgentUrlKey(agent.name, agent.id);
+  return deriveAgentUrlKey(agent.name, agent.id);
 }
 
-/** Build an agent URL using the short URL key when available. */
+/** Build an agent URL using its immutable identity. */
 export function agentUrl(agent: { id: string; urlKey?: string | null; name?: string | null }): string {
   return `/agents/${agentRouteRef(agent)}`;
 }

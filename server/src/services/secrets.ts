@@ -41,7 +41,6 @@ import {
   deriveProjectUrlKey,
   envBindingSchema,
   isUuidLike,
-  normalizeAgentUrlKey,
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
@@ -2758,7 +2757,7 @@ export function secretService(db: Db | DbTransaction) {
           type: "agent",
           id: row.id,
           label: row.title ? `${row.name} (${row.title})` : row.name,
-          href: `/agents/${normalizeAgentUrlKey(row.name) ?? row.id}`,
+          href: `/agents/${row.id}`,
           status: row.status,
         });
       }

@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
@@ -27,6 +28,7 @@ import {
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
+  normalizeAgentNameForComparison,
   type AgentEligibilityAgent,
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
@@ -149,13 +151,13 @@ interface CreateAgentOptions {
   claudeLogin?: ClaudeLoginContext;
 }
 
-interface AgentShortnameRow {
+interface AgentNameRow {
   id: string;
   name: string;
   status: string;
 }
 
-interface AgentShortnameCollisionOptions {
+interface AgentNameCollisionOptions {
   excludeAgentId?: string | null;
 }
 
@@ -323,35 +325,18 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   };
 }
 
-export function hasAgentShortnameCollision(
+export function hasAgentNameCollision(
   candidateName: string,
-  existingAgents: AgentShortnameRow[],
-  options?: AgentShortnameCollisionOptions,
+  existingAgents: AgentNameRow[],
+  options?: AgentNameCollisionOptions,
 ): boolean {
-  const candidateShortname = normalizeAgentUrlKey(candidateName);
-  if (!candidateShortname) return false;
+  const candidateComparison = normalizeAgentNameForComparison(candidateName);
 
   return existingAgents.some((agent) => {
     if (agent.status === "terminated") return false;
     if (options?.excludeAgentId && agent.id === options.excludeAgentId) return false;
-    return normalizeAgentUrlKey(agent.name) === candidateShortname;
+    return normalizeAgentNameForComparison(agent.name) === candidateComparison;
   });
-}
-
-export function deduplicateAgentName(
-  candidateName: string,
-  existingAgents: AgentShortnameRow[],
-): string {
-  if (!hasAgentShortnameCollision(candidateName, existingAgents)) {
-    return candidateName;
-  }
-  for (let i = 2; i <= 100; i++) {
-    const suffixed = `${candidateName} ${i}`;
-    if (!hasAgentShortnameCollision(suffixed, existingAgents)) {
-      return suffixed;
-    }
-  }
-  return `${candidateName} ${Date.now()}`;
 }
 
 export function agentService(db: Db) {
@@ -369,7 +354,7 @@ export function agentService(db: Db) {
   function withUrlKey<T extends { id: string; name: string }>(row: T) {
     return {
       ...row,
-      urlKey: normalizeAgentUrlKey(row.name) ?? row.id,
+      urlKey: row.id,
     };
   }
 
@@ -485,15 +470,22 @@ export function agentService(db: Db) {
     }
   }
 
-  async function assertCompanyShortnameAvailable(
+  async function assertCompanyNameAvailable(
+    txDb: Db,
     companyId: string,
     candidateName: string,
-    options?: AgentShortnameCollisionOptions,
+    options?: AgentNameCollisionOptions,
   ) {
-    const candidateShortname = normalizeAgentUrlKey(candidateName);
-    if (!candidateShortname) return;
+    if (!normalizeAgentNameForComparison(candidateName)) {
+      throw unprocessable("Agent name must contain non-whitespace characters");
+    }
 
-    const existingAgents = await db
+    // Every create and rename locks the same durable company row before
+    // checking. This serializes both routes, across service/process instances.
+    await txDb.select({ id: companies.id }).from(companies)
+      .where(eq(companies.id, companyId)).for("update");
+
+    const existingAgents = await txDb
       .select({
         id: agents.id,
         name: agents.name,
@@ -502,10 +494,11 @@ export function agentService(db: Db) {
       .from(agents)
       .where(eq(agents.companyId, companyId));
 
-    const hasCollision = hasAgentShortnameCollision(candidateName, existingAgents, options);
+    const hasCollision = hasAgentNameCollision(candidateName, existingAgents, options);
     if (hasCollision) {
       throw conflict(
-        `Agent shortname '${candidateShortname}' is already in use in this company`,
+        "An agent with this name already exists in this company. Choose a different agent name.",
+        { code: "agent_name_conflict", field: "name" },
       );
     }
   }
@@ -746,14 +739,6 @@ export function agentService(db: Db) {
       await assertNoCycle(id, data.reportsTo);
     }
 
-    if (data.name !== undefined) {
-      const previousShortname = normalizeAgentUrlKey(existing.name);
-      const nextShortname = normalizeAgentUrlKey(data.name);
-      if (previousShortname !== nextShortname) {
-        await assertCompanyShortnameAvailable(existing.companyId, data.name, { excludeAgentId: id });
-      }
-    }
-
     if (Object.prototype.hasOwnProperty.call(data, "metadata")) {
       assertBuiltInAgentMetadataMutationAllowed(existing.metadata, data.metadata, options);
     }
@@ -810,6 +795,9 @@ export function agentService(db: Db) {
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      if (normalizedPatch.name !== undefined) {
+        await assertCompanyNameAvailable(txDb, existing.companyId, normalizedPatch.name, { excludeAgentId: id });
+      }
       // Use the row's current state, not the earlier read: a concurrent quota
       // probe may have committed while config normalization was in progress.
       const clientMetadata = clientAgentMetadata(normalizedPatch.metadata);
@@ -912,12 +900,6 @@ export function agentService(db: Db) {
         await ensureManager(companyId, data.reportsTo);
       }
 
-      const existingAgents = await db
-        .select({ id: agents.id, name: agents.name, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const uniqueName = deduplicateAgentName(data.name, existingAgents);
-
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       let runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
@@ -941,6 +923,7 @@ export function agentService(db: Db) {
       });
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertCompanyNameAvailable(txDb, companyId, data.name);
         // Consume the stored-session claim and create the fixed definition inside
         // the same transaction that inserts the binding. A rejected claim rolls
         // back the whole transaction and inserts no binding.
@@ -957,7 +940,7 @@ export function agentService(db: Db) {
           .values({
             ...data,
             metadata: clientAgentMetadata(data.metadata),
-            name: uniqueName,
+            name: data.name,
             companyId,
             role,
             adapterType,
@@ -1418,6 +1401,10 @@ export function agentService(db: Db) {
         return { agent: byId, ambiguous: false } as const;
       }
 
+      if (/[^\x20-\x7e]/.test(raw)) {
+        return { agent: null, ambiguous: false } as const;
+      }
+
       const urlKey = normalizeAgentUrlKey(raw);
       if (!urlKey) {
         return { agent: null, ambiguous: false } as const;
@@ -1425,7 +1412,7 @@ export function agentService(db: Db) {
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
       const matches = normalizeAgentRows(rows, rows)
-        .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
+        .filter((agent) => normalizeAgentUrlKey(agent.name) === urlKey && agent.status !== "terminated");
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;
       }

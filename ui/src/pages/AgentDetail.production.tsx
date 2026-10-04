@@ -1940,12 +1940,9 @@ function CostsSection({
 /* ---- Agent Configure Page ---- */
 
 /**
- * Agent detail URLs use a name-derived key, so updates that change the agent's
- * name (a rename or a config-revision rollback) can invalidate the reference
- * currently in the URL. When that happens, refetching the old reference would
- * 404 with "Agent not found". Instead, drop the stale cached queries and
- * replace the URL with the new canonical reference. Returns true when a
- * redirect happened.
+ * Canonical references use immutable IDs, so rename and rollback keep the
+ * current route stable. Legacy aliases are canonicalized when detail loads.
+ * If identity changes, remove the old query and navigate to the new identity.
  */
 export function syncAgentRouteAfterRename(
   queryClient: QueryClient,

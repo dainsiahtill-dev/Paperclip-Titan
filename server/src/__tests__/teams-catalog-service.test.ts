@@ -167,6 +167,13 @@ describe("teamsCatalogService", () => {
       }),
     ).rejects.toMatchObject({ status: 404 });
   });
+  it("rejects ambiguous target-manager aliases instead of choosing the first agent", async () => {
+    mockAgentService.list.mockResolvedValue([
+      { id: "manager-1", companyId: "company-1", name: "模型与 ContextOS 主管" },
+      { id: "manager-2", companyId: "company-1", name: "ContextOS 与上下文存储工程师" },
+    ]);
+    await expect(teamsCatalogService({} as any).prepareCatalogTeamSource("company-1", "core-exec-team", { targetManagerSlug: "contextos" })).rejects.toMatchObject({ status: 409 });
+  });
 
   it("previews through company portability in agent-safe mode", async () => {
     const svc = teamsCatalogService({} as any);

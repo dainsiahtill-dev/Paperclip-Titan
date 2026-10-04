@@ -198,6 +198,22 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("shows a typed name conflict and retains exact name and runtime draft for retry", async () => {
+    await render("pi_local");
+    state.params.set("name", "  模型与 ContextOS 主管  ");
+    await act(async () => root.render(<QueryClientProvider client={cache}><TooltipProvider><NewAgent /></TooltipProvider></QueryClientProvider>));
+    await settle();
+    await fill("Model", "openrouter/example/draft-model");
+    api.hire.mockRejectedValueOnce(new ApiError("Conflict", 409, { code: "agent_name_conflict" }));
+    await click("Finish setup");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Choose a different agent name");
+    expect(container.textContent).toContain("模型与 ContextOS 主管");
+    expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("openrouter/example/draft-model");
+    expect(state.navigate).not.toHaveBeenCalled();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[1][1].name).toBe("  模型与 ContextOS 主管  ");
+    expect(container.textContent).toContain("Your agent is ready");
+  });
   it("saves audit with one slot and enforced read-only CLI profile", async () => {
     await render("codex_local");
     await connect("OpenAI");

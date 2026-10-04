@@ -134,7 +134,7 @@ describe("runDetailRefetchIntervalMs", () => {
 });
 
 describe("syncAgentRouteAfterRename", () => {
-  it("replaces stale agent routes after a rename changes the URL key", () => {
+  it("keeps canonical agent routes stable after a rename even with legacy DTO keys", () => {
     const queryClient = new QueryClient();
     const navigate = vi.fn();
     queryClient.setQueryData(queryKeys.agents.detail("old-agent"), { id: "agent-1" });
@@ -148,9 +148,9 @@ describe("syncAgentRouteAfterRename", () => {
       "configuration",
     );
 
-    expect(redirected).toBe(true);
-    expect(navigate).toHaveBeenCalledWith("/agents/renamed-agent/configuration", { replace: true });
-    expect(queryClient.getQueryData(queryKeys.agents.detail("old-agent"))).toBeUndefined();
+    expect(redirected).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(queryKeys.agents.detail("old-agent"))).toEqual({ id: "agent-1" });
     expect(queryClient.getQueryData(queryKeys.agents.detail("renamed-agent"))).toEqual({ id: "agent-1" });
   });
 

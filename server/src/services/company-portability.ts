@@ -61,6 +61,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
+  normalizeAgentNameForComparison,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
@@ -71,7 +72,7 @@ import {
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
@@ -1869,16 +1870,27 @@ function uniqueSlug(base: string, used: Set<string>) {
   }
 }
 
-function uniqueNameBySlug(baseName: string, existingSlugs: Set<string>) {
-  const baseSlug = normalizeAgentUrlKey(baseName) ?? "agent";
-  if (!existingSlugs.has(baseSlug)) return baseName;
+function uniqueAgentDisplayName(baseName: string, existingNames: Set<string>) {
+  if (!existingNames.has(normalizeAgentNameForComparison(baseName))) return baseName;
   let idx = 2;
   while (true) {
     const candidateName = `${baseName} ${idx}`;
-    const candidateSlug = normalizeAgentUrlKey(candidateName) ?? `agent-${idx}`;
-    if (!existingSlugs.has(candidateSlug)) return candidateName;
+    if (!existingNames.has(normalizeAgentNameForComparison(candidateName))) return candidateName;
     idx += 1;
   }
+}
+
+// Package slugs remain their own namespace. Existing display-derived aliases
+// are compatibility references and must never choose an arbitrary employee.
+function setExistingAgentAlias(map: Map<string, string | null>, slug: string, agentId: string) {
+  const prior = map.get(slug);
+  map.set(slug, map.has(slug) && prior !== agentId ? null : agentId);
+}
+
+function resolveExistingAgentAlias(map: Map<string, string | null>, slug: string): string | undefined {
+  const id = map.get(slug);
+  if (id === null) throw conflict(`Existing agent alias '${slug}' is ambiguous; select an agent ID.`, { code: "agent_reference_ambiguous" });
+  return id;
 }
 
 function uniqueProjectName(baseName: string, existingProjectSlugs: Set<string>) {
@@ -3232,7 +3244,9 @@ function buildManifestFromPackageFiles(
 
     manifest.agents.push({
       slug,
-      name: asString(frontmatter.name) ?? title ?? slug,
+      name: typeof frontmatter.name === "string" && frontmatter.name.trim()
+        ? frontmatter.name
+        : title ?? slug,
       path: agentPath,
       skills: readAgentSkillRefs(frontmatter),
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
@@ -3719,7 +3733,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   function resolveImportedAssigneeAgentId(
     assigneeSlug: string | null | undefined,
     importedSlugToAgentId: Map<string, string>,
-    existingSlugToAgentId: Map<string, string>,
+    existingSlugToAgentId: Map<string, string | null>,
     agentStatusById: Map<string, string | null | undefined>,
     warnings: string[],
     subjectLabel: string,
@@ -3727,7 +3741,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (!assigneeSlug) return null;
     const assigneeAgentId =
       importedSlugToAgentId.get(assigneeSlug)
-      ?? existingSlugToAgentId.get(assigneeSlug)
+      ?? resolveExistingAgentAlias(existingSlugToAgentId, assigneeSlug)
       ?? null;
     if (!assigneeAgentId) return null;
     const assigneeStatus = agentStatusById.get(assigneeAgentId) ?? null;
@@ -4972,9 +4986,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const agentPlans: CompanyPortabilityPreviewAgentPlan[] = [];
-    const existingSlugToAgent = new Map<string, { id: string; name: string }>();
+    const existingSlugToAgent = new Map<string, { id: string; name: string } | null>();
     const existingAgentIds = new Set<string>();
-    const existingSlugs = new Set<string>();
+    const existingNames = new Set<string>();
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
@@ -4984,9 +4998,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const existingAgents = await agents.list(input.target.companyId);
       for (const existing of existingAgents) {
         const slug = normalizeAgentUrlKey(existing.name) ?? existing.id;
-        if (!existingSlugToAgent.has(slug)) existingSlugToAgent.set(slug, existing);
+        existingSlugToAgent.set(slug, existingSlugToAgent.has(slug) ? null : existing);
         existingAgentIds.add(existing.id);
-        existingSlugs.add(slug);
+        existingNames.add(normalizeAgentNameForComparison(existing.name));
       }
       const existingProjects = await projects.list(input.target.companyId);
       for (const existing of existingProjects) {
@@ -5028,12 +5042,24 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           `Agent ${manifestAgent.slug} references existing manager slug ${manifestAgent.reportsToExistingAgentSlug}, but that agent is not present in the target company.`,
         );
       }
+      if (manifestAgent.reportsToExistingAgentSlug
+        && existingSlugToAgent.get(manifestAgent.reportsToExistingAgentSlug) === null
+        && !manifestAgent.reportsToExistingAgentId) {
+        errors.push(`Existing manager slug ${manifestAgent.reportsToExistingAgentSlug} is ambiguous; select an agent ID.`);
+      }
+      if (existingSlugToAgent.get(manifestAgent.slug) === null && collisionStrategy !== "rename") {
+        errors.push(`Existing agent slug ${manifestAgent.slug} is ambiguous; use explicit IDs or the rename import strategy.`);
+      }
       const existing = existingSlugToAgent.get(manifestAgent.slug) ?? null;
       if (!existing) {
+        const plannedName = collisionStrategy === "rename"
+          ? uniqueAgentDisplayName(manifestAgent.name, existingNames)
+          : manifestAgent.name;
+        existingNames.add(normalizeAgentNameForComparison(plannedName));
         agentPlans.push({
           slug: manifestAgent.slug,
           action: "create",
-          plannedName: manifestAgent.name,
+          plannedName,
           existingAgentId: null,
           reason: null,
         });
@@ -5062,8 +5088,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         continue;
       }
 
-      const renamed = uniqueNameBySlug(manifestAgent.name, existingSlugs);
-      existingSlugs.add(normalizeAgentUrlKey(renamed) ?? manifestAgent.slug);
+      const renamed = uniqueAgentDisplayName(manifestAgent.name, existingNames);
+      existingNames.add(normalizeAgentNameForComparison(renamed));
       agentPlans.push({
         slug: manifestAgent.slug,
         action: "create",
@@ -5490,15 +5516,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const resultProjects: CompanyPortabilityImportResult["projects"] = [];
       const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
       const importedSlugToAgentId = new Map<string, string>();
-      const existingSlugToAgentId = new Map<string, string>();
-      const preImportExistingSlugToAgentId = new Map<string, string>();
+      const existingSlugToAgentId = new Map<string, string | null>();
+      const preImportExistingSlugToAgentId = new Map<string, string | null>();
       const preImportExistingAgentIds = new Set<string>();
       const agentStatusById = new Map<string, string | null | undefined>();
       const existingAgents = await agents.list(targetCompany.id);
       for (const existing of existingAgents) {
         const slug = normalizeAgentUrlKey(existing.name) ?? existing.id;
-        existingSlugToAgentId.set(slug, existing.id);
-        preImportExistingSlugToAgentId.set(slug, existing.id);
+        setExistingAgentAlias(existingSlugToAgentId, slug, existing.id);
+        setExistingAgentAlias(preImportExistingSlugToAgentId, slug, existing.id);
         preImportExistingAgentIds.add(existing.id);
         agentStatusById.set(existing.id, existing.status);
       }
@@ -5651,7 +5677,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               isPlainRecord(updated.adapterConfig) ? updated.adapterConfig.env : undefined,
             );
             importedSlugToAgentId.set(planAgent.slug, updated.id);
-            existingSlugToAgentId.set(normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
+            setExistingAgentAlias(existingSlugToAgentId, normalizeAgentUrlKey(updated.name) ?? updated.id, updated.id);
             resultAgents.push({
               slug: planAgent.slug,
               id: updated.id,
@@ -5698,7 +5724,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             isPlainRecord(created.adapterConfig) ? created.adapterConfig.env : undefined,
           );
           importedSlugToAgentId.set(planAgent.slug, created.id);
-          existingSlugToAgentId.set(normalizeAgentUrlKey(created.name) ?? created.id, created.id);
+          setExistingAgentAlias(existingSlugToAgentId, normalizeAgentUrlKey(created.name) ?? created.id, created.id);
           resultAgents.push({
             slug: planAgent.slug,
             id: created.id,
@@ -5721,13 +5747,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             existingManagerId = manifestAgent.reportsToExistingAgentId;
           } else if (manifestAgent.reportsToExistingAgentSlug) {
             existingManagerId =
-              preImportExistingSlugToAgentId.get(manifestAgent.reportsToExistingAgentSlug) ?? null;
+              resolveExistingAgentAlias(preImportExistingSlugToAgentId, manifestAgent.reportsToExistingAgentSlug) ?? null;
           }
           if (!managerSlug && !existingManagerId) continue;
           const managerId =
             existingManagerId
             ?? (managerSlug
-              ? importedSlugToAgentId.get(managerSlug) ?? existingSlugToAgentId.get(managerSlug) ?? null
+              ? importedSlugToAgentId.get(managerSlug) ?? resolveExistingAgentAlias(existingSlugToAgentId, managerSlug) ?? null
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
@@ -5759,7 +5785,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           const projectLeadAgentId = manifestProject.leadAgentSlug
             ? importedSlugToAgentId.get(manifestProject.leadAgentSlug)
-              ?? existingSlugToAgentId.get(manifestProject.leadAgentSlug)
+              ?? resolveExistingAgentAlias(existingSlugToAgentId, manifestProject.leadAgentSlug)
               ?? null
             : null;
           const projectWorkspaceIdByKey = new Map<string, string>();
@@ -6087,7 +6113,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           for (const comment of manifestIssue.comments ?? []) {
             const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug
               ? importedSlugToAgentId.get(comment.authorAgentSlug)
-                ?? existingSlugToAgentId.get(comment.authorAgentSlug)
+                ?? resolveExistingAgentAlias(existingSlugToAgentId, comment.authorAgentSlug)
                 ?? null
               : null;
             if (comment.authorType === "agent" && comment.authorAgentSlug && !authorAgentId) {

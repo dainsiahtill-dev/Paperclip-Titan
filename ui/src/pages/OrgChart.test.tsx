@@ -248,7 +248,7 @@ describe("OrgChart mobile gestures", () => {
       card.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
-    expect(navigateMock).toHaveBeenCalledWith("/agents/ceo");
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-1");
   });
   it("pinch-zooms toward the touch center", async () => {
     const { viewport, layer } = await renderOrgChart();

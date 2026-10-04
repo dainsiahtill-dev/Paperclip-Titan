@@ -1046,6 +1046,23 @@ instances return `404`.
 - `POST /agents/:agentId/keys` (create API key)
 - `POST /agents/:agentId/heartbeat/invoke`
 
+Agent `name` is the exact display value; canonical `urlKey` and employee links
+use the immutable agent UUID and remain stable across rename. Create, hire,
+invite approval, and rename reject duplicate nonterminated names within the
+company with HTTP `409`, code `agent_name_conflict`, and field `name`. Comparison
+uses boundary trim, Unicode NFC, and locale-independent lowercase; stored
+spelling is unchanged. Create and rename serialize this check under the company
+row lock in their write transaction. Terminated names can be reused. Unique
+legacy ASCII shortname aliases still resolve within explicit company context;
+ambiguous aliases return `409` and callers must choose an agent ID.
+
+Portable package slugs are separate from URL identity. Explicit import rename,
+replace, and skip policies remain supported; a URL normalization collision alone
+does not change an imported display name. Rename chooses a new display name only
+for a true human-name collision. Ambiguous existing aliases cannot select an
+employee or manager implicitly. Historical suffixed names are preserved; this
+contract does not repair existing records.
+
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`

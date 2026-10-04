@@ -50,7 +50,6 @@ import {
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
-  normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
   routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
@@ -700,7 +699,7 @@ export function routineService(
       .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
       .then((rows) => {
         const row = rows[0];
-        return row ? { ...row, urlKey: normalizeAgentUrlKey(row.name) ?? row.id } : null;
+        return row ? { ...row, urlKey: row.id } : null;
       });
   }
 

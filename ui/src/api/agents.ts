@@ -130,7 +130,7 @@ export const agentsApi = {
 
       const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`);
       const matches = agents.filter(
-        (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.urlKey) === urlKey,
+        (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.name) === urlKey,
       );
       if (matches.length !== 1) throw error;
       return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId));

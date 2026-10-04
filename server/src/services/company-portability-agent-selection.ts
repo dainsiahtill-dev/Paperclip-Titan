@@ -1,5 +1,6 @@
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { conflict } from "../errors.js";
 
 interface ExportAgentCandidate {
   id: string;
@@ -28,13 +29,17 @@ export function resolvePortableExportAgentSelection<T extends ExportAgentCandida
     }
   }
 
-  const agentByReference = new Map<string, T>();
-  const builtInAgentByReference = new Map<string, T>();
-  const addAgentReferences = (map: Map<string, T>, agent: T) => {
-    map.set(agent.id, agent);
-    map.set(agent.name, agent);
+  const agentByReference = new Map<string, T | null>();
+  const builtInAgentByReference = new Map<string, T | null>();
+  const addAgentReferences = (map: Map<string, T | null>, agent: T) => {
+    const add = (key: string) => {
+      const prior = map.get(key);
+      map.set(key, map.has(key) && prior?.id !== agent.id ? null : agent);
+    };
+    add(agent.id);
+    add(agent.name);
     const normalizedName = normalizeAgentUrlKey(agent.name);
-    if (normalizedName) map.set(normalizedName, agent);
+    if (normalizedName) add(normalizedName);
   };
   for (const agent of portableAgentRows) addAgentReferences(agentByReference, agent);
   for (const agent of builtInAgentRows) addAgentReferences(builtInAgentByReference, agent);
@@ -44,6 +49,10 @@ export function resolvePortableExportAgentSelection<T extends ExportAgentCandida
     const trimmed = selector.trim();
     if (!trimmed) continue;
     const normalized = normalizeAgentUrlKey(trimmed) ?? trimmed;
+    if (agentByReference.get(trimmed) === null
+      || (!agentByReference.has(trimmed) && agentByReference.get(normalized) === null)) {
+      throw conflict(`Agent selector '${selector}' is ambiguous; select an agent ID.`, { code: "agent_reference_ambiguous" });
+    }
     const match = agentByReference.get(trimmed) ?? agentByReference.get(normalized);
     if (!match) {
       const builtInMatch = builtInAgentByReference.get(trimmed) ?? builtInAgentByReference.get(normalized);

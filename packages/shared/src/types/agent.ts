@@ -77,7 +77,9 @@ export interface AgentChainOfCommandEntry {
 export interface Agent {
   id: string;
   companyId: string;
+  /** Exact display spelling; name comparison never rewrites this value. */
   name: string;
+  /** Canonical immutable UUID, independent of display name and package slug. */
   urlKey: string;
   role: AgentRole;
   title: string | null;

@@ -84,7 +84,6 @@ import {
   accessService,
   agentService,
   boardAuthService,
-  deduplicateAgentName,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
@@ -4256,17 +4255,8 @@ export function accessRoutes(
           );
         }
 
-        const agentName = deduplicateAgentName(
-          existing.agentName ?? "New Agent",
-          existingAgents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            status: a.status
-          }))
-        );
-
         const created = await agents.create(companyId, {
-          name: agentName,
+          name: existing.agentName ?? "New Agent",
           role: "general",
           title: null,
           status: "idle",

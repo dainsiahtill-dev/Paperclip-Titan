@@ -171,7 +171,7 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     expect(samAgents.map((row) => row.name)).toEqual(["Sam"]);
   });
 
-  it("treats a changed payload in the same run as a new hire, not a retry", async () => {
+  it("requires a distinct name for a changed hire payload in the same run", async () => {
     const { company, hiringAgent, run } = await seedHiringFixture(db);
     const app = createApp(db, agentActor(company.id, hiringAgent.id, run.id));
 
@@ -180,14 +180,18 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
       .send({ name: "Sam", role: "engineer", adapterType: "process" });
     expect(first.status, JSON.stringify(first.body)).toBe(201);
 
-    // Same identity, corrected configuration: the agent meant a different hire.
+    // A changed payload is not a retry; duplicate display names now conflict.
     const corrected = await request(app)
       .post(`/api/companies/${company.id}/agent-hires`)
       .send({ name: "Sam", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
-    expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
+    expect(corrected.status, JSON.stringify(corrected.body)).toBe(409);
+    expect(corrected.body.code).toBe("agent_name_conflict");
     expect(corrected.body.idempotent).toBeUndefined();
-    expect(corrected.body.agent?.id).not.toBe(first.body.agent?.id);
-    expect(corrected.body.agent?.budgetMonthlyCents).toBe(5000);
+    const distinct = await request(app).post(`/api/companies/${company.id}/agent-hires`)
+      .send({ name: "Sam New", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
+    expect(distinct.status, JSON.stringify(distinct.body)).toBe(201);
+    expect(distinct.body.agent?.id).not.toBe(first.body.agent?.id);
+    expect(distinct.body.agent?.budgetMonthlyCents).toBe(5000);
   });
 
   it("still creates a distinct agent for a different hire in the same run", async () => {
@@ -228,9 +232,11 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
 
     const secondRunApp = createApp(db, agentActor(company.id, hiringAgent.id, secondRun!.id));
     const secondRunHire = await request(secondRunApp).post(`/api/companies/${company.id}/agent-hires`).send(payload);
-    // A genuinely separate run is not a retry, so the legacy dedup names it "Sam 2".
-    expect(secondRunHire.status, JSON.stringify(secondRunHire.body)).toBe(201);
+    // Separate runs are not retries and must not silently rewrite display names.
+    expect(secondRunHire.status, JSON.stringify(secondRunHire.body)).toBe(409);
+    expect(secondRunHire.body.code).toBe("agent_name_conflict");
     expect(secondRunHire.body.idempotent).toBeUndefined();
-    expect(secondRunHire.body.agent?.name).toBe("Sam 2");
+    const rows = await db.select({ name: agents.name }).from(agents).where(eq(agents.companyId, company.id));
+    expect(rows.map(row => row.name).sort()).toEqual(["Chief Of Staff", "Sam"]);
   });
 });

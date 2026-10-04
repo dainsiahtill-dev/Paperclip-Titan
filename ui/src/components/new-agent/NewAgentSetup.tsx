@@ -24,6 +24,7 @@ import type {
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
+import { ApiError } from "@/api/client";
 import { adaptersApi } from "@/api/adapters";
 import { environmentsApi } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -499,7 +500,7 @@ function Setup({
         (agent) => agent.role === "ceo" && agent.status !== "terminated",
       );
       const response = await agentsApi.hire(companyId, {
-        name: name.trim(),
+        name,
         role: existing.length ? "general" : "ceo",
         ...(leader ? { reportsTo: leader.id } : {}),
         adapterType,
@@ -537,7 +538,10 @@ function Setup({
       ]);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Could not create the agent.",
+        cause instanceof ApiError && cause.status === 409
+          && (cause.body as { code?: string } | null)?.code === "agent_name_conflict"
+          ? "An agent with this name already exists in this company. Choose a different agent name."
+          : cause instanceof Error ? cause.message : "Could not create the agent.",
       );
     } finally {
       if (!hired) {

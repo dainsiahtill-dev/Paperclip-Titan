@@ -750,7 +750,11 @@ export function teamsCatalogService(db: Db) {
       const slug = normalizeAgentUrlKey(options.targetManagerSlug);
       if (!slug) throw unprocessable("Target manager slug is invalid.");
       const managers = await agents.list(companyId);
-      const manager = managers.find((candidate) => normalizeAgentUrlKey(candidate.name) === slug);
+      const matches = managers.filter((candidate) => normalizeAgentUrlKey(candidate.name) === slug);
+      if (matches.length > 1) {
+        throw conflict("Target manager slug is ambiguous; select an agent ID.", { code: "agent_reference_ambiguous" });
+      }
+      const manager = matches[0];
       if (!manager) throw notFound("Target manager agent not found");
       return { agentId: manager.id, slug };
     }

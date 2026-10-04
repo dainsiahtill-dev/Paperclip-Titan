@@ -17,6 +17,13 @@ export function normalizeAgentUrlKey(value: string | null | undefined): string |
   return normalized.length > 0 ? normalized : null;
 }
 
-export function deriveAgentUrlKey(name: string | null | undefined, fallback?: string | null): string {
-  return normalizeAgentUrlKey(name) ?? normalizeAgentUrlKey(fallback) ?? "agent";
+export function deriveAgentUrlKey(_name: string | null | undefined, agentId: string): string {
+  // Canonical agent links use immutable identity. Name normalization remains
+  // available for legacy aliases and portable package slugs only.
+  return agentId;
+}
+
+/** Comparison only; callers must persist the original display spelling. */
+export function normalizeAgentNameForComparison(name: string): string {
+  return name.trim().normalize("NFC").toLowerCase();
 }

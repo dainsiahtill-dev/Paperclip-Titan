@@ -162,7 +162,7 @@ export function AgentBasicsDialog({
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
             else if (validAdapter)
-              onContinue({ name: name.trim(), adapterType, runnerProvider });
+              onContinue({ name, adapterType, runnerProvider });
           }}
         >
           <div className="flex min-h-0 flex-col gap-7 overflow-y-auto px-6 pb-8 sm:px-10">

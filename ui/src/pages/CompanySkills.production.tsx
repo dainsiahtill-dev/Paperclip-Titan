@@ -3256,7 +3256,7 @@ export function SkillDetailPage({
                     <div className="mt-0.5 text-xs text-muted-foreground">{agent.adapterType}</div>
                   </div>
                   <Link
-                    to={`/agents/${agent.urlKey}/skills`}
+                    to={`/agents/${agent.id}/skills`}
                     className="shrink-0 text-xs text-muted-foreground no-underline hover:text-foreground"
                   >
                     View
@@ -3447,7 +3447,7 @@ export function SkillDetailPage({
                     return (
                       <Link
                         key={agent.id}
-                        to={`/agents/${agent.urlKey}/skills`}
+                        to={`/agents/${agent.id}/skills`}
                         className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm no-underline hover:bg-accent/40"
                       >
                         <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -3907,7 +3907,7 @@ function SkillPane({
                 {usedBy.map((agent) => (
                   <Link
                     key={agent.id}
-                    to={`/agents/${agent.urlKey}/skills`}
+                    to={`/agents/${agent.id}/skills`}
                     className="group rounded-md border border-transparent p-2 no-underline hover:border-border hover:bg-accent/40"
                   >
                     <Identity name={agent.name} size="sm" />
