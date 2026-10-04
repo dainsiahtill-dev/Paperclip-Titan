@@ -1,4 +1,9 @@
 import { runIdentityContexts } from "@paperclipai/db";
+import { callGovernedStdio, GovernedProbeError } from "./governed-stdio.js";
+import { preflightDigest, preflightProfile } from "./agent-preflight-profile.js";
+import { environments, instanceSettings } from "@paperclipai/db";
+import type { AgentPreflightCheck } from "@paperclipai/shared";
+import { toolAccessService } from "./tool-access.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { logger } from "../middleware/logger.js";
@@ -4877,6 +4882,7 @@ export function createToolGatewayService(
   }
 
   async function callLocalStdioMcp(input: {
+    session: ToolGatewaySession;
     connection: typeof toolConnections.$inferSelect;
     entry?: typeof toolCatalogEntries.$inferSelect;
     template: LocalStdioRuntimeTemplate;
@@ -4886,6 +4892,36 @@ export function createToolGatewayService(
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
   }): Promise<unknown> {
+    // This binding is captured by the host after workspace/target resolution.
+    // Tool parameters and live agent config cannot select a different launch root.
+    const [boundRun] = input.session.runId ? await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, profile: heartbeatRuns.runnerProfileJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, input.session.runId)).limit(1) : [];
+    let profile = asRecord(asRecord(boundRun?.profile)?.governedStdioV1);
+    // Existing board Test-tab execution has no run. Bind it to the selected
+    // saved employee, including its environment, instead of server cwd.
+    const savedTest = !input.session.runId && input.session.actorType === "user" && Boolean(input.session.agentId);
+    if (savedTest) {
+      const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.session.agentId!), eq(agents.companyId, input.session.companyId))).limit(1);
+      const [settings] = await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, "default")).limit(1);
+      const environmentId = agent?.defaultEnvironmentId ?? settings?.defaultEnvironmentId;
+      const [environment] = environmentId ? await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1) : [];
+      if (agent && (!environmentId || environment?.driver === "local" && environment.status === "active") && !settings?.experimental?.enableManagedSandboxOnly && settings?.general?.executionMode !== "kubernetes") {
+        profile = { version: 1, companyId: agent.companyId, agentId: agent.id, ...preflightProfile({ adapterType: agent.adapterType, config: agent.adapterConfig, runtimeConfig: agent.runtimeConfig, target: "local", source: "saved_agent" }) };
+      }
+    }
+    if ((!savedTest && (!boundRun || boundRun.companyId !== input.session.companyId || boundRun.agentId !== input.session.agentId || !ACTIVE_GATEWAY_RUN_STATUSES.has(boundRun.status)))
+      || profile?.version !== 1 || profile.companyId !== input.session.companyId || profile.agentId !== input.session.agentId || profile.projectId !== input.session.projectId
+      || (!savedTest && profile.runId !== input.session.runId)
+      || profile.source !== (savedTest ? "saved_agent" : "frozen_run") || profile.target !== "local" || typeof profile.cwd !== "string" || !profile.cwd.startsWith("/")) {
+      throw new ToolGatewayHttpError(422, "Local stdio requires a host-bound local run workspace; this execution is unverified.", "stdio_profile_unverified");
+    }
+    if (profile.sandbox === "read-only") {
+      if (!input.template.command) throw new ToolGatewayHttpError(422, "Approved stdio executable is unavailable.", "stdio_command_unverified");
+      try {
+        return await callGovernedStdio({ command: input.template.command, args: input.template.args, cwd: profile.cwd, env: input.env,
+          method: input.protocolMethod ?? "tools/call", params: input.protocolParams ?? { name: input.entry?.toolName, arguments: input.parameters ?? {} }, timeoutMs: input.timeoutMs });
+      } catch (error) { throw new ToolGatewayHttpError(502, error instanceof GovernedProbeError ? error.message : "Confined stdio request failed.", error instanceof GovernedProbeError ? error.code : "stdio_unverified"); }
+    }
     if (!input.template.command) {
       throw new ToolGatewayHttpError(
         501,
@@ -4898,8 +4934,10 @@ export function createToolGatewayService(
       );
     }
     const child = spawn(input.template.command, input.template.args, {
+      cwd: profile.cwd,
       env: input.env,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
     let stdout = "";
     let stderr = "";
@@ -5053,8 +5091,17 @@ export function createToolGatewayService(
     } finally {
       clearTimeout(timer);
       child.stdin.end();
-      child.kill("SIGTERM");
-      await exitPromise.catch(() => undefined);
+      const kill = (signal: NodeJS.Signals) => { if (child.pid) { try { process.kill(-child.pid, signal); } catch { /* Already stopped. */ } } };
+      kill("SIGTERM");
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      let exited = false;
+      const drain = exitPromise.catch(() => undefined).then(() => { exited = true; });
+      await Promise.race([drain, new Promise<void>(resolve => { drainTimer = setTimeout(resolve, 150); })]);
+      if (drainTimer) clearTimeout(drainTimer);
+      kill("SIGKILL");
+      await Promise.race([drain, new Promise<void>(resolve => { drainTimer = setTimeout(resolve, 1000); })]);
+      if (drainTimer) clearTimeout(drainTimer);
+      if (!exited) throw new ToolGatewayHttpError(502, "Stdio process termination could not be verified.", "stdio_cleanup_unverified");
     }
   }
 
@@ -5228,6 +5275,7 @@ export function createToolGatewayService(
       },
       async () =>
         callLocalStdioMcp({
+          session: input.session,
           connection: input.connection,
           template,
           env,
@@ -6164,6 +6212,7 @@ export function createToolGatewayService(
       async (handle) => {
         handle.appendLog("stdout", `calling ${entry.toolName}`);
         return callLocalStdioMcp({
+          session,
           connection,
           entry,
           template,
@@ -8165,6 +8214,33 @@ export function createToolGatewayService(
   }
 
   return {
+    /** A read-only preview. No session rows, runtime slots, secret resolution or health writes. */
+    async preflightLocalConnection(input: { companyId: string; agentId: string; connectionId: string; cwd: string; requiredTools: string[]; responsibleUserId: string | null }): Promise<AgentPreflightCheck> {
+      const code = `mcp:${input.connectionId}`;
+      try {
+        runtimeSupervisor.assertLocalStdioAvailable();
+        await assertAgentInCompany(input.companyId, input.agentId);
+        const effective = await toolAccessService(db).getEffectiveProfilesForAgent(input.companyId, input.agentId);
+        if (!effective.installedConnections.some(connection => connection.id === input.connectionId)) return { code, status: "error", message: "Required connection is not installed for this employee in this company." };
+        const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.id, input.connectionId), eq(toolConnections.companyId, input.companyId))).limit(1);
+        if (!connection || !connection.enabled || connection.status !== "active") return { code, status: "error", message: "Required connection is unavailable." };
+        if (connection.transport !== "local_stdio") return { code, status: "unverified", message: "Basic checks support approved local stdio only; this connection was not contacted." };
+        const session: ToolGatewaySession = { id: "preflight", token: "", companyId: input.companyId, agentId: input.agentId, runId: null, issueId: null, projectId: null, responsibleUserId: input.responsibleUserId, createdAt: new Date(), expiresAt: new Date() };
+        const permitted = await listToolsForContext(session);
+        if (input.requiredTools.some(name => !permitted.some(tool => tool.connectionId === connection.id && tool.upstreamToolName === name))) return { code, status: "error", message: "A required tool is absent from the employee's governed tool access." };
+        const grant = await resolveConnectionGrant(session, connection);
+        const template = await resolveLocalStdioRuntimeTemplate(connection);
+        if (!template.command) return { code, status: "unverified", message: "Approved stdio template has no executable to probe." };
+        if (template.envKeys.length || grant.credentialSecretRefs.length) return { code, status: "unverified", message: "Credential-bearing stdio is not probed by the credential-free basic check." };
+        const result = asRecord(await callGovernedStdio({ command: template.command, args: template.args, cwd: input.cwd, method: "tools/list", timeoutMs: 5000 }));
+        if (!Array.isArray(result?.tools)) return { code, status: "error", message: "MCP tools/list returned no valid tool list." };
+        const names = result.tools.map(tool => stringValue(asRecord(tool)?.name)).filter(Boolean);
+        const missing = input.requiredTools.filter(name => !names.includes(name));
+        const fingerprint = preflightDigest({ templateId: template.templateId, command: template.command, args: template.args, names, cwd: input.cwd, boundary: "source-read-only-network-denied-v1" });
+        return missing.length ? { code, status: result.nextCursor ? "unverified" : "error", message: result.nextCursor ? "MCP tools/list is paginated; required tools beyond the first page remain unverified." : "MCP initialized but a required tool is missing.", detail: missing.join(", "), fingerprint }
+          : { code, status: "connected", message: "MCP initialized and listed all required tools in the employee workspace under source-read-only confinement.", detail: input.requiredTools.join(", "), fingerprint };
+      } catch (error) { return { code, status: error instanceof ToolRuntimeSupervisorError || error instanceof GovernedProbeError && error.code.includes("unverified") ? "unverified" : "error", message: error instanceof GovernedProbeError || error instanceof ToolRuntimeSupervisorError ? error.message : "Connection authorization or confined MCP handshake failed." }; }
+    },
     async recordRuntimeMcpDeliveryDiagnostic(input: {
       companyId: string;
       agentId: string;

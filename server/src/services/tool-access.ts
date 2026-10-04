@@ -7624,7 +7624,7 @@ export function toolAccessService(
             : isComposioConnection(connection)
               ? "Composio accepted the API key and returned its toolkits."
               : connection.transport === "local_stdio"
-                ? "Approved stdio template is ready."
+                ? "Approved stdio template and credential references are configured. MCP initialize and tools/list have not been tested; run the employee basic check."
                 : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);

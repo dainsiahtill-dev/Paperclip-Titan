@@ -1,4 +1,5 @@
 import { AGENT_SAFETY_PRESETS } from "../agent-safety-presets.js";
+import { agentReadinessRequirementsSchema } from "../agent-readiness.js";
 import { aiConnectionBindingSchema } from "../ai-connections.js";
 import { z } from "zod";
 import {
@@ -63,6 +64,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
+  readinessRequirements: agentReadinessRequirementsSchema.optional(),
   safetyPreset: z.enum(AGENT_SAFETY_PRESETS).optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   quotaFallback: agentQuotaFallbackConfigSchema.optional(),

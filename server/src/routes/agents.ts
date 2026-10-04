@@ -1,5 +1,6 @@
 import { applyAgentSafetyPreset, agentSafetyPreset, assertAgentSafetyPresetTransition, enforceAgentSafetyPreset } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { runAgentBasicPreflight } from "../services/agent-basic-preflight.js";
 import { withCompanyClaudeModelSuggestions } from "../services/claude-model-suggestions.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { buildQuotaBackupConfig } from "../services/agent-quota-fallback-policy.js";
@@ -184,6 +185,7 @@ import {
 } from "../services/setup-token-session.js";
 import type {
   DeploymentMode,
+  DeploymentExposure,
   AdapterAuthSessionStatus,
   AdapterAuthSessionFailure,
   ClaudeSetupTokenSessionResponse,
@@ -451,6 +453,8 @@ export function agentRoutes(
     pluginWorkerManager?: PluginWorkerManager;
     /** The active deployment mode. The confidential transport guard reads it. */
     deploymentMode?: DeploymentMode;
+    deploymentExposure?: DeploymentExposure;
+    trustedLocalStdioRuntimeHost?: string | null;
     /**
      * The dedicated proxy IP or CIDR allowlist for the confidential setup-token
      * responses (SR-7). The global `TRUST_PROXY` setting does not satisfy the
@@ -3384,6 +3388,16 @@ export function agentRoutes(
       return validateManagedAgentBinding(req, agent.companyId, agent.id, policy.backup.adapterType, buildQuotaBackupConfig({ ...agent, metadata: null }, policy.backup), policy.backup.aiConnection, agent.defaultEnvironmentId, false, newAgent);
     }
   }
+
+  router.post("/agents/:id/basic-preflight", validate(z.object({}).strict()), async (req, res) => {
+    assertBoard(req);
+    const agent = await getAccessibleAgent(req, res, req.params.id as string);
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    // Only saved config is accepted. This path deliberately does not prepare
+    // auth, acquire leases, create directories, or invoke testEnvironment.
+    res.json(await runAgentBasicPreflight(db, agent, responsibleUserForAiRequest(req), { deploymentMode: options.deploymentMode, deploymentExposure: options.deploymentExposure, trustedLocalStdioRuntimeHost: options.trustedLocalStdioRuntimeHost }));
+  });
 
   router.get("/agents/:id/quota-fallback", async (req, res) => {
     const agent = await getAccessibleAgent(req, res, req.params.id as string);

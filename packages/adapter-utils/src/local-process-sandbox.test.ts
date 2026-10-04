@@ -31,6 +31,22 @@ afterEach(async () => {
 });
 
 describe("local process sandbox", () => {
+  it.runIf(process.platform === "linux")("rejects writable mounts overlapping a read-only source root", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-readonly-overlap-")); cleanup.push(workspace);
+    await expect(buildLocalProcessSandboxSpawnTarget({ executable: "/bin/sh", args: [], cwd: workspace, options: { workspaceDir: workspace, workspaceAccess: "ro", filesystemScope: "workspace", managedPaths: [{ path: workspace, access: "rw" }] } })).rejects.toThrow("read-only workspace");
+  });
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))("launches usr-merged executables with a read-only workspace and denies source writes", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-readonly-"));
+    cleanup.push(workspace);
+    await fs.writeFile(path.join(workspace, "source.txt"), "original");
+    const result = await runChildProcess("readonly-probe", "/bin/sh", ["-c", "cat source.txt; if printf changed > source.txt; then exit 9; fi"], {
+      cwd: workspace, env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {},
+      localProcessSandbox: { workspaceDir: workspace, filesystemScope: "workspace", workspaceAccess: "ro", networkScope: "deny", command: process.env.PAPERCLIP_TEST_BWRAP },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain("original");
+    expect(await fs.readFile(path.join(workspace, "source.txt"), "utf8")).toBe("original");
+  });
   it.runIf(process.platform !== "linux")("rejects sandbox scopes on unsupported hosts", async () => {
     await expect(buildLocalProcessSandboxSpawnTarget({
       executable: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd(),

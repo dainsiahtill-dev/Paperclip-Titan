@@ -1,4 +1,5 @@
 import { enforceAgentSafetyPreset, resolveAgentPresetWorkspaceConcurrency } from "@paperclipai/shared";
+import { preflightProfile, freezeGovernedStdioProfile } from "./agent-preflight-profile.js";
 import { compareQueuedCandidates } from "./queued-run-fairness.js";
 import { deriveQuotaProbeIdentity } from "./quota-probe-identity.js";
 import { reconcileQuotaContinuations } from "./quota-recovery-continuations.js";
@@ -24629,6 +24630,17 @@ export function heartbeatService(
                   }
                 : {}),
             };
+            const stdioWorkspace = parseObject(context.paperclipWorkspace);
+            const stdioConfiguredCwd = readNonEmptyString(runtimeConfig.cwd);
+            const stdioCwd = executionTarget?.workspaceRealization?.mode === "in_place"
+              ? executionTarget.workspaceRealization.authoritativeRoot
+              : stdioWorkspace.source === "agent_home" && stdioConfiguredCwd
+                ? stdioConfiguredCwd : readNonEmptyString(stdioWorkspace.cwd) ?? stdioConfiguredCwd;
+            const stdioProfile = preflightProfile({ adapterType: agent.adapterType, config: runtimeConfig, runtimeConfig: agent.runtimeConfig,
+              cwd: stdioCwd ? await fs.realpath(stdioCwd).catch(() => null) : null, projectId: issueRef?.projectId ?? null,
+              target: executionTarget?.kind === "remote" ? executionTarget.transport === "sandbox" ? "sandbox" : "remote" : executionTarget?.kind === "local" ? "local" : remoteExecution ? "remote" : "local", source: "frozen_run" });
+            // Additive host-only binding; never overwrite native or retry descriptors.
+            await freezeGovernedStdioProfile(db, { runId: run.id, companyId: agent.companyId, agentId: agent.id, profile: stdioProfile });
             const runtimeTools = createAdapterRuntimeToolAccess({
               agentId: agent.id,
               companyId: agent.companyId,

@@ -630,6 +630,8 @@ export function createToolRuntimeSupervisor(db: Db, options: ToolRuntimeSupervis
   }
 
   return {
+    /** Read-only host eligibility check; does not allocate a runtime slot. */
+    assertLocalStdioAvailable,
     async useConnectionSlot<T>(
       input: {
         companyId: string;

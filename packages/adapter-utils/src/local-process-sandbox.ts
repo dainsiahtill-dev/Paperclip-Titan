@@ -19,6 +19,8 @@ export interface LocalProcessSandboxPathAlias {
 
 export interface LocalProcessSandboxOptions {
   workspaceDir: string;
+  /** Host-owned probe/audit boundary. Default remains writable for normal runs. */
+  workspaceAccess?: LocalProcessSandboxAccess;
   filesystemScope?: "workspace" | null;
   managedPaths?: LocalProcessSandboxPath[];
   extraPaths?: LocalProcessSandboxPath[];
@@ -49,9 +51,10 @@ interface NetworkAllowlistProxy {
 }
 
 const SYSTEM_READ_PATHS = [
+  // usr-merged aliases above must have their targets mounted first.
+  "/usr",
   "/bin",
   "/sbin",
-  "/usr",
   "/lib",
   "/lib64",
   "/etc/ca-certificates",
@@ -353,6 +356,16 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 
   const workspaceDir = normalizeAbsolutePath(input.options.workspaceDir, "Sandbox workspaceDir");
   const cwd = normalizeAbsolutePath(input.cwd, "Sandbox cwd");
+  if (input.options.workspaceAccess === "ro") {
+    if (filesystemScope !== "workspace") throw new Error("A read-only workspace requires workspace filesystem confinement.");
+    const root = await fs.realpath(workspaceDir);
+    for (const entry of [...(input.options.managedPaths ?? []), ...(input.options.extraPaths ?? [])]) {
+      if (entry.access !== "rw") continue;
+      const candidate = await fs.realpath(entry.path).catch(() => path.resolve(entry.path));
+      const contains = (parent: string, child: string) => { const relative = path.relative(parent, child); return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)); };
+      if (contains(root, candidate) || contains(candidate, root)) throw new Error("Writable mounts cannot overlap a read-only workspace.");
+    }
+  }
   if (filesystemScope === "workspace") {
     const relativeCwd = path.relative(workspaceDir, cwd);
     if (relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd)) {
@@ -409,7 +422,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     }
     for (const managedPath of input.options.managedPaths ?? []) await mount(managedPath.path, managedPath.access);
     for (const extraPath of input.options.extraPaths ?? []) await mount(extraPath.path, extraPath.access);
-    await mount(workspaceDir, "rw");
+    await mount(workspaceDir, input.options.workspaceAccess ?? "rw");
     for (const [index, alias] of (input.options.pathAliases ?? []).entries()) {
       const aliasPath = normalizeAbsolutePath(alias.path, `Sandbox pathAliases[${index}].path`);
       const aliasTarget = normalizeAbsolutePath(alias.target, `Sandbox pathAliases[${index}].target`);
@@ -423,7 +436,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
         throw new Error(`Sandbox path alias target "${aliasTarget}" does not exist.`);
       }
       addParentDirectories(args, created, aliasPath);
-      args.push("--bind", aliasTarget, aliasPath);
+      args.push(input.options.workspaceAccess === "ro" ? "--ro-bind" : "--bind", aliasTarget, aliasPath);
       created.add(aliasPath);
     }
 

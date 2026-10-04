@@ -87,7 +87,7 @@ async function createAgent(db: Db, companyId: string, permissions: Record<string
       name: `Agent ${randomUUID()}`,
       role: "engineer",
       adapterType: "process",
-      adapterConfig: {},
+      adapterConfig: { cwd: process.cwd() },
       runtimeConfig: {},
       permissions,
     })
@@ -96,6 +96,7 @@ async function createAgent(db: Db, companyId: string, permissions: Record<string
 }
 
 async function createIssueAndRun(db: Db, companyId: string, agentId: string) {
+  const runId = randomUUID();
   const project = await db
     .insert(projects)
     .values({ companyId, name: `Project ${randomUUID()}` })
@@ -115,11 +116,13 @@ async function createIssueAndRun(db: Db, companyId: string, agentId: string) {
   const run = await db
     .insert(heartbeatRuns)
     .values({
+      id: runId,
       companyId,
       agentId,
       invocationSource: "assignment",
       status: "running",
       contextSnapshot: { issueId: issue.id, projectId: project.id },
+      runnerProfileJson: { governedStdioV1: { version: 1, runId, companyId, agentId, source: "frozen_run", adapterType: "process", cwd: process.cwd(), projectId: project.id, target: "local", sandbox: null, model: null, effort: null } },
     })
     .returning()
     .then((rows) => rows[0]!);

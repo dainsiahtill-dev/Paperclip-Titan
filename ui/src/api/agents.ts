@@ -1,4 +1,5 @@
 import type {
+  AgentPreflightResult,
   Agent,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -227,6 +228,8 @@ export const agentsApi = {
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
     ),
+  basicPreflight: (agentId: string, companyId?: string) =>
+    api.post<AgentPreflightResult>(agentPath(agentId, companyId, "/basic-preflight"), {}),
   testEnvironment: (
     companyId: string,
     type: string,

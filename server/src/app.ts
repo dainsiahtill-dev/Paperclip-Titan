@@ -713,11 +713,17 @@ export async function createApp(
     // production, so a failed login leaves no log trail.
     log: (line) => logger.info(line),
   });
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
+    process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
+    null;
   api.use(
     agentRoutes(db, {
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      trustedLocalStdioRuntimeHost,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
       confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,
       setupTokenLogin: setupTokenLoginTransport,
@@ -765,10 +771,6 @@ export async function createApp(
       service: chatChannels,
     }),
   );
-  const trustedLocalStdioRuntimeHost =
-    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
-    process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
-    null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));

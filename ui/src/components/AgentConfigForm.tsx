@@ -1632,6 +1632,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          {!isCreate && <AgentBasicPreflight agentId={props.agent.id} companyId={props.agent.companyId} requirements={asObject(overlay.runtime.runtimeConfig).readinessRequirements ?? runtimeConfig.readinessRequirements} onRequirementsChange={value => markRuntimeConfig("readinessRequirements", value)} disabled={isDirty || isSavePending} />}
           {!isCreate && <Field label="Safety preset" hint="Operator-managed source-file constraints. Review and task-status permissions are unchanged.">
             <select aria-label="Safety preset" className={inputClass} value={Object.prototype.hasOwnProperty.call(asObject(overlay.runtime.runtimeConfig), "safetyPreset") ? String(asObject(overlay.runtime.runtimeConfig).safetyPreset ?? "") : String(runtimeConfig.safetyPreset ?? "")} onChange={(event) => {
               const preset = event.target.value as AgentSafetyPreset | "";
@@ -4168,3 +4169,4 @@ function ThinkingEffortDropdown({
     </Field>
   );
 }
+import { AgentBasicPreflight } from "./AgentBasicPreflight";

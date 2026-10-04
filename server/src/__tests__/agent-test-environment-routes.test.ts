@@ -93,6 +93,8 @@ vi.mock("../services/instance-settings.js", () => ({
 }));
 
 const testEnvironmentSpy = vi.fn();
+const mockBasicPreflight = vi.hoisted(() => vi.fn(async () => ({ status: "unverified", modelInvoked: false, checks: [], testedAt: "2026-10-05T00:00:00Z" })));
+vi.mock("../services/agent-basic-preflight.js", () => ({ runAgentBasicPreflight: mockBasicPreflight }));
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -150,7 +152,7 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
   );
 }
 
-async function createApp() {
+async function createApp(source = "local_implicit", actorType = "board") {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -159,10 +161,10 @@ async function createApp() {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
-      type: "board",
+      type: actorType,
       userId: "local-board",
       companyIds: ["company-1"],
-      source: "local_implicit",
+      source,
       isInstanceAdmin: false,
     };
     next();
@@ -178,6 +180,21 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent test-environment route", () => {
+  it("runs the saved-agent basic check independently of paid tests and rejects body overrides", async () => {
+    const id = "a1111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({ id, companyId: "company-1", adapterType: "codex_local", adapterConfig: { cwd: "/saved" }, runtimeConfig: {} });
+    const app = await createApp();
+    const ok = await request(app).post(`/api/agents/${id}/basic-preflight`).send({});
+    expect(ok.status).toBe(200); expect(ok.body.modelInvoked).toBe(false);
+    expect(testEnvironmentSpy).not.toHaveBeenCalled(); expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled(); expect(mockPrepareManagedAiRuntime).not.toHaveBeenCalled();
+    const bad = await request(app).post(`/api/agents/${id}/basic-preflight`).send({ adapterConfig: { cwd: "/override" }, testCredentials: { OPENAI_API_KEY: "secret" } });
+    expect(bad.status).toBe(400); expect(mockBasicPreflight).toHaveBeenCalledTimes(1);
+    mockAgentService.getById.mockResolvedValue({ id, companyId: "company-foreign" });
+    const foreign = await request(await createApp("session")).post(`/api/agents/${id}/basic-preflight`).send({});
+    expect([403, 404]).toContain(foreign.status); expect(mockBasicPreflight).toHaveBeenCalledTimes(1);
+    const worker = await request(await createApp("agent_key", "agent")).post(`/api/agents/${id}/basic-preflight`).send({});
+    expect(worker.status).toBe(403); expect(mockBasicPreflight).toHaveBeenCalledTimes(1);
+  });
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
