@@ -1043,6 +1043,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  let seededCompanyCount = 0;
   async function seedCompany() {
     const companyId = randomUUID();
     fixtureCompanies.add(companyId);
@@ -1051,7 +1052,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db.insert(companies).values({
       id: companyId,
       name: `Chat Test ${companyId.slice(0, 8)}`,
-      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+      // This database hosts thousands of fixtures; shortened random UUIDs can
+      // collide even when each company ID is unique.
+      issuePrefix: `C${(++seededCompanyCount).toString(36).toUpperCase().padStart(7, "0")}`,
       requireBoardApprovalForNewAgents: false,
     });
     const now = new Date();

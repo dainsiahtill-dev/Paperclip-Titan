@@ -227,7 +227,11 @@ describe.sequential("closed isolated workspace issue routes", () => {
       };
       next();
     });
-    app.use("/api", issueRoutes({} as any, {} as any));
+    // addComment is mocked, so this fixture has no persisted wake outbox row.
+    const db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [] }) }) }),
+    };
+    app.use("/api", issueRoutes(db as any, {} as any));
     app.use(errorHandler);
     return app;
   }

@@ -190,7 +190,7 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue workspace command authorization", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -261,6 +261,7 @@ describe("issue workspace command authorization", () => {
           onRejected,
         ),
     }));
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
   });
 
   it("rejects agent callers that create issue workspace runtime provision commands", async () => {
