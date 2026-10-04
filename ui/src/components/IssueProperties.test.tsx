@@ -2691,6 +2691,9 @@ describe("IssueProperties", () => {
         status: "in_progress",
         assigneeAgentId: "agent-1",
         executionPolicy: createExecutionPolicy({
+          resourceLimits: { maxAutomaticRuns: 4, maxRunSeconds: 120 },
+          deliveryPolicy: { version: 1, mode: "verified_delivery", reviewerAgentIds: ["reviewer-1"] },
+          authorizationPolicy: { protectedAgent: { requiresApproval: true } },
           monitor: {
             nextCheckAt: "2026-04-11T12:30:00.000Z",
             notes: "Check deployment",
@@ -2757,6 +2760,10 @@ describe("IssueProperties", () => {
         mode: "normal",
         commentRequired: true,
         stages: [],
+        monitor: null,
+        resourceLimits: { maxAutomaticRuns: 4, maxRunSeconds: 120 },
+        deliveryPolicy: { version: 1, mode: "verified_delivery", reviewerAgentIds: ["reviewer-1"] },
+        authorizationPolicy: { protectedAgent: { requiresApproval: true } },
       },
     });
 

@@ -25,6 +25,7 @@ describe("collectLiveIssueIds", () => {
       {
         id: "run-1",
         status: "running",
+        execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]>,
         invocationSource: "scheduler",
         triggerDetail: null,
         startedAt: "2026-04-20T10:00:00.000Z",
@@ -51,6 +52,7 @@ describe("collectLiveIssueIds", () => {
       {
         id: "run-3",
         status: "running",
+        execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]>,
         invocationSource: "scheduler",
         triggerDetail: null,
         startedAt: "2026-04-20T10:02:00.000Z",
@@ -64,6 +66,7 @@ describe("collectLiveIssueIds", () => {
       {
         id: "run-4",
         status: "running",
+        execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]>,
         invocationSource: "scheduler",
         triggerDetail: null,
         startedAt: "2026-04-20T10:03:00.000Z",
@@ -97,6 +100,7 @@ describe("collectLiveIssueIds", () => {
       {
         id: "run-terminal",
         status: "running",
+        execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]>,
         invocationSource: "scheduler",
         triggerDetail: null,
         startedAt: "2026-04-20T10:00:00.000Z",
@@ -129,21 +133,22 @@ describe("collectLiveIssueIds", () => {
   });
 
   it("counts only confirmed working projections as live", () => {
-    const phases = ["working", "reconnecting", "retry_scheduled", "finishing", "waiting_for_answer", "waiting_for_access", "queued"] as const;
+    const phases = ["working", "preparing", "confirming", "reconnecting", "retry_scheduled", "finishing", "waiting_for_answer", "waiting_for_access", "queued"] as const;
     const runs = phases.map((phase) => liveRun({
       id: phase,
       issueId: phase,
       execution: { phase } as NonNullable<LiveRunForIssue["execution"]>,
     }));
     runs.push(liveRun({ id: "unstarted", issueId: "unstarted", status: "queued" }));
+    runs.push(liveRun({ id: "unknown", issueId: "unknown", status: "running" }));
     expect([...collectLiveIssueIds(runs)]).toEqual(["working"]);
   });
 
   it("keeps newer terminal snapshots authoritative when stale non-terminal snapshots appear later", () => {
     const liveRuns: LiveRunForIssue[] = [
-      liveRun({ id: "run-done", issueId: "issue-done", status: "running" }),
+      liveRun({ id: "run-done", issueId: "issue-done", status: "running", execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]> }),
       liveRun({ id: "run-cancelled", issueId: "issue-cancelled", status: "queued" }),
-      liveRun({ id: "run-open", issueId: "issue-open", status: "running" }),
+      liveRun({ id: "run-open", issueId: "issue-open", status: "running", execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]> }),
     ];
 
     expect([...collectLiveIssueIds(liveRuns, [
@@ -157,7 +162,7 @@ describe("collectLiveIssueIds", () => {
 
   it("allows a newer non-terminal snapshot to reopen an issue with a stale terminal snapshot", () => {
     const liveRuns: LiveRunForIssue[] = [
-      liveRun({ id: "run-reopened", issueId: "issue-reopened", status: "running" }),
+      liveRun({ id: "run-reopened", issueId: "issue-reopened", status: "running", execution: { phase: "working" } as NonNullable<LiveRunForIssue["execution"]> }),
       liveRun({ id: "run-terminal", issueId: "issue-terminal", status: "queued" }),
     ];
 

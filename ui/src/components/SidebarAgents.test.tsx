@@ -705,7 +705,7 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
     ]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
-      { id: "run-1", agentId: "agent-b", status: "running" },
+      { id: "run-1", agentId: "agent-b", status: "running", execution: { phase: "working" } },
     ]);
 
     await renderSidebarAgents();
@@ -727,7 +727,7 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-d", name: "Delta", urlKey: "delta" }),
     ]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
-      { id: "run-1", agentId: "agent-a", status: "running" },
+      { id: "run-1", agentId: "agent-a", status: "running", execution: { phase: "working" } },
     ]);
 
     await renderSidebarAgentsWithFakeTimers();
@@ -771,7 +771,7 @@ describe("SidebarAgents", () => {
       makeAgent({ id: "agent-d", name: "Delta", urlKey: "delta" }),
     ]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
-      { id: "run-1", agentId: "agent-a", status: "running" },
+      { id: "run-1", agentId: "agent-a", status: "running", execution: { phase: "working" } },
     ]);
 
     await renderSidebarAgentsWithFakeTimers();
@@ -788,12 +788,12 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Alpha"]);
 
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
-      { id: "run-2", agentId: "agent-b", status: "running" },
+      { id: "run-2", agentId: "agent-b", status: "running", execution: { phase: "working" } },
     ]);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
       queryClient.setQueryData(queryKeys.liveRuns("company-1"), [
-        { id: "run-2", agentId: "agent-b", status: "running" },
+        { id: "run-2", agentId: "agent-b", status: "running", execution: { phase: "working" } },
       ]);
     });
     await act(async () => {

@@ -9,6 +9,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
 import type {
+  ExecutionProjection,
   IssueDocument,
   IssueQueuedCommentQueue,
   IssueThreadInteraction,
@@ -1702,6 +1703,7 @@ describe("TaskChatThread runtime transcript selection", () => {
           id: "native-live-steered",
           runtimeMode: "native",
           status: "running",
+          execution: { phase: "working" } as ExecutionProjection,
           invocationSource: "issue",
           triggerDetail: null,
           startedAt: "2026-08-25T18:00:00.000Z",

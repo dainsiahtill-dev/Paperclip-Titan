@@ -42,6 +42,7 @@ import {
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
+import { commentContentDigest } from "../../../server/src/services/comment-content-digest";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -51,6 +52,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listComments: vi.fn(),
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
+  getDeliveryAssessment: vi.fn(),
   listFeedbackVotes: vi.fn(),
   listInteractions: vi.fn(),
   getQueuedComments: vi.fn(),
@@ -76,6 +78,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
+  listDocuments: vi.fn(),
   rejectInteraction: vi.fn(),
 }));
 
@@ -1318,6 +1321,17 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    mockIssuesApi.getDeliveryAssessment.mockResolvedValue({
+      version: 1,
+      mode: "agent_claim_policy",
+      contractId: null,
+      contractRevision: 0,
+      contractHash: null,
+      criteria: [],
+      canComplete: true,
+      reviewerAgentIds: [],
+      permissions: { canReview: false, canManagePolicy: true },
+    });
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.getQueuedComments.mockResolvedValue(
@@ -1383,6 +1397,7 @@ describe("IssueDetail", () => {
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
     mockOpenPanel.mockClear();
     mockClosePanel.mockClear();
     mockSetPanelVisible.mockClear();
@@ -4249,7 +4264,7 @@ describe("IssueDetail", () => {
         workMode: "planning",
       }),
     );
-    mockIssuesApi.getDocument.mockResolvedValue({ id: "doc-1", key: "plan" });
+    mockIssuesApi.listDocuments.mockResolvedValue([{ id: "doc-1", key: "plan" }]);
 
     await act(async () => {
       root.render(
@@ -4324,7 +4339,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
-    mockIssuesApi.getDocument.mockResolvedValue({ id: "doc-1", key: "plan" });
+    mockIssuesApi.listDocuments.mockResolvedValue([{ id: "doc-1", key: "plan" }]);
 
     await act(async () => {
       root.render(
@@ -5793,6 +5808,8 @@ describe("IssueDetail", () => {
 
   it("promotes a steered message immediately while its durable timeline position refreshes", async () => {
     const queue = createQueuedCommentQueue();
+    const submittedComment = queue.entries[0].comment;
+    submittedComment.deliveryContentDigest = commentContentDigest(submittedComment);
     const steeredQueue = createQueuedCommentQueue({
       queueId: null,
       state: null,
@@ -5897,6 +5914,9 @@ describe("IssueDetail", () => {
         details: {
           commentId: "queued-comment-1",
           targetRunId: "run-active-1",
+          deliveryId: "steering-delivery-1",
+          commentVersion: submittedComment.updatedAt.toISOString(),
+          payloadSha256: submittedComment.deliveryContentDigest,
           duplicate: false,
         },
       },

@@ -60,6 +60,7 @@ describe("TaskChatLiveRunPill", () => {
       root.render(
         <TaskChatLiveRunPill
           status="running"
+          execution={{ phase: "working" } as ExecutionProjection}
           startedAtMs={startedAtMs}
           toolSummary="called 3 tools"
         />,

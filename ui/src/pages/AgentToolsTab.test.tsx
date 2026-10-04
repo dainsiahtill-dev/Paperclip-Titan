@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
+import { AgentToolsTab, mergeInstallDraft } from "./AgentToolsTab";
 
 const mockToolsApi = vi.hoisted(() => ({
   getEffectiveProfilesForAgent: vi.fn(),
@@ -103,9 +104,12 @@ function makePolicy(overrides: Partial<ToolPolicy>): ToolPolicy {
 
 describe("AgentToolsTab", () => {
   let container: HTMLDivElement;
-  let root: ReturnType<typeof createRoot>;
+  let root: ReturnType<typeof createRoot> | null;
+  let queryClient: QueryClient | null;
 
   beforeEach(() => {
+    root = null;
+    queryClient = null;
     container = document.createElement("div");
     document.body.appendChild(container);
     mockToolsApi.getEffectiveProfilesForAgent.mockReset();
@@ -128,13 +132,16 @@ describe("AgentToolsTab", () => {
     await act(async () => {
       root?.unmount();
     });
+    root = null;
+    queryClient?.clear();
+    queryClient = null;
     container.remove();
     vi.clearAllMocks();
   });
 
   async function renderTab() {
-    const { AgentToolsTab } = await import("./AgentToolsTab");
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient = client;
     const agent = { id: "agent-1", name: "Coder" } as never;
     await act(async () => {
       root = createRoot(container);
@@ -150,8 +157,6 @@ describe("AgentToolsTab", () => {
   }
 
   it("preserves checkbox changes made after the last saved install state", async () => {
-    const { mergeInstallDraft } = await import("./AgentToolsTab");
-
     expect(
       mergeInstallDraft(
         { "conn-1": true, "conn-2": false },
