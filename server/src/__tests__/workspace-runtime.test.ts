@@ -147,6 +147,35 @@ async function runPnpm(cwd: string, args: string[]) {
   await execFileAsync("pnpm", args, { cwd });
 }
 
+// Dependency fixtures exercise the config-writer path. Expose only required
+// tools so an installed host CLI cannot consume their intentionally empty config.
+async function withDependencyProvisioningTools<T>(run: () => Promise<T>, pnpmPath?: string): Promise<T> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-provision-tools-"));
+  const saved = new Map(["PATH", "PAPERCLIP_HOME", "PAPERCLIP_WORKTREES_DIR", "PAPERCLIP_CONFIG", "PAPERCLIP_INSTANCE_ID", "DATABASE_URL"].map(key => [key, process.env[key]]));
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  try {
+    for (const name of ["bash", "sh", "git", "basename", "dirname", "mkdir", "chmod", "rm", "mv", "ln", "find", "sed", "cat", "mktemp", "grep", "flock", "uname", "readlink", "sort", "touch", "cp", "node", "pnpm"]) {
+      const executable = name === "node" ? process.execPath : name === "pnpm" && pnpmPath ? pnpmPath : (await execFileAsync("/bin/sh", ["-c", 'command -v "$1"', "provision-tool", name])).stdout.trim();
+      const wrapper = path.join(root, name);
+      await fs.writeFile(wrapper, `#!/bin/sh\nexec ${quote(executable)} "$@"\n`, { mode: 0o755 });
+    }
+    process.env.PATH = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "home");
+    process.env.PAPERCLIP_WORKTREES_DIR = path.join(root, "worktrees");
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.DATABASE_URL;
+    await expect(execFileAsync(path.join(root, "bash"), ["-c", "command -v paperclipai"])).rejects.toMatchObject({ code: 1 });
+    return await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
 async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source-instance") {
   const configDir = path.join(baseCwd, ".paperclip");
   await fs.mkdir(configDir, { recursive: true });
@@ -1938,7 +1967,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
 
-    const workspace = await realizeExecutionWorkspace({
+    const workspace = await withDependencyProvisioningTools(() => realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
         source: "project_primary",
@@ -1964,7 +1993,7 @@ describe("realizeExecutionWorkspace", () => {
         name: "Codex Coder",
         companyId: "company-1",
       },
-    });
+    }));
 
     expect((await fs.lstat(path.join(workspace.cwd, "node_modules"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(workspace.cwd, "server", "node_modules"))).isSymbolicLink()).toBe(false);
@@ -2019,7 +2048,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "package.json", "pnpm-lock.yaml", "scripts/provision-worktree.sh"]);
     await runGit(repoRoot, ["commit", "-m", "Add minimal provision fixture"]);
 
-    const workspace = await realizeExecutionWorkspace({
+    const workspace = await withDependencyProvisioningTools(() => realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
         source: "project_primary",
@@ -2045,7 +2074,7 @@ describe("realizeExecutionWorkspace", () => {
         name: "Codex Coder",
         companyId: "company-1",
       },
-    });
+    }));
 
     await expect(fs.readFile(path.join(workspace.cwd, ".paperclip", "config.json"), "utf8")).resolves.toContain(
       "\"database\"",
@@ -2111,15 +2140,14 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
-      const runScript = () => execFileAsync(scriptPath, [], {
+      const runScript = () => withDependencyProvisioningTools(() => execFileAsync(scriptPath, [], {
         cwd: worktreeRoot,
         env: {
           ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
-      });
+      }), fakePnpmPath);
 
       await runScript();
       await runScript();
@@ -2351,15 +2379,14 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
-      const result = await execFileAsync(scriptPath, [], {
+      const result = await withDependencyProvisioningTools(() => execFileAsync(scriptPath, [], {
         cwd: worktreeRoot,
         env: {
           ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
         },
-      });
+      }), fakePnpmPath);
 
       expect(result.stderr).toContain("retrying install without --frozen-lockfile");
       await expect(fs.readFile(path.join(worktreeRoot, "node_modules", ".retry-success"), "utf8")).resolves.toBe("");
@@ -2436,7 +2463,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["add", "."]);
     await runGit(repoRoot, ["commit", "-m", "Add pnpm workspace fixture"]);
 
-    const workspace = await realizeExecutionWorkspace({
+    const workspace = await withDependencyProvisioningTools(() => realizeExecutionWorkspace({
       base: {
         baseCwd: repoRoot,
         source: "project_primary",
@@ -2462,7 +2489,7 @@ describe("realizeExecutionWorkspace", () => {
         name: "Codex Coder",
         companyId: "company-1",
       },
-    });
+    }));
 
     expect((await fs.lstat(path.join(workspace.cwd, "node_modules"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(workspace.cwd, "server", "node_modules"))).isSymbolicLink()).toBe(false);
