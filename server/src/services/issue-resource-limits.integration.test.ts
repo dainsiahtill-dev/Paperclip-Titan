@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agentWakeupRequests, agents, companies, costEvents, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { getIssueResourceBlock } from "./issue-resource-limits.js";
 import { issueService } from "./issues.js";
@@ -12,7 +12,7 @@ const support = await getEmbeddedPostgresTestSupport();
   let fixture: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => { fixture = await startEmbeddedPostgresTestDatabase("paperclip-resources-"); db = createDb(fixture.connectionString); }, 20000);
   afterEach(async () => {
-    await db.delete(activityLog); await db.delete(issueComments); await db.delete(costEvents);
+    await db.delete(activityLog); await db.delete(issueComments); await db.delete(costEvents); await db.delete(heartbeatRunEvents);
     await db.delete(issues); await db.delete(heartbeatRuns); await db.delete(agentWakeupRequests); await db.delete(agents); await db.delete(companies);
   });
   afterAll(async () => { await fixture?.cleanup(); });
@@ -108,6 +108,121 @@ const support = await getEmbeddedPostgresTestSupport();
     const s = await seed({ maxTokensPerIssue: 1000 });
     await run(s, s.childId, 10);
     expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
+  });
+
+  async function reportedLegacyRun(s: Awaited<ReturnType<typeof seed>>, command: string, adapterType = "codex_local") {
+    const id = await run(s, s.childId, 10);
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", sessionIdAfter: "fixture-session",
+      runnerProfileJson: { adapterDispatch: { adapterType } },
+      usageJson: { totalTokens: 62077, usageSource: "per_run", persistedSessionId: "fixture-session" },
+      resultJson: { mode: "persistent", status: "completed", stopReason: "completed" },
+    }).where(eq(heartbeatRuns.id, id));
+    await db.insert(heartbeatRunEvents).values({ companyId: s.companyId, agentId: s.agentId, runId: id,
+      seq: 1, eventType: "adapter.invoke", stream: "system", payload: { command, adapterType } });
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 1894, cachedInputTokens: 60032, outputTokens: 151, totalTokens: 62077, occurredAt: new Date() });
+    return id;
+  }
+
+  it("holds historical ACP window totals despite a numeric settled ledger without rewriting history", async () => {
+    const s = await seed({ maxTokensPerIssue: 1500000 });
+    const id = await reportedLegacyRun(s, "/isolated/adapter/node_modules/.bin/codex-acp");
+    const [beforeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
+    const [beforeCost] = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId }))
+      .toMatchObject({ code: "issue_token_usage_unknown", resourceIssueId: s.rootId });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id))).toEqual([beforeRun]);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, id))).toEqual([beforeCost]);
+  });
+
+  it("preserves genuine CLI totals for the same adapter type", async () => {
+    const s = await seed({ maxTokensPerIssue: 62078 });
+    await reportedLegacyRun(s, "/isolated/bin/codex");
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true,
+      resourceLimits: { maxTokensPerIssue: 62077 } } }).where(eq(issues.id, s.rootId));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
+
+  it("allows historical ACP without an aggregate token policy while retaining other limits", async () => {
+    const s = await seed({ maxAutomaticRuns: 2, maxRunSeconds: 600, maxTokensPerRun: 250000 });
+    await reportedLegacyRun(s, "/isolated/bin/codex-acp");
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true,
+      resourceLimits: { maxAutomaticRuns: 1, maxRunSeconds: 600, maxTokensPerRun: 250000 } } }).where(eq(issues.id, s.rootId));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
+  function completeAcpAccounting(id: string) {
+    return { version: 1, source: "codex_session_cumulative_delta", completeness: "complete",
+      runId: id, sessionId: "fixture-session", scopeHash: "a".repeat(64), bindingVerified: true,
+      baselineVerified: true, boundary: "typed_prompt_reply" };
+  }
+
+  it("counts bound current ACP complete totals exactly once", async () => {
+    const s = await seed({ maxTokensPerIssue: 62078 });
+    const id = await reportedLegacyRun(s, "/isolated/bin/codex-acp");
+    await db.update(heartbeatRuns).set({ usageJson: { totalTokens: 62077, usageUnknown: false, usageSource: "per_run",
+      persistedSessionId: "fixture-session", usageAccounting: completeAcpAccounting(id) } }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true,
+      resourceLimits: { maxTokensPerIssue: 62077 } } }).where(eq(issues.id, s.rootId));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
+
+  it("accepts genuine Claude prompt-reset completeness without inventing a cumulative baseline", async () => {
+    const s = await seed({ maxTokensPerIssue: 62078 });
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, s.agentId));
+    const id = await reportedLegacyRun(s, "/isolated/bin/claude-agent-acp", "claude_local");
+    const accounting = { ...completeAcpAccounting(id), source: "claude_prompt_usage", baselineVerified: false,
+      baselineSource: "producer_prompt_usage_reset" };
+    await db.update(heartbeatRuns).set({ usageJson: { totalTokens: 62077, usageUnknown: false, usageSource: "per_run",
+      usageAccounting: accounting } }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(heartbeatRuns).set({ usageJson: { totalTokens: 62077, usageUnknown: false, usageSource: "per_run",
+      usageAccounting: { ...accounting, baselineSource: "unverified" } } }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
+  });
+
+  it.each(["partial", "foreign run", "foreign session", "foreign scope", "foreign source", "missing binding", "missing baseline", "missing boundary"])
+    ("keeps %s ACP accounting unknown despite numeric usage and ledger", async invalid => {
+      const s = await seed({ maxTokensPerIssue: 1500000 });
+      const id = await reportedLegacyRun(s, "/isolated/bin/codex-acp");
+      const accounting: Record<string, unknown> = completeAcpAccounting(id);
+      if (invalid === "partial") accounting.completeness = "partial";
+      if (invalid === "foreign run") accounting.runId = randomUUID();
+      if (invalid === "foreign session") accounting.sessionId = "foreign-session";
+      if (invalid === "foreign scope") accounting.scopeHash = "b".repeat(64);
+      if (invalid === "foreign source") accounting.source = "claude_prompt_usage";
+      if (invalid === "missing binding") accounting.bindingVerified = false;
+      if (invalid === "missing baseline") accounting.baselineVerified = false;
+      if (invalid === "missing boundary") delete accounting.boundary;
+      const expected = completeAcpAccounting(id);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { legacyUsageScope: { version: 1,
+        source: expected.source, sessionId: expected.sessionId, scopeHash: expected.scopeHash } },
+        usageJson: { totalTokens: 62077, usageUnknown: false, usageSource: "per_run",
+        persistedSessionId: "fixture-session", usageAccounting: accounting } }).where(eq(heartbeatRuns.id, id));
+      expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId }))
+        .toMatchObject({ code: "issue_token_usage_unknown" });
+    });
+
+  it.each(["company", "agent", "provider event"])("does not borrow %s ACP invocation authority", async foreign => {
+    const s = await seed({ maxTokensPerIssue: 62078 });
+    const id = await reportedLegacyRun(s, "/isolated/bin/codex");
+    let companyId = s.companyId, agentId = s.agentId;
+    if (foreign === "company") {
+      companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Foreign", issuePrefix: "FOR" });
+    }
+    if (foreign !== "provider event") {
+      agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Foreign", role: "engineer", adapterType: "codex_local" });
+    }
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: id, seq: 2, eventType: "adapter.invoke", stream: "system",
+      ...(foreign === "provider event" ? { sourceEventId: "provider-event", sourceInstanceId: "provider" } : {}),
+      payload: { command: "/isolated/bin/codex-acp", adapterType: "codex_local" } });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
   });
 
   it("counts trustworthy active usage above a partial ledger publication", async () => {

@@ -1,5 +1,5 @@
-import { and, desc, eq, gt, inArray, isNotNull, ne, sql } from "drizzle-orm";
-import { costEvents, heartbeatRuns, issueComments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { costEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { issueResourceLimitsSchema, type IssueResourceLimits } from "@paperclipai/shared/validators/issue-resources";
 
 export interface ResourceUsage {
@@ -28,6 +28,31 @@ export function armIssueRunDeadline(input: {
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** The adapter name alone does not distinguish CLI accounting from ACP windows. */
+function invokedAcpProducer(command: unknown, adapterType: unknown) {
+  if (typeof command !== "string") return null;
+  const executable = command.trim().split(/[\\/]/).at(-1);
+  if (executable === "codex-acp" && adapterType === "codex_local") return "codex_session_cumulative_delta";
+  if (executable === "claude-agent-acp" && adapterType === "claude_local") return "claude_prompt_usage";
+  return null;
+}
+
+function hasCompleteAcpUsage(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "usageJson" | "resultJson" | "runnerProfileJson">, producer: string) {
+  const usage = object(run.usageJson);
+  const accounting = object(usage.usageAccounting ?? object(run.resultJson).usageAccounting);
+  const pin = object(object(run.runnerProfileJson).legacyUsageScope);
+  return usage.usageUnknown === false && usage.usageSource === "per_run"
+    && typeof usage.totalTokens === "number" && Number.isSafeInteger(usage.totalTokens) && usage.totalTokens >= 0
+    && accounting.version === 1 && accounting.source === producer && accounting.completeness === "complete"
+    && accounting.bindingVerified === true && accounting.runId === run.id && accounting.boundary === "typed_prompt_reply"
+    && typeof accounting.sessionId === "string" && Boolean(accounting.sessionId.trim()) && accounting.sessionId.length <= 200
+    && typeof accounting.scopeHash === "string" && /^[a-f0-9]{64}$/.test(accounting.scopeHash)
+    && (producer === "codex_session_cumulative_delta" ? accounting.baselineVerified === true
+      : accounting.baselineSource === "producer_prompt_usage_reset")
+    && (pin.version !== 1 || (pin.source === producer && pin.sessionId === accounting.sessionId && pin.scopeHash === accounting.scopeHash));
 }
 
 /** Server-observed lower bounds remain distinct from complete billing totals. */
@@ -147,6 +172,27 @@ export async function getIssueResourceBlock(db: Db, input: {
       legacyTotal += Math.max(0, Math.max(total ?? 0, checkpoint.observedTotalTokens) - (legacyRecorded.get(row.id) ?? 0));
       if (total === null) legacyUnknown += 1;
     }
+    // Older ACP adapters published the latest context window as a numeric
+    // per-run total. Neither that number nor its cost row establishes complete
+    // consumption. The immutable server invocation binds the actual producer;
+    // keep historical rows/dollars intact and hold only aggregate admission.
+    const acpInvocations = policy.limits.maxTokensPerIssue ? await db.select({
+      id: heartbeatRuns.id, usageJson: heartbeatRuns.usageJson, resultJson: heartbeatRuns.resultJson,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      command: sql<string | null>`${heartbeatRunEvents.payload}->>'command'`,
+      adapterType: sql<string | null>`${heartbeatRunEvents.payload}->>'adapterType'`,
+    }).from(heartbeatRuns).innerJoin(heartbeatRunEvents, and(eq(heartbeatRunEvents.runId, heartbeatRuns.id),
+      eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.agentId, heartbeatRuns.agentId)))
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds),
+        eq(heartbeatRuns.runtimeMode, "legacy"), isNotNull(heartbeatRuns.startedAt), isNotNull(heartbeatRuns.finishedAt),
+        eq(heartbeatRunEvents.eventType, "adapter.invoke"), eq(heartbeatRunEvents.stream, "system"),
+        isNull(heartbeatRunEvents.sourceEventId), isNull(heartbeatRunEvents.sourceInstanceId), isNull(heartbeatRunEvents.sourceSeq),
+        sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted') is distinct from 'false'`)) : [];
+    const unqualifiedAcpRuns = new Set<string>();
+    for (const row of acpInvocations) {
+      const producer = invokedAcpProducer(row.command, row.adapterType);
+      if (producer && !hasCompleteAcpUsage(row, producer)) unqualifiedAcpRuns.add(row.id);
+    }
     const [runs] = policy.limits.maxAutomaticRuns ? await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.startedAt),
         // A caller-supplied manual label is not authority. Only an original
@@ -193,7 +239,7 @@ export async function getIssueResourceBlock(db: Db, input: {
         && ((typeof monitorPolicy.timeoutAt === "string" && Date.parse(monitorPolicy.timeoutAt) > Date.now())
           || (typeof monitorPolicy.maxAttempts === "number" && monitorPolicy.maxAttempts > Number(monitor.attemptCount ?? 0))));
     const decision = evaluateIssueResourceLimits(policy.limits, { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0) + legacyTotal,
-      unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0) + legacyUnknown, automaticRuns: Number(runs?.count ?? 0),
+      unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0) + legacyUnknown + unqualifiedAcpRuns.size, automaticRuns: Number(runs?.count ?? 0),
       noProgressRuns, boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 });
     if (decision.blocked) return { ...decision, resourceIssueId: policy.issueId, title: policy.title };
   }
