@@ -1,5 +1,5 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13..94e5ee39 100644
+index 243c9d13b..8017967d3 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -157,8 +157,57 @@ index 243c9d13..94e5ee39 100644
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index ccdbe5b03..ec0b2f803 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -185,6 +185,7 @@ type AcpRuntimeEvent = {
+   retryable?: boolean;
+ };
+ type AcpRuntimeTurnResultError = {
++  cause?: { typedSessionFailure: true; category: string; message?: string };
+   message: string;
+   code?: string;
+   detailCode?: string;
+@@ -204,6 +205,8 @@ interface AcpRuntimeTurn {
+   readonly requestId: string;
+   readonly events: AsyncIterable<AcpRuntimeEvent>;
+   readonly result: Promise<AcpRuntimeTurnResult>;
++  steeringState?: () => Promise<{ supported: boolean; active: boolean }>;
++  steer?: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
+   cancel(input?: {
+     reason?: string;
+   }): Promise<void>;
+@@ -266,6 +269,11 @@ type AcpRuntimeOptions = {
+   timeoutMs?: number;
+   probeAgent?: string;
+   verbose?: boolean;
++  onAgentStderr?: (chunk: string) => void;
++  onAcpMessage?: (direction: "inbound" | "outbound", message: unknown) => void;
++  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
++  spawnCwd?: string;
++  inheritProcessEnv?: boolean;
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
+@@ -418,6 +426,8 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+       [Symbol.asyncIterator](): AsyncGenerator<AcpRuntimeEvent, void, any>;
+     };
+     readonly result: Promise<AcpRuntimeTurnResult>;
++    steeringState: () => Promise<{ supported: boolean; active: boolean }>;
++    steer: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
+     cancel(inputArgs?: {
+       reason?: string;
+     }): Promise<void>;
+@@ -462,4 +472,4 @@ declare function createRuntimeStore(options: {
+ }): AcpSessionStore;
+ //#endregion
+ export { ACPX_BACKEND_ID, type AcpAgentRegistry, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, AcpRuntimeError, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+-//# sourceMappingURL=runtime.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.d.ts.map
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e..a3ffc2241 100644
+index 6c9cc999e..a455f716b 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
@@ -166,7 +215,7 @@ index 6c9cc999e..a3ffc2241 100644
  	}
  	createClient(options) {
 -		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
-+		const clientOptions = { ...options, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
++		const clientOptions = { ...options, onAcpMessage: this.options.onAcpMessage, onAgentStderr: this.options.onAgentStderr, onAgentSpawn: this.options.onAgentSpawn, spawnCwd: this.options.spawnCwd, inheritProcessEnv: this.options.inheritProcessEnv };
 +		return this.deps.clientFactory?.(clientOptions) ?? new AcpClient(clientOptions);
  	}
  	async readPendingPersistentClient(record, options) {
@@ -214,7 +263,15 @@ index 6c9cc999e..a3ffc2241 100644
  			requestCancelActivePrompt: async () => await this.requestRuntimeTurnCancel(task, turn),
  			setSessionMode: async (modeId) => {
  				await this.waitForRuntimeControlSession(task, turn);
-@@ -1208,9 +1231,11 @@ var AcpRuntimeManager = class {
+@@ -1108,6 +1131,7 @@ var AcpRuntimeManager = class {
+ 	}
+ 	installRuntimeTurnEventHandlers(task, turn) {
+ 		turn.client.setEventHandlers({
++			onAcpMessage: this.options.onAcpMessage,
+ 			onSessionUpdate: (notification) => {
+ 				turn.acpxState = recordSessionUpdate(turn.conversation, turn.acpxState, notification);
+ 				trimConversationForRuntime(turn.conversation);
+@@ -1208,9 +1232,11 @@ var AcpRuntimeManager = class {
  	failRuntimeTurn(task, error) {
  		task.sessionReady.reject(error);
  		const normalized = normalizeOutputError(error, { origin: "runtime" });
@@ -226,7 +283,7 @@ index 6c9cc999e..a3ffc2241 100644
  				message: normalized.message,
  				...normalized.code ? { code: normalized.code } : {},
  				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
-@@ -1601,6 +1626,12 @@ var AcpxRuntime = class {
+@@ -1601,6 +1627,12 @@ var AcpxRuntime = class {
  			get result() {
  				return turnPromise.then((turn) => turn.result);
  			},
@@ -239,44 +296,10 @@ index 6c9cc999e..a3ffc2241 100644
  			cancel(inputArgs) {
  				return turnPromise.then((turn) => turn.cancel(inputArgs));
  			},
-diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b03..1512dca0c 100644
---- a/dist/runtime.d.ts
-+++ b/dist/runtime.d.ts
-@@ -185,6 +185,7 @@ type AcpRuntimeEvent = {
-   retryable?: boolean;
- };
- type AcpRuntimeTurnResultError = {
-+  cause?: { typedSessionFailure: true; category: string; message?: string };
-   message: string;
-   code?: string;
-   detailCode?: string;
-@@ -204,6 +205,8 @@ interface AcpRuntimeTurn {
-   readonly requestId: string;
-   readonly events: AsyncIterable<AcpRuntimeEvent>;
-   readonly result: Promise<AcpRuntimeTurnResult>;
-+  steeringState?: () => Promise<{ supported: boolean; active: boolean }>;
-+  steer?: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
-   cancel(input?: {
-     reason?: string;
-   }): Promise<void>;
-@@ -266,6 +269,10 @@ type AcpRuntimeOptions = {
-   timeoutMs?: number;
-   probeAgent?: string;
-   verbose?: boolean;
-+  onAgentStderr?: (chunk: string) => void;
-+  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
-+  spawnCwd?: string;
-+  inheritProcessEnv?: boolean;
-   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
-     signal: AbortSignal;
-   }) => Promise<AcpPermissionDecision | undefined>;
-@@ -418,6 +425,8 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
-       [Symbol.asyncIterator](): AsyncGenerator<AcpRuntimeEvent, void, any>;
-     };
-     readonly result: Promise<AcpRuntimeTurnResult>;
-+    steeringState: () => Promise<{ supported: boolean; active: boolean }>;
-+    steer: (input: { text: string; correlationId: string }) => Promise<{ outcome: "injected" | "promptRequired"; reason?: string }>;
-     cancel(inputArgs?: {
-       reason?: string;
-     }): Promise<void>;
+@@ -1704,4 +1736,4 @@ function createRuntimeStore(options) {
+ //#endregion
+ export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+
+-//# sourceMappingURL=runtime.js.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.js.map

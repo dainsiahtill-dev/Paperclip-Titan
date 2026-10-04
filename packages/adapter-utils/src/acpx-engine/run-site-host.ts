@@ -38,6 +38,7 @@ export type AcpxProcessIdentitySink = {
   current: AdapterExecutionContext["onSpawn"];
   latest: AcpxAgentProcessIdentity | null;
   localProcess?: ChildProcess;
+  onUsageMessage?: (direction: string, message: unknown) => void;
 };
 
 /** The live-line buffer and log path a warm runtime's child stderr carries. */

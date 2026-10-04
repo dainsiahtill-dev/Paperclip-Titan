@@ -1248,7 +1248,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.errorMeta?.providerRejection).toBeUndefined();
   });
 
-  it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
+  it("keeps unqualified runtime usage forensic while preserving cost deltas and billing identity", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const logs: Array<{ stream: string; text: string }> = [];
@@ -1313,9 +1313,9 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(result.exitCode).toBe(0);
     expect(statusCalls).toBe(2);
-    // Cache-write tokens count as input tokens; cached reads stay separate.
-    expect(result.usage).toEqual({ inputTokens: 150, outputTokens: 4500, cachedInputTokens: 900 });
-    expect(result.usageBasis).toBe("per_run");
+    expect(result.usage).toBeUndefined();
+    expect(result.usageBasis).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { source: "window_only", completeness: "unknown", bindingVerified: false } });
     // Agent-reported cost is cumulative; this run pays the delta.
     expect(result.costUsd).toBeCloseTo(0.75);
     expect(result.provider).toBe("anthropic");
@@ -1374,8 +1374,9 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
-    expect(result.usageBasis).toBe("per_run");
+    expect(result.usage).toBeUndefined();
+    expect(result.usageBasis).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { source: "window_only", completeness: "unknown" } });
     expect(result.costUsd).toBeCloseTo(0.31);
     expect(result.provider).toBe("acpx");
     expect(result.billingType).toBe("unknown");

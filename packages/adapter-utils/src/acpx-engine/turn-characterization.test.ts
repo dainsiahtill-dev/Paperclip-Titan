@@ -602,9 +602,10 @@ describe("ACPX engine turn characterization", () => {
     // The failed error message becomes the terminal stop reason and the summary.
     expect(result.summary).toBe("boom");
     expect((result.resultJson as Record<string, unknown>)?.stopReason).toBe("boom");
-    // The usage math folds the usage_update event into per-run usage and cost.
-    expect(result.usage).toEqual({ inputTokens: 40, outputTokens: 700, cachedInputTokens: 60 });
-    expect(result.usageBasis).toBe("per_run");
+    // Unqualified usage_update windows cannot establish physical per-run usage.
+    expect(result.usage).toBeUndefined();
+    expect(result.usageBasis).toBeUndefined();
+    expect(result.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { source: "window_only", completeness: "unknown" } });
     expect(result.costUsd).toBeCloseTo(0.31);
   });
 

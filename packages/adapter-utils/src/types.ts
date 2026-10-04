@@ -37,6 +37,24 @@ export interface UsageSummary {
   totalTokens?: number;
 }
 
+/** An observed lower bound is separate from complete settled usage. */
+export interface AdapterUsageObservation {
+  observedTotalTokens?: number;
+  observedUsage?: UsageSummary;
+  usageUnknown: boolean;
+  usageAccounting: {
+    version: 1;
+    source: "codex_session_cumulative_delta" | "claude_prompt_usage" | "window_only";
+    completeness: "complete" | "partial" | "unknown";
+    runId: string;
+    sessionId: string | null;
+    scopeHash: string;
+    bindingVerified: boolean;
+    baselineVerified: boolean;
+    [key: string]: unknown;
+  };
+}
+
 export type AdapterBillingType =
   | "api"
   | "subscription"
@@ -232,6 +250,8 @@ export interface AdapterExecutionContext {
   runtimeMcp?: AdapterRuntimeMcpAccess;
   runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  /** Persist qualified lower-bound evidence before scheduling any control stop. */
+  onUsage?: (observation: AdapterUsageObservation) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;

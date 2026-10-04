@@ -140,6 +140,8 @@ import {
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { AcpUsageAccounting } from "./usage-accounting.js";
+import { readScopedCodexRollout } from "./codex-usage-baseline.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -191,6 +193,7 @@ function flushChildStderr(state: ChildStderrState) {
 
 type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
+  onAcpMessage?: (direction: "inbound" | "outbound", message: unknown) => void;
   // Return the current-run parent-context token. It is the `task.run` token
   // during startup and after the turn, and the `agent.turn` token during the
   // turn. A detached exec reads this getter to parent to the live run span. The
@@ -4067,6 +4070,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let sessionHandle!: AcpRuntimeHandle;
       let childStderrState!: ChildStderrState;
       let processIdentitySink!: AcpxProcessIdentitySink;
+      let usageAccounting: AcpUsageAccounting | null = null;
       let resumedSession = false;
       let clearSession = false;
       let referencedProjectStagingFailuresField:
@@ -4252,6 +4256,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        usageAccounting = new AcpUsageAccounting({
+          companyId: ctx.agent.companyId,
+          agentId: ctx.agent.id,
+          issueId: asString(ctx.context.issueId, "") || asString(ctx.context.taskId, "") || null,
+          runId: ctx.runId,
+          cwd: prepared.cwd,
+          model: prepared.requestedModel || null,
+        }, prepared.acpxAgent);
+        processIdentitySink.onUsageMessage = (direction, message) => usageAccounting?.observe(direction, message);
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
@@ -4309,6 +4322,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               startedAt: meta.startedAt,
             });
           },
+          onAcpMessage: (direction, message) => processIdentitySink.onUsageMessage?.(direction, message),
           getRuntimeParentContext,
         };
         // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
@@ -4593,6 +4607,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           );
         }
         sessionHandle = handle;
+        if (handle.backendSessionId) usageAccounting?.bindSession(handle.backendSessionId);
         startupFailed = false;
         await emitPhase("ensure_session", ensureSessionPhaseStart, "ok");
       } catch (err) {
@@ -4723,6 +4738,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      let reportedUsageTotal = -1;
+      let reportedUsageCompleteness = "";
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
@@ -4801,6 +4818,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
         preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        if (prepared.acpxAgent === "codex" && usageAccounting?.needsBaseline() && prepared.env.CODEX_HOME && sessionHandle.backendSessionId) {
+          const baseline = await readScopedCodexRollout({ codexHome: prepared.env.CODEX_HOME, sessionId: sessionHandle.backendSessionId, scope: usageAccounting.scope, before: Date.now() });
+          if (baseline) usageAccounting.setBaseline(baseline.usage, "scoped_rollout_pre_prompt");
+        }
         // The prepare phase (prompt build + usage snapshot) finished; the turn
         // phase starts next.
         await emitPhase("prepare_turn", preparePhaseStart, "ok");
@@ -4923,6 +4944,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+              const observation = usageAccounting?.result();
+              const observedUsage = observation?.usageAccounting.observedUsage as UsageSummary | undefined;
+              if (ctx.onUsage && observation?.usageAccounting.bindingVerified && observation.usageAccounting.baselineVerified && observedUsage?.totalTokens !== undefined && observedUsage.totalTokens > reportedUsageTotal) {
+                reportedUsageTotal = observedUsage.totalTokens;
+                reportedUsageCompleteness = observation.usageAccounting.completeness;
+                await ctx.onUsage({ observedTotalTokens: observedUsage.totalTokens, observedUsage, usageUnknown: observation.usageUnknown, usageAccounting: observation.usageAccounting });
+              }
             }
             await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
@@ -4998,6 +5026,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventCostUsd,
           qualifiedAgent: prepared.acpxAgent === "claude" || prepared.acpxAgent === "codex" ? prepared.acpxAgent : null,
         });
+        usageAccounting?.certifyTerminal(terminal.status, terminal.status === "completed" ? terminal.stopReason : undefined);
+        const physicalUsage = usageAccounting?.result();
+        const finalObservedUsage = physicalUsage?.usageAccounting.observedUsage as UsageSummary | undefined;
+        if (ctx.onUsage && physicalUsage?.usageAccounting.bindingVerified && physicalUsage.usageAccounting.baselineVerified && finalObservedUsage?.totalTokens !== undefined && (finalObservedUsage.totalTokens > reportedUsageTotal || physicalUsage.usageAccounting.completeness !== reportedUsageCompleteness)) {
+          reportedUsageTotal = finalObservedUsage.totalTokens;
+          reportedUsageCompleteness = physicalUsage.usageAccounting.completeness;
+          await ctx.onUsage({ observedTotalTokens: finalObservedUsage.totalTokens, observedUsage: finalObservedUsage, usageUnknown: physicalUsage.usageUnknown, usageAccounting: physicalUsage.usageAccounting });
+        }
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
         // ACPX can defer session/load until runTurn. Forget an unavailable
         // session so the next bounded turn receives the full task conversation.
@@ -5079,10 +5115,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
-          ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
+          ...(physicalUsage?.usage ? { usage: physicalUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
+            usageUnknown: physicalUsage?.usageUnknown ?? true,
+            ...(physicalUsage ? { usageAccounting: physicalUsage.usageAccounting } : {}),
             ...(providerLimit ? { errorFamily: "provider_quota" } : {}),
             ...(providerRejection ? { configurationIncomplete: providerRejection } : {}),
             stopReason: terminalStopReason,
@@ -5221,7 +5259,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession: clearSession || timedOut,
-          resultJson: { phase, ...(providerLimit ? { errorFamily: "provider_quota" } : {}), ...(rejection ? { configurationIncomplete: rejection } : {}) },
+          resultJson: { phase, usageUnknown: usageAccounting?.result().usageUnknown ?? true, ...(usageAccounting ? { usageAccounting: usageAccounting.result().usageAccounting } : {}), ...(providerLimit ? { errorFamily: "provider_quota" } : {}), ...(rejection ? { configurationIncomplete: rejection } : {}) },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause
