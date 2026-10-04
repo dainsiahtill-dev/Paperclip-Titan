@@ -1,6 +1,9 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { heartbeatRunEvents, heartbeatRuns, issues, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { deliveryAuthorityService } from "./delivery-authority.js";
+import { publishActivity, type ActivityPublication } from "./activity-log.js";
+import { deliveryDigest, workProductMaterialIdentity } from "./work-product-material.js";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { insertRowsInChunks } from "./batch-insert.js";
 import {
@@ -120,6 +123,9 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     sourceTrust: row.sourceTrust ?? null,
     createdByRunId: row.createdByRunId ?? null,
+    materialVersion: row.materialVersion,
+    producerAgentId: row.producerAgentId,
+    materialUpdatedByRunId: row.materialUpdatedByRunId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -244,7 +250,10 @@ export function workProductService(
     },
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+      const publications: ActivityPublication[] = [];
       const row = await db.transaction(async (tx) => {
+        await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+        const [producer] = data.createdByRunId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, data.createdByRunId), eq(heartbeatRuns.companyId, companyId))) : [];
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -257,27 +266,41 @@ export function workProductService(
               ),
             );
         }
-        return await tx
+        const inserted = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
+            materialVersion: 1,
+            producerAgentId: producer?.agentId ?? null,
+            materialUpdatedByRunId: producer ? data.createdByRunId : null,
             companyId,
             issueId,
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (inserted) await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(companyId, issueId, publications);
+        return inserted;
       });
+      for (const publication of publications) publishActivity(publication);
       return row ? toIssueWorkProduct(row) : null;
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+      const publications: ActivityPublication[] = [];
       const row = await db.transaction(async (tx) => {
+        const [identity] = await tx.select({ issueId: issueWorkProducts.issueId, companyId: issueWorkProducts.companyId }).from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
+        if (!identity) return null;
+        // Same lock order as decision/closure admission: issue before product.
+        await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, identity.companyId), eq(issues.id, identity.issueId))).for("update");
         const existing = await tx
           .select()
           .from(issueWorkProducts)
           .where(eq(issueWorkProducts.id, id))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+        const materialChanged = deliveryDigest(workProductMaterialIdentity(existing)) !== deliveryDigest(workProductMaterialIdentity({ ...existing, ...patch }));
+        const { materialVersion: _requestedVersion, producerAgentId: _requestedProducer, materialUpdatedByRunId: _requestedWriter, ...safePatch } = patch;
 
         if (patch.isPrimary === true) {
           await tx
@@ -292,13 +315,17 @@ export function workProductService(
             );
         }
 
-        return await tx
+        const updated = await tx
           .update(issueWorkProducts)
-          .set({ ...patch, updatedAt: new Date() })
+          .set({ ...safePatch, materialVersion: materialChanged ? existing.materialVersion + 1 : existing.materialVersion,
+            materialUpdatedByRunId: materialChanged ? patch.createdByRunId ?? existing.materialUpdatedByRunId : existing.materialUpdatedByRunId, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (updated && (materialChanged || patch.isPrimary !== undefined)) await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(updated.companyId, updated.issueId, publications);
+        return updated;
       });
+      for (const publication of publications) publishActivity(publication);
       return row ? toIssueWorkProduct(row) : null;
     },
 

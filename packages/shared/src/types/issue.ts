@@ -666,6 +666,7 @@ export interface IssueExecutionMonitorPolicy {
 }
 
 export interface IssueExecutionPolicy {
+  deliveryPolicy?: import("./delivery.js").DeliveryPolicy | null;
   resourceLimits?: IssueResourceLimits | null;
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;

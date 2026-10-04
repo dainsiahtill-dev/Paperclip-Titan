@@ -37,6 +37,7 @@ import type {
 } from "@paperclipai/shared";
 import type { RecoveryBatch, RecoveryBatchReceipt } from "@paperclipai/shared/types/watchdog";
 import type { WatchdogDispositionInput } from "@paperclipai/shared/validators/watchdog";
+import type { DeliveryAssessment, DeliveryDecisionInput, DeliveryPolicy } from "@paperclipai/shared/types/delivery";
 import { api, ApiError, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
@@ -249,6 +250,9 @@ export const issuesApi = {
     api.post<RecoveryBatchReceipt>(`/issues/${id}/watchdog/recovery-batches`, data),
   recordWatchdogDisposition: (id: string, data: WatchdogDispositionInput) =>
     api.post<IssueWatchdog>(`/issues/${id}/watchdog/disposition`, data),
+  getDeliveryAssessment: (id: string) => api.get<DeliveryAssessment>(`/issues/${id}/delivery-assessment`),
+  updateDeliveryPolicy: (id: string, data: DeliveryPolicy) => api.put<DeliveryAssessment>(`/issues/${id}/delivery-policy`, data),
+  recordDeliveryDecision: (id: string, data: DeliveryDecisionInput) => api.post<Record<string, unknown>>(`/issues/${id}/delivery-decisions`, data),
   markRead: (id: string) =>
     api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) =>

@@ -48,15 +48,15 @@ const input = {
 };
 
 describe("classifyNativeEvidence", () => {
-  it("accepts a satisfied claim backed by an approved durable work product", async () => {
+  it("keeps producer-writable approved fields as claims without independent proof", async () => {
     await expect(classifyNativeEvidence({
       ...input,
       result: result("satisfied", true),
     })).resolves.toEqual(expect.objectContaining({
-      objectiveSatisfied: true,
-      allCriteriaSatisfied: true,
-      verificationPassed: true,
-      acceptedEvidenceRefs: [evidenceRef],
+      objectiveSatisfied: false,
+      allCriteriaSatisfied: false,
+      verificationPassed: false,
+      acceptedEvidenceRefs: [],
     }));
   });
 
@@ -68,7 +68,7 @@ describe("classifyNativeEvidence", () => {
     expect(assessment).toEqual(expect.objectContaining({
       objectiveSatisfied: false,
       allCriteriaSatisfied: false,
-      verificationPassed: true,
+      verificationPassed: false,
     }));
     expect(assessment.criterionAssessments).toEqual([
       expect.objectContaining({ outcome: "rejected", reasonCode: "criterion_reported_not_satisfied" }),

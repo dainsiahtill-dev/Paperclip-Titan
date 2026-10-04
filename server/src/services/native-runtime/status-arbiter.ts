@@ -260,6 +260,7 @@ export function arbitrateNativeStatus(input: {
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
   const policyClaimComplete =
+    input.assessment.deliveryMode !== "verified_delivery" &&
     input.completionClaimPolicyAccepted === true &&
     input.assessment.reportedDisposition === "done" &&
     input.assessment.contractRevisionMatches &&

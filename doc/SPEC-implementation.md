@@ -1754,6 +1754,38 @@ current task ownership, cancellation, dependencies, and newer task state. See
 `doc/architecture/native-status-arbitration.md` for finish feedback and the
 provenance-checked cleanup of historical automatic completion reviews.
 
+Projects and issues may explicitly opt into `deliveryPolicy.version = 1` and
+`mode = verified_delivery`. Required mode and reviewer/manager configuration
+inherit through issue ancestors and their projects. Board operators manage
+project policies and manager grants; configured managers may maintain issue
+criteria. An executor cannot erase required policy, create its own grants, or
+relocate work outside its required scope. Ordinary `agent_claim_policy` keeps
+the completion behavior above.
+
+`GET /api/issues/:id/delivery-assessment` returns the current contract revision,
+criterion/material digests, readiness and server-derived review permissions.
+`PUT /api/projects/:id/delivery-policy` and
+`PUT /api/issues/:id/delivery-policy` configure the policy; issue updates preserve
+the remaining execution policy, including resource limits and monitors.
+`POST /api/issues/:id/delivery-decisions` records an independent accepted or
+rejected verdict with the authenticated reviewer, registered run, criterion,
+contract revision/hash, material version/hash, optional real resolved review
+interaction, reason and server timestamp. Producer-written work-product
+`approved` and `reviewState` fields are display claims, never this authority.
+
+Board users and configured independent AI reviewers follow existing reviewPolicy
+and typed review stages. Current producers and executors cannot self-accept.
+Managed attachments, linked issue documents, registered readable workspace
+files and inline document content provide current material snapshots; a mutable
+remote URL/service reference alone cannot authenticate inspected content.
+Only changed criteria or their selected content become stale. Ordinary comments
+and display flags preserve prior acceptance. Managed criterion/material edits
+reopen completed verified work for review; external file drift is detected at
+each assessment and completion admission. Native and legacy completion require
+all current criteria accepted. Rejections keep specific feedback on the source
+task, name its implementation owner and use ordinary continuation admission.
+No review-of-review task or global human gate is introduced.
+
 ### In-app announcements
 
 A versioned remote JSON manifest supplies one optional board announcement.

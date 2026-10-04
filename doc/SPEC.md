@@ -433,6 +433,13 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
 
+Projects may opt into verified delivery. In that mode, independent board or
+configured AI review decisions bind concrete acceptance criteria to the current
+artifact content. Executor-written approval flags cannot grant authority. A
+changed criterion or its content requires renewed acceptance while unchanged
+accepted criteria remain valid. Ordinary low-risk completion retains its agent
+claim policy, and explicit human approvals retain their existing authority.
+
 ### Open Questions
 
 - Real-time updates to the UI — WebSocket? SSE? Polling?

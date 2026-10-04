@@ -15,6 +15,7 @@ import {
   type PrpNormalizedAttentionRequest,
   type PrpVerificationReasonCode,
 } from "../../vendor/paperclip-runner/index.js";
+import { deliveryAuthorityService, resolveDeliveryDefinition } from "../delivery-authority.js";
 
 export type NativeEvidenceOutcome = "accepted" | "missing" | "rejected" | "unverifiable";
 
@@ -27,6 +28,8 @@ export interface NativeEvidenceRefAssessment {
 }
 
 export interface NativeEvidenceAssessment {
+  deliveryMode?: "verified_delivery";
+  deliveryAcceptanceReady?: boolean;
   objectiveClaimSatisfied: boolean;
   objectiveSatisfied: boolean;
   allCriteriaSatisfied: boolean;
@@ -106,6 +109,9 @@ async function classifyEvidenceRef(input: {
   issueId: string;
   runId: string;
   ref: string;
+  criterionId?: string | null;
+  criterionRequirement?: string | null;
+  delivery?: import("@paperclipai/shared/types/delivery").DeliveryAssessment | null;
 }): Promise<NativeEvidenceRefAssessment> {
   const eventMatch = /^event:(\d+)$/.exec(input.ref);
   if (eventMatch) {
@@ -155,19 +161,21 @@ async function classifyEvidenceRef(input: {
       eq(issueWorkProducts.issueId, input.issueId),
     )).limit(1).then((rows) => rows[0] ?? null);
     if (!row) return { ref: input.ref, kind: "work_product", outcome: "missing", reasonCode: "work_product_missing", durableRecordId: null };
+    if (input.criterionId && input.delivery) {
+      const criterion = input.delivery.criteria.find((entry) => entry.id === input.criterionId);
+      if (criterion?.state === "accepted" && criterion.workProductId === row.id && criterion.requirement === input.criterionRequirement) {
+        return { ref: input.ref, kind: "work_product", outcome: "accepted", reasonCode: "independent_criterion_acceptance_current", durableRecordId: criterion.decisionId };
+      }
+    }
     if (
       ["failed", "error", "cancelled", "rejected", "changes_requested"].includes(row.status)
       || ["rejected", "changes_requested"].includes(row.reviewState)
     ) {
       return { ref: input.ref, kind: "work_product", outcome: "rejected", reasonCode: "work_product_rejected", durableRecordId: row.id };
     }
-    if (
-      row.reviewState === "approved"
-      || ["approved", "passed", "succeeded", "completed", "merged", "published"].includes(row.status)
-    ) {
-      return { ref: input.ref, kind: "work_product", outcome: "accepted", reasonCode: "work_product_authoritatively_accepted", durableRecordId: row.id };
-    }
-    return { ref: input.ref, kind: "work_product", outcome: "unverifiable", reasonCode: "work_product_not_yet_accepted", durableRecordId: row.id };
+    // Display lifecycle fields are writable by the producer. They remain
+    // useful claims, but cannot authenticate an independent acceptance.
+    return { ref: input.ref, kind: "work_product", outcome: "unverifiable", reasonCode: "work_product_requires_independent_acceptance", durableRecordId: row.id };
   }
 
   const approvalId = uuidRef(input.ref, ["approval"]);
@@ -256,14 +264,17 @@ export async function classifyNativeEvidence(input: {
     throw new Error("native_result_invalid_disposition");
   }
 
+  const deliveryDefinition = await resolveDeliveryDefinition(input.db, input.companyId, input.issueId);
+  const delivery = deliveryDefinition.mode === "verified_delivery" ? await deliveryAuthorityService(input.db).assessment(input.companyId, input.issueId) : null;
   const contractRevision = text(input.contract.revision);
-  const contractRevisionMatches = contractRevision !== null && text(claim.contractRevision) === contractRevision;
+  const contractRevisionMatches = contractRevision !== null && text(claim.contractRevision) === contractRevision && (!delivery || String(delivery.contractRevision) === contractRevision);
   const cache = new Map<string, Promise<NativeEvidenceRefAssessment>>();
-  const resolveRef = (ref: string) => {
-    let pending = cache.get(ref);
+  const resolveRef = (ref: string, criterionId?: string, criterionRequirement?: string) => {
+    const key = `${criterionId ?? "verification"}:${ref}`;
+    let pending = cache.get(key);
     if (!pending) {
-      pending = classifyEvidenceRef({ ...input, ref });
-      cache.set(ref, pending);
+      pending = classifyEvidenceRef({ ...input, delivery, ref, criterionId, criterionRequirement });
+      cache.set(key, pending);
     }
     return pending;
   };
@@ -277,7 +288,7 @@ export async function classifyNativeEvidence(input: {
     const refs = claimed && Array.isArray(claimed.evidenceRefs)
       ? claimed.evidenceRefs.flatMap((value) => text(value) ? [text(value)!] : [])
       : [];
-    const evidenceRefs = await Promise.all(refs.map(resolveRef));
+    const evidenceRefs = await Promise.all(refs.map((ref) => resolveRef(ref, criterionId, text(criterion.requirement) ?? undefined)));
     let outcome: NativeEvidenceOutcome;
     let reasonCode: string;
     if (!contractRevisionMatches) {
@@ -336,8 +347,18 @@ export async function classifyNativeEvidence(input: {
   ];
   const rejectedEvidence = resolvedRefs.filter((entry) => entry.outcome === "rejected").map((entry) => ({ ref: entry.ref, reasonCode: entry.reasonCode }));
   const unverifiableEvidence = resolvedRefs.filter((entry) => entry.outcome === "unverifiable").map((entry) => ({ ref: entry.ref, reasonCode: entry.reasonCode }));
-  const allCriteriaSatisfied = contractCriteria.length > 0 && criterionAssessments.every((entry) => entry.outcome === "accepted");
-  const verificationPassed = verificationAssessments.length > 0 && verificationAssessments.every((entry) => entry.outcome === "accepted");
+
+  if (delivery && contractRevisionMatches) {
+    for (const criterion of criterionAssessments) {
+      const accepted = delivery.criteria.find((entry) => entry.id === criterion.criterionId);
+      const declared = contractCriteria.find((entry) => text(entry.id) === criterion.criterionId);
+      if (accepted?.state === "accepted" && accepted.requirement === text(declared?.requirement)) {
+        criterion.outcome = "accepted"; criterion.reasonCode = "independent_criterion_acceptance_current";
+      }
+    }
+  }
+  const allCriteriaSatisfied = contractCriteria.length > 0 && criterionAssessments.every((entry) => entry.outcome === "accepted") && (!delivery || delivery.canComplete);
+  const verificationPassed = (verificationAssessments.length > 0 && verificationAssessments.every((entry) => entry.outcome === "accepted")) || Boolean(delivery?.canComplete && allCriteriaSatisfied);
   const hasFailedVerification = verificationAssessments.some((entry) => entry.claimStatus === "failed");
   const continuationKind = continuation.kind;
   const actionableAttentionRequests: PrpNormalizedAttentionRequest[] = [];
@@ -363,6 +384,7 @@ export async function classifyNativeEvidence(input: {
   }
 
   return {
+    ...(delivery ? { deliveryMode: "verified_delivery" as const, deliveryAcceptanceReady: delivery.canComplete } : {}),
     objectiveClaimSatisfied: claim.objectiveSatisfied === true,
     objectiveSatisfied: claim.objectiveSatisfied === true && allCriteriaSatisfied,
     allCriteriaSatisfied,

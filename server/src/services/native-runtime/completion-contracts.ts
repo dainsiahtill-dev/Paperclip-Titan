@@ -5,6 +5,7 @@ import { completionContracts } from "@paperclipai/db";
 import type { StrictCompletionContractInput } from "../../vendor/paperclip-runner/index.js";
 
 import { nativeSha256 } from "./canonical.js";
+import { deliveryAuthorityService, resolveDeliveryDefinition } from "../delivery-authority.js";
 
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v3";
@@ -98,6 +99,12 @@ export async function ensureNativeCompletionContract(input: {
   immediateRequest?: string | null;
   immediateRequests?: readonly string[] | null;
 }) {
+  const delivery = await resolveDeliveryDefinition(input.db, input.companyId, input.issue.id);
+  if (delivery.mode === "verified_delivery") {
+    const current = await deliveryAuthorityService(input.db).materializeContract(input.companyId, input.issue.id);
+    const contract: StrictCompletionContractInput = { revision: String(current.row.revision), objective: String(current.row.contractJson.objective), criteria: current.criteria.map((criterion) => ({ id: criterion.id, requirement: criterion.requirement })) };
+    return { row: current.row, contract };
+  }
   return input.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
       "paperclip:native-completion-contract",

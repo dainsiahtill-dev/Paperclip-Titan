@@ -51,6 +51,9 @@ export interface IssueWorkProduct {
   metadata: Record<string, unknown> | null;
   sourceTrust?: import("../trust-policy.js").SourceTrustMetadata | null;
   createdByRunId: string | null;
+  materialVersion?: number;
+  producerAgentId?: string | null;
+  materialUpdatedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

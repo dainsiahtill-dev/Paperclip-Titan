@@ -138,6 +138,7 @@ describe("workProductService", () => {
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
     const tx = {
+      select: vi.fn(() => ({ from: () => ({ where: () => Object.assign(Promise.resolve([{ id: "issue-1", companyId: "company-1", status: "todo" }]), { for: vi.fn(async () => [{ id: "issue-1" }]) }) }) })),
       update: txUpdate,
       insert: txInsert,
     };
@@ -162,7 +163,7 @@ describe("workProductService", () => {
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
+    const selectWhere = vi.fn(() => Object.assign(Promise.resolve([existingRow]), { for: vi.fn(async () => [existingRow]) }));
     const selectFrom = vi.fn(() => ({ where: selectWhere }));
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
@@ -186,7 +187,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txSelect).toHaveBeenCalledTimes(1);
+    expect(txSelect).toHaveBeenCalledTimes(4);
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });

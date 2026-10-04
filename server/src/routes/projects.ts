@@ -26,6 +26,8 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { deliveryPolicySchema } from "@paperclipai/shared/validators/delivery";
+import { assertManagersAndReviewers } from "../services/delivery-authority.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -239,6 +241,10 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    if (projectData.deliveryPolicy !== undefined) {
+      assertBoard(req);
+      if (projectData.deliveryPolicy) await assertManagersAndReviewers(db, companyId, projectData.deliveryPolicy);
+    }
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
@@ -321,11 +327,26 @@ export function projectRoutes(db: Db) {
     res.status(result.duplicate ? 200 : 201).json(result.project);
   });
 
+  router.put("/projects/:id/delivery-policy", validate(deliveryPolicySchema), async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project) return;
+    await assertManagersAndReviewers(db, project.companyId, req.body);
+    const updated = await svc.update(project.id, { deliveryPolicy: req.body });
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: project.companyId, actorType: actor.actorType, actorId: actor.actorId, action: "project.delivery_policy_updated", entityType: "project", entityId: project.id, details: { mode: req.body.mode, reviewerAgentIds: req.body.reviewerAgentIds, managerAgentIds: req.body.managerAgentIds } });
+    res.json(updated);
+  });
+
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     const body = { ...req.body };
+    if (body.deliveryPolicy !== undefined) {
+      assertBoard(req);
+      if (body.deliveryPolicy) await assertManagersAndReviewers(db, existing.companyId, body.deliveryPolicy);
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),

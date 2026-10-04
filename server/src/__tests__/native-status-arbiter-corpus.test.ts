@@ -412,7 +412,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
   afterAll(async () => temporary?.cleanup());
 
-  async function seedFixture(fixture: Fixture) {
+  async function seedFixture(fixture: Fixture, options: { independentReceipt?: boolean } = {}) {
     const issueId = randomUUID();
     const runId = randomUUID();
     const contractId = randomUUID();
@@ -490,14 +490,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
             criteria: [{
               criterionId: "objective",
               status: "satisfied",
-              evidenceRefs: [`work_product:${workProductId}`],
+              evidenceRefs: [`interaction:${workProductId}`],
             }],
             remainingWork: [],
           },
           verification: [{
             commandOrCheck: "fixture",
             status: "passed",
-            artifactRef: `work_product:${workProductId}`,
+            artifactRef: `interaction:${workProductId}`,
           }],
         },
         terminal: {
@@ -522,6 +522,16 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       reviewState: completionState === "new_evidence_satisfies_contract" ? "none" : "approved",
       createdAt: new Date(assessmentCreatedAt.getTime() - 1_000),
       updatedAt: new Date(assessmentCreatedAt.getTime() - 1_000),
+    });
+    // Positive proof is an actual independently resolved board interaction,
+    // never the producer-writable display reviewState on the work product.
+    if (completeEvidenceStates.has(completionState) && options.independentReceipt !== false) await db.insert(issueThreadInteractions).values({
+      id: workProductId, companyId, issueId, kind: "request_confirmation",
+      status: completionState === "new_evidence_satisfies_contract" ? "pending" : "resolved",
+      createdByUserId: "corpus-board", resolvedByUserId: completionState === "new_evidence_satisfies_contract" ? null : "corpus-independent-reviewer",
+      payload: { version: 1, prompt: "Inspect the current durable evidence" },
+      result: completionState === "new_evidence_satisfies_contract" ? null : { outcome: "accepted" },
+      createdAt: new Date(assessmentCreatedAt.getTime() - 1_000), updatedAt: new Date(assessmentCreatedAt.getTime() - 1_000),
     });
     await db.insert(workAssessments).values({
       id: assessmentId,
@@ -980,6 +990,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         decisionId: priorDecision!.id,
       }).where(eq(nativeRunFinalizations.runId, seeded.runId));
       if (completionState === "new_evidence_satisfies_contract") {
+        await db.update(issueThreadInteractions).set({ status: "resolved", result: { outcome: "accepted" }, resolvedByUserId: "corpus-independent-reviewer", resolvedAt: new Date(), updatedAt: new Date(Date.now() + 1_000) }).where(eq(issueThreadInteractions.id, seeded.workProductId));
         await db.update(issueWorkProducts).set({
           reviewState: "approved",
           updatedAt: new Date(Date.now() + 1_000),
@@ -1042,7 +1053,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     if (seeded.nativeRecords && ["runner_finalizer", "dependency", "shadow_comparator", "read_model", "authorized_agent"].includes(String(fixture.given.trigger))) {
       const accepted = completeEvidenceStates.has(completionState);
       const evidenceRef = accepted
-        ? `work_product:${seeded.workProductId}`
+        ? `interaction:${seeded.workProductId}`
         : `work_product:${randomUUID()}`;
       assessment = await classifyNativeEvidence({
         db,
@@ -2092,7 +2103,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect((await issueService(db).getById(seeded.issueId))!.status).toBe("done");
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("cancelled");
 
-    const incomplete = await seedFixture({ ...corpus.fixtures[0]!, id: `incomplete-retry-${randomUUID()}` });
+    const incomplete = await seedFixture({ ...corpus.fixtures[0]!, id: `incomplete-retry-${randomUUID()}` }, { independentReceipt: false });
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId,
       source: "automation", triggerDetail: "system", reason: "issue_status_changed", status: "consumed",
       payload: { continuationIdempotencyKey: "native-completion-incomplete" } }).returning();

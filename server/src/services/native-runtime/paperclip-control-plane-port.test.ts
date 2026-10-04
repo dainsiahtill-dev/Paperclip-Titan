@@ -172,6 +172,11 @@ describe("PaperclipControlPlanePort conformance", () => {
       reviewState: "approved",
       createdByRunId: taskRunId,
     });
+    await db.insert(issueThreadInteractions).values({
+      id: taskWorkProductId, companyId: identity.companyId, issueId: taskIssueId,
+      kind: "request_confirmation", status: "resolved", createdByUserId: "conformance-board", resolvedByUserId: "conformance-independent-reviewer",
+      payload: { version: 1, prompt: "Inspect native task output" }, result: { version: 1, outcome: "accepted" }, resolvedAt: new Date(),
+    });
     await db.insert(issues).values({
       id: workspaceFailureIssueId,
       companyId: identity.companyId,
@@ -679,7 +684,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   it("persists a delayed final answer and replay before resolving the selected task response", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const sessionId = taskSessionId;
-    const evidenceRef = `work_product:${taskWorkProductId}`;
+    const evidenceRef = `interaction:${taskWorkProductId}`;
     const taskResult = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
     taskResult.completionClaim.contractRevision = "phase6-v1";
     taskResult.completionClaim.criteria[0]!.evidenceRefs = [evidenceRef];

@@ -397,8 +397,9 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
   const resourceLimits = parsed.data.resourceLimits;
+  const deliveryPolicy = parsed.data.deliveryPolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !resourceLimits) return null;
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !resourceLimits && !deliveryPolicy) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -408,6 +409,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
     ...(resourceLimits ? { resourceLimits } : {}),
+    ...(deliveryPolicy ? { deliveryPolicy } : {}),
     ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
   };
 }

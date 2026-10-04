@@ -191,6 +191,7 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 import { readIssueResourcePolicies } from "./issue-resource-limits.js";
+import { assertDeliveryPolicyCreation, assertDeliveryPolicyMutation, assertDeliveryScopeMutation, deliveryAuthorityService, resolveDeliveryDefinition, rethrowDeliveryInputLock } from "./delivery-authority.js";
 import { commentContentDigest } from "./comment-content-digest.js";
 
 const ALL_ISSUE_STATUSES = [
@@ -9772,6 +9773,10 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const persist = async (tx: DbTransaction) => {
+        if (issueData.parentId) {
+          try { await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId))).for("share", { noWait: true }); }
+          catch (error) { rethrowDeliveryInputLock(error); }
+        }
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
@@ -10159,6 +10164,7 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        await assertDeliveryPolicyCreation(tx as unknown as Db, issue);
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
             companyId,
@@ -10878,6 +10884,22 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (patch.parentId && patch.parentId !== receiptExisting.parentId) {
+          try { await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, receiptExisting.companyId), eq(issues.id, patch.parentId))).for("share", { noWait: true }); }
+          catch (error) { rethrowDeliveryInputLock(error); }
+        }
+        const deliveryCandidate = { ...receiptExisting, ...patch };
+        await assertDeliveryPolicyMutation(tx as unknown as Db, receiptExisting, deliveryCandidate, { agentId: actorAgentId, userId: actorUserId });
+        await assertDeliveryScopeMutation(tx as unknown as Db, receiptExisting, deliveryCandidate, actorAgentId);
+        if (patch.status === "done" && receiptExisting.status !== "done") await deliveryAuthorityService(tx as unknown as Db, true).assertCanComplete(receiptExisting.companyId, receiptExisting.id, deliveryCandidate);
+        if (receiptExisting.status === "done" && deliveryCandidate.status === "done") {
+          const current = await resolveDeliveryDefinition(tx as unknown as Db, receiptExisting.companyId, receiptExisting.id, deliveryCandidate);
+          if (current.mode === "verified_delivery" && !(await deliveryAuthorityService(tx as unknown as Db, true).assessment(receiptExisting.companyId, receiptExisting.id, deliveryCandidate)).canComplete) {
+            patch.status = "in_review";
+            patch.completedAt = null;
+            await logActivity(tx as unknown as Db, { companyId: receiptExisting.companyId, actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system", actorId: actorAgentId ?? actorUserId ?? "delivery-authority", agentId: actorAgentId ?? null, action: "issue.delivery_acceptance_invalidated", entityType: "issue", entityId: receiptExisting.id, details: { previousStatus: "done", status: "in_review", reason: "current_criterion_or_material_changed" } }, activityPublications);
+          }
+        }
         if (actorAgentId && issueData.parentId !== undefined && issueData.parentId !== receiptExisting.parentId) {
           const resourcePolicies = await readIssueResourcePolicies(tx, receiptExisting.companyId, receiptExisting.id);
           if (resourcePolicies.some((policy) => Object.values(policy.limits).some((value) => typeof value === "number" && value > 0))) {

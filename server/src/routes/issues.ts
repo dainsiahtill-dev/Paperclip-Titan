@@ -216,6 +216,8 @@ import type {
 } from "../services/task-watchdogs.js";
 import { recoveryBatchSchema, watchdogDispositionSchema } from "@paperclipai/shared/validators/watchdog";
 import { parseObject } from "../adapters/utils.js";
+import { deliveryPolicySchema, deliveryDecisionSchema } from "@paperclipai/shared/validators/delivery";
+import { deliveryAuthorityService, assertDeliveryPolicyMutation } from "../services/delivery-authority.js";
 import { logger } from "../middleware/logger.js";
 import {
   badRequest,
@@ -3482,6 +3484,7 @@ export function issueRoutes(
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
     taskWatchdogEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
+    deliveryEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
     recoveryActionEnqueueWakeup?: (
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
@@ -9037,6 +9040,46 @@ export function issueRoutes(
       res.json(await taskWatchdogsSvc.recordDisposition(source.id, req.actor, req.body));
     },
   );
+
+  router.get("/issues/:id/delivery-assessment", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    res.json({ ...await deliveryAuthorityService(db).assessment(issue.companyId, issue.id), permissions: await deliveryAuthorityService(db).permissions(issue.companyId, issue.id, req.actor) });
+  });
+
+  router.put("/issues/:id/delivery-policy", validateIssueMutationBody(deliveryPolicySchema), async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
+    if (!(await assertIssueWriteInfluenceAllowed(req, res, issue))) return;
+    res.json(await deliveryAuthorityService(db).updatePolicy(issue.companyId, issue.id, req.actor, req.body));
+  });
+
+  router.post("/issues/:id/delivery-decisions", validateIssueMutationBody(deliveryDecisionSchema), async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
+    if (!(await assertIssueWriteInfluenceAllowed(req, res, issue))) return;
+    const result = await deliveryAuthorityService(db).recordDecision(issue.companyId, issue.id, req.actor, req.body, {
+      beforeCommit: async (transaction) => {
+        if (req.actor.type !== "agent") return;
+        const decision = await observeCrossIssueInfluence(transaction, { companyId: issue.companyId, runId: req.actor.runId!, agentId: req.actor.agentId!, responsibleUserId: req.actor.onBehalfOfUserId ?? null, targetIssueId: issue.id, targetIssueIdentifier: issue.identifier ?? null, kind: "interaction_resolution" });
+        if (decision && !decision.allowed) {
+          const error = crossIssueInfluenceLimitError(decision, { issueIdentifier: issue.identifier });
+          throw new HttpError(429, error.error, error.details);
+        }
+      },
+    });
+    // Rejection feedback is already persisted atomically with the verdict.
+    // Continue through ordinary wake admission; active runs, pauses, approval
+    // waits and typed stage ownership retain their normal gates.
+    if (result.created && req.body.verdict === "rejected" && result.nextOwnerId && ["todo", "in_progress", "in_review"].includes(issue.status)) {
+      const wakeup = opts.deliveryEnqueueWakeup === undefined ? heartbeat.wakeup : opts.deliveryEnqueueWakeup;
+      await wakeup?.(result.nextOwnerId, { source: "assignment", triggerDetail: "system", reason: "issue_commented", idempotencyKey: `delivery-decision:${result.decision.id}`, requestedByActorType: result.decision.actorType as "user" | "agent", requestedByActorId: result.decision.actorId,
+        payload: { issueId: issue.id, deliveryDecisionId: result.decision.id, criterionId: result.decision.criterionId, verdict: "rejected" }, contextSnapshot: { issueId: issue.id, taskId: issue.id, source: "issue.delivery_decision", wakeReason: "issue_commented", deliveryDecisionId: result.decision.id } }).catch((error) => logger.warn({ err: error, issueId: issue.id, decisionId: result.decision.id }, "Delivery rejection feedback persisted; normal continuation wake failed"));
+    }
+    res.status(result.created ? 201 : 200).json(result.decision);
+  });
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;

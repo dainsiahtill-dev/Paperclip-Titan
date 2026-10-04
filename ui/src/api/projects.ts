@@ -6,6 +6,7 @@ import type {
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
+import type { DeliveryPolicy } from "@paperclipai/shared/types/delivery";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -19,6 +20,7 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
+  updateDeliveryPolicy: (id: string, data: DeliveryPolicy) => api.put<Project>(`/projects/${id}/delivery-policy`, data),
   repositoryOptions: (companyId: string) => api.get<ProjectRepositoryOptions>(`/companies/${companyId}/project-repositories`),
   setRepositories: (id: string, repositoryIds: string[]) => api.put<Project>(projectPath(id, undefined, "/repositories"), { repositoryIds }),
   list: (companyId: string, opts: { includeArchived?: boolean } = {}) => {

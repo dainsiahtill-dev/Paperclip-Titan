@@ -1,14 +1,17 @@
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
   timestamp,
   uuid,
+  unique,
 } from "drizzle-orm/pg-core";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
+import { agents } from "./agents.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
@@ -39,10 +42,14 @@ export const issueWorkProducts = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    materialVersion: integer("material_version").notNull().default(1),
+    producerAgentId: uuid("producer_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    materialUpdatedByRunId: uuid("material_updated_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    companyIdUq: unique("issue_work_products_company_id_uq").on(table.companyId, table.id),
     companyIssueTypeIdx: index("issue_work_products_company_issue_type_idx").on(
       table.companyId,
       table.issueId,
