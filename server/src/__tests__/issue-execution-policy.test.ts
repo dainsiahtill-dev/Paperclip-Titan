@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -34,6 +34,14 @@ function approvalOnlyPolicy() {
 }
 
 describe("normalizeIssueExecutionPolicy", () => {
+  it("retains a resource-only policy when its bounded monitor finishes", () => {
+    const resourceLimits = { maxAutomaticRuns: 2, maxRunSeconds: 120 };
+    const policy = normalizeIssueExecutionPolicy({ stages: [], resourceLimits,
+      monitor: { nextCheckAt: "2099-01-01T00:00:00.000Z", scheduledBy: "board" },
+    });
+    expect(stripMonitorFromExecutionPolicy(policy)).toMatchObject({ stages: [], resourceLimits });
+    expect(stripMonitorFromExecutionPolicy(policy)?.monitor).toBeUndefined();
+  });
   it("returns null for null/undefined input", () => {
     expect(normalizeIssueExecutionPolicy(null)).toBeNull();
     expect(normalizeIssueExecutionPolicy(undefined)).toBeNull();
