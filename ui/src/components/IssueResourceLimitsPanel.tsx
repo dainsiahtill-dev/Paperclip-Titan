@@ -5,11 +5,12 @@ import { issueResourceLimitsSchema, type IssueResourceLimits } from "@paperclipa
 import { issuesApi } from "../api/issues";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { v3t } from "@/i18n";
 
 const fields = [
-  ["maxTokensPerIssue", "Task and subtasks tokens"], ["maxTokensPerRun", "Reported tokens per run"],
-  ["maxAutomaticRuns", "Automatic runs"], ["maxNoProgressRuns", "Runs without progress"],
-  ["maxRunSeconds", "Run wall time (seconds)"],
+  ["maxTokensPerIssue", "taskTokens"], ["maxTokensPerRun", "runTokens"],
+  ["maxAutomaticRuns", "automaticRuns"], ["maxNoProgressRuns", "noProgressRuns"],
+  ["maxRunSeconds", "runWallSeconds"],
 ] as const;
 export function IssueResourceLimitsPanel({ issue }: { issue: Issue }) {
   const prefix = useId();
@@ -29,17 +30,17 @@ export function IssueResourceLimitsPanel({ issue }: { issue: Issue }) {
     } }),
   });
   return <details className="space-y-3">
-    <summary className="cursor-pointer text-sm font-medium">Resource limits</summary>
-    <p className="text-xs text-muted-foreground">Leave a limit blank to disable it. Ancestor task limits also apply. Token limits are checked when usage is reported; use wall time to bound a running provider.</p>
+    <summary className="cursor-pointer text-sm font-medium">{v3t("reliability.resourceTitle")}</summary>
+    <p className="text-xs text-muted-foreground">{v3t("reliability.resourceHelp")}</p>
     <div className="grid gap-3">
       {fields.map(([key, label]) => <div key={key} className="space-y-2">
-        <label htmlFor={`${prefix}-${key}`} className="text-sm">{label}</label>
+        <label htmlFor={`${prefix}-${key}`} className="text-sm">{v3t(`reliability.${label}`)}</label>
         <Input id={`${prefix}-${key}`} inputMode="numeric" value={draft[key] ?? ""} onChange={(event) => setDraft((value) => ({ ...value, [key]: event.target.value }))} />
       </div>)}
     </div>
-    <Button disabled={!parsed.success || save.isPending} onClick={() => { if (parsed.success) save.mutate(parsed.data); }}>{save.isPending ? "Saving..." : "Save resource limits"}</Button>
-    {!parsed.success && <p role="alert" className="text-xs text-destructive">Enter positive whole numbers, or leave a limit blank.</p>}
-    {save.error && <p role="alert" className="text-xs text-destructive">{save.error instanceof Error ? save.error.message : "Could not save resource limits."}</p>}
-    {save.isSuccess && <p role="status" className="text-xs text-muted-foreground">Resource limits saved.</p>}
+    <Button disabled={!parsed.success || save.isPending} onClick={() => { if (parsed.success) save.mutate(parsed.data); }}>{v3t(save.isPending ? "reliability.saving" : "reliability.saveResources")}</Button>
+    {!parsed.success && <p role="alert" className="text-xs text-destructive">{v3t("reliability.invalidResources")}</p>}
+    {save.error && <p role="alert" className="text-xs text-destructive">{save.error instanceof Error ? save.error.message : v3t("reliability.saveResourcesFailed")}</p>}
+    {save.isSuccess && <p role="status" className="text-xs text-muted-foreground">{v3t("reliability.savedResources")}</p>}
   </details>;
 }

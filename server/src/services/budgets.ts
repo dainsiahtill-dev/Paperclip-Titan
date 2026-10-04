@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -263,7 +263,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: now,
           updatedAt: now,
         })
-        .where(eq(projects.id, policy.scopeId));
+        .where(and(eq(projects.id, policy.scopeId), or(eq(projects.pauseReason, "budget"),
+          and(isNull(projects.pauseReason), isNull(projects.pausedAt)))));
       return;
     }
 
@@ -275,7 +276,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         pausedAt: now,
         updatedAt: now,
       })
-      .where(eq(companies.id, policy.scopeId));
+      .where(and(eq(companies.id, policy.scopeId), or(eq(companies.pauseReason, "budget"),
+        and(eq(companies.status, "active"), isNull(companies.pauseReason), isNull(companies.pausedAt)))));
   }
 
   async function pauseAndCancelScopeForBudget(policy: PolicyRow) {
@@ -288,6 +290,21 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   }
 
   async function resumeScopeFromBudget(policy: PolicyRow) {
+    // A scope can have several independent hard stops (metric and window).
+    // Changing one policy never releases another policy's hold, including
+    // token usage that has not yet been reconciled.
+    const remaining = await db.select().from(budgetPolicies).where(and(
+      eq(budgetPolicies.companyId, policy.companyId),
+      eq(budgetPolicies.scopeType, policy.scopeType),
+      eq(budgetPolicies.scopeId, policy.scopeId),
+      eq(budgetPolicies.isActive, true),
+      eq(budgetPolicies.hardStopEnabled, true),
+      sql`${budgetPolicies.amount} > 0`,
+    ));
+    for (const candidate of remaining) {
+      const usage = await computeObservedUsage(db, candidate);
+      if (usage.total >= candidate.amount || usage.unknownUsageCount > 0) return;
+    }
     const now = new Date();
     if (policy.scopeType === "agent") {
       await db

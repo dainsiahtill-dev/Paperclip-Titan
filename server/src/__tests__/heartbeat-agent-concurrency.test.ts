@@ -24,6 +24,8 @@ describePostgres("shared Agent run capacity", () => {
   const releases = new Map<string, () => void>();
   let blockAdapter = false;
   let stopAwareAdapter = false;
+  let physicalDeadlineAdapter = false;
+  const stoppedDeadlineRuns = new Set<string>();
   let secondHeartbeat: ReturnType<typeof heartbeatService> | null = null;
 
   beforeAll(async () => {
@@ -33,6 +35,27 @@ describePostgres("shared Agent run capacity", () => {
     registerServerAdapter({
       type: ADAPTER,
       execute: async (context) => {
+        if (physicalDeadlineAdapter) {
+          const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+          await once(child, "spawn");
+          const closed = once(child, "close");
+          const stop = () => child.kill();
+          context.signal?.addEventListener("abort", stop, { once: true });
+          try {
+            await context.onSpawn?.({ pid: child.pid!, processGroupId: child.pid!, startedAt: new Date().toISOString() });
+            await context.onCancellationReady?.();
+            dispatched.push(context.runId);
+            if (context.signal?.aborted) stop();
+            await closed;
+            stoppedDeadlineRuns.add(context.runId);
+            // A real process close precedes completion of the adapter's log drain.
+            await new Promise<void>(resolve => releases.set(context.runId, resolve));
+            return { exitCode: null, signal: "SIGTERM", timedOut: false, resultJson: {} };
+          } finally {
+            context.signal?.removeEventListener("abort", stop);
+            if (child.exitCode === null && child.signalCode === null) { child.kill(); await closed; }
+          }
+        }
         if (stopAwareAdapter) await context.onCancellationReady?.();
         dispatched.push(context.runId);
         if (stopAwareAdapter) {
@@ -59,6 +82,8 @@ describePostgres("shared Agent run capacity", () => {
   afterEach(async () => {
     blockAdapter = false;
     stopAwareAdapter = false;
+    physicalDeadlineAdapter = false;
+    stoppedDeadlineRuns.clear();
     for (const release of releases.values()) release();
     releases.clear();
     await heartbeat.drainActiveRunExecutions();
@@ -200,6 +225,35 @@ describePostgres("shared Agent run capacity", () => {
     }
     throw new Error(`Only ${dispatched.length} of ${count} expected runs dispatched`);
   }
+
+  it("stops a real child at the task deadline, retaining capacity until physical and log drain", async () => {
+    const { companyId, holderRunId, holderId, candidateId } = await seed("deadline", "deadline");
+    await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
+    await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
+    const issueId = randomUUID();
+    await database.insert(issues).values({ id: issueId, companyId, title: "Bounded physical execution", status: "todo", assigneeAgentId: holderId, responsibleUserId: "board" });
+    await database.update(issues).set({ executionPolicy: sql`jsonb_build_object('resourceLimits', jsonb_build_object('maxRunSeconds', 2))` }).where(eq(issues.id, issueId));
+    await instanceSettingsService(database).updateGeneral({ agentConcurrency: { maxActiveRuns: null, groups: [{ name: "deadline", maxActiveRuns: 1 }] } });
+    physicalDeadlineAdapter = true;
+    const first = await heartbeat.invoke(holderId, "on_demand", { issueId }, "manual");
+    expect(first).not.toBeNull();
+    await waitForDispatchCount(1);
+    const next = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    for (let attempt = 0; attempt < 100 && !stoppedDeadlineRuns.has(first!.id); attempt += 1) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(stoppedDeadlineRuns.has(first!.id)).toBe(true);
+    expect((await heartbeat.getRun(first!.id))?.capacityReleasedAt).toBeNull();
+    expect((await heartbeat.getRun(next!.id))?.status).toBe("queued");
+    physicalDeadlineAdapter = false;
+    releases.get(first!.id)?.();
+    await waitForTerminal(first!.id);
+    await waitForCapacityRelease(first!.id);
+    const terminal = await heartbeat.getRun(first!.id);
+    expect(terminal?.errorCode).toBe("resource_run_deadline");
+    expect(terminal?.resultJson).toMatchObject({ resourceLimitStop: { code: "resource_run_deadline", nextOwnerId: "board" } });
+    expect(terminal?.resultJson).toMatchObject({ workObservation: { liveness: "stopped", progress: "unchanged", nextOwnerId: holderId } });
+    await heartbeat.resumeQueuedRuns();
+    expect((await waitForTerminal(next!.id))?.status).toBe("succeeded");
+  }, 30_000);
 
   it("keeps the next MiniMax Agent queued until the shared slot releases", async () => {
     const { holderRunId, candidateId } = await seed("minimax", "minimax");

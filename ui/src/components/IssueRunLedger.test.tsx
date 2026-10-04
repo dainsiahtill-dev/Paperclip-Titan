@@ -171,6 +171,15 @@ function renderLedger(props: Partial<ComponentProps<typeof IssueRunLedgerContent
 }
 
 describe("IssueRunLedger", () => {
+  it("shows bounded resource stops separately from manual cancellation", () => {
+    renderLedger({ runs: [createRun({ status: "cancelled", resultJson: { stopReason: "cancelled", resourceLimitStop: { code: "resource_run_deadline" } } })] });
+    expect(container.textContent).toContain("Run time limit reached");
+  });
+  it("separates a stopped run's unchanged progress from successful execution", () => {
+    renderLedger({ runs: [createRun({ resultJson: { workObservation: { version: 1, liveness: "stopped", progress: "unchanged", progressKind: "none", sourceVersion: "source-1", nextOwnerId: "agent-1" } } })] });
+    expect(container.textContent).toContain("No material change");
+    expect(container.textContent).toContain("CodexCoder");
+  });
   it("renders every liveness state with exhausted continuation context", () => {
     const states: RunLivenessState[] = [
       "advanced",

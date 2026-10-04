@@ -29,6 +29,7 @@ import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
 import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
 import { RunnerInspector } from "./RunnerInspector";
 import { agentsApi } from "../api/agents";
+import { v3t } from "../i18n";
 import {
   ProviderTraceStatusBadge,
   runRequestedProviderTrace,
@@ -307,6 +308,9 @@ function livenessCopyForRun(run: LedgerRun) {
 
 function stopReasonLabel(run: RunForIssue) {
   const result = asRecord(run.resultJson);
+  const resourceCode = readString(asRecord(result?.resourceLimitStop)?.code);
+  if (resourceCode === "resource_run_deadline") return v3t("reliability.runTimeLimitReached");
+  if (resourceCode === "resource_run_token_limit") return v3t("reliability.runTokenLimitReached");
   const stopReason = readString(result?.stopReason);
   const timeoutFired = result?.timeoutFired === true;
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
@@ -842,6 +846,14 @@ export function IssueRunLedgerContent({
               );
             }
             const run = item.run;
+            const observation = asRecord(asRecord(run.resultJson)?.workObservation);
+            const progressLabel = observation?.version === 1
+              ? observation.progress === "advanced" ? v3t("reliability.progressAdvanced")
+                : observation.progress === "unchanged" ? v3t("reliability.progressUnchanged")
+                  : v3t("reliability.progressAwaitingVerification")
+              : null;
+            const nextOwnerId = readString(observation?.nextOwnerId);
+            const nextOwnerLabel = nextOwnerId ? agentMap.get(nextOwnerId)?.name ?? resolveUserLabel?.(nextOwnerId) : null;
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
@@ -963,6 +975,13 @@ export function IssueRunLedgerContent({
                     {stopStatusLabel(run, stopReason)}
                   </div>
                 </div>
+
+                {progressLabel ? (
+                  <div className="text-xs text-muted-foreground">
+                    <span className="text-foreground">{v3t("reliability.materialProgress")}</span>{" "}{progressLabel}
+                    {nextOwnerLabel ? <span> · {v3t("reliability.nextOwner")}: {nextOwnerLabel}</span> : null}
+                  </div>
+                ) : null}
 
                 {retryState ? (
                   <div className="rounded-md border border-border/70 bg-accent/20 px-2 py-2 text-xs leading-5 text-muted-foreground">

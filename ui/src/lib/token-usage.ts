@@ -1,4 +1,5 @@
 import { formatTokens } from "./utils";
+import { v3t } from "@/i18n";
 
 /** Unknown cache semantics cannot be converted into an exact aggregate. */
 export function totalTokenUsage(rows: readonly { totalTokens?: number | null }[]): number | null {
@@ -10,5 +11,5 @@ export function totalTokenUsage(rows: readonly { totalTokens?: number | null }[]
   return total;
 }
 export function formatTokenTotal(value: number | null | undefined): string {
-  return typeof value === "number" ? formatTokens(value) : "Unknown";
+  return typeof value === "number" ? formatTokens(value) : v3t("reliability.unknown");
 }

@@ -37,6 +37,14 @@ export interface RunLivenessClassificationInput {
   errorCode?: string | null;
   continuationAttempt?: number | null;
   evidence?: Partial<RunLivenessEvidenceInput> | null;
+  workObservation?: {
+    version: 1;
+    liveness: "active" | "waiting" | "unknown" | "stopped";
+    progress: "advanced" | "unchanged" | "awaiting_verification";
+    progressKind: "artifact" | "dependency" | "decision" | "none";
+    sourceVersion: string | null;
+    nextOwnerId: string | null;
+  };
 }
 
 export interface RunLivenessClassification {

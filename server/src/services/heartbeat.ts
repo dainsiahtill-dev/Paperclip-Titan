@@ -18289,15 +18289,12 @@ export function heartbeatService(
     const context = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(context.issueId);
     const baseline = parseObject(context.materialProgressBaseline);
+    const materialSnapshot = contextIssueId && baseline.version === 1
+      ? await readIssueMaterialProgress(db, run.companyId, contextIssueId) : null;
     const materialProgress = contextIssueId && baseline.version === 1
       ? compareMaterialProgress(baseline as unknown as MaterialProgressSnapshot,
-          await readIssueMaterialProgress(db, run.companyId, contextIssueId))
+          materialSnapshot!)
       : { state: "unknown" as const, kind: "none" as const };
-    if (contextIssueId && materialProgress.state === "advanced") {
-      await logActivity(db, { companyId: run.companyId, actorType: "system", actorId: "material-observer",
-        runId: run.id, action: "issue.material_progress", entityType: "issue", entityId: contextIssueId,
-        details: { version: 1, kind: materialProgress.kind } });
-    }
     const continuationAttempt = asNumber(
       context.continuationAttempt,
       run.continuationAttempt ?? 0,
@@ -18309,6 +18306,8 @@ export function heartbeatService(
             status: issues.status,
             title: issues.title,
             description: issues.description,
+            assigneeAgentId: issues.assigneeAgentId,
+            responsibleUserId: issues.responsibleUserId,
           })
           .from(issues)
           .where(
@@ -18438,6 +18437,14 @@ export function heartbeatService(
 
     return {
       runStatus: run.status,
+      workObservation: {
+        version: 1,
+        liveness: run.status === "running" ? "active" : run.status === "queued" ? "waiting" : isHeartbeatRunTerminalStatus(run.status) ? "stopped" : "unknown",
+        progress: materialProgress.state === "unknown" ? "awaiting_verification" : materialProgress.state,
+        progressKind: materialProgress.kind === "document" ? "artifact" : materialProgress.kind,
+        sourceVersion: materialSnapshot?.fingerprint ?? null,
+        nextOwnerId: issue?.assigneeAgentId ?? issue?.responsibleUserId ?? null,
+      },
       issue,
       resultJson: resultJson ?? run.resultJson ?? null,
       issueCommentBodies,
@@ -18472,10 +18479,21 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     resultJson?: Record<string, unknown> | null,
   ) {
-    const classification = classifyRunLiveness(
-      await buildRunLivenessInput(run, resultJson),
-    );
-    return db
+    const input = await buildRunLivenessInput(run, resultJson);
+    const classification = classifyRunLiveness(input);
+    return db.transaction(async (tx) => {
+      const [current] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))).for("update");
+      if (!current) return null;
+      const previous = parseObject(parseObject(current.resultJson).workObservation);
+      const observation = input.workObservation;
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      if (issueId && observation?.progress === "advanced" && observation.sourceVersion !== previous.sourceVersion) {
+        await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "material-observer",
+          runId: run.id, action: "issue.material_progress", entityType: "issue", entityId: issueId,
+          details: { version: 1, kind: observation.progressKind, sourceVersion: observation.sourceVersion } });
+      }
+      return tx
       .update(heartbeatRuns)
       .set({
         livenessState: classification.livenessState,
@@ -18483,11 +18501,13 @@ export function heartbeatService(
         continuationAttempt: classification.continuationAttempt,
         lastUsefulActionAt: classification.lastUsefulActionAt,
         nextAction: classification.nextAction,
+        resultJson: { ...parseObject(current.resultJson), ...(observation ? { workObservation: observation } : {}) },
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, run.id))
       .returning()
       .then((rows) => rows[0] ?? null);
+    });
   }
 
   // Clamp the stored attempt count to the range [0, cap]. The SQL reader
@@ -20376,8 +20396,10 @@ export function heartbeatService(
           ? Date.parse(prior.deadlineAt) : (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
         context.resourceDeadline = { runId: run.id, deadlineAt: new Date(deadlineAt).toISOString(), maxRunSeconds };
         resourceDeadline = armIssueRunDeadline({ deadlineAt, stop: async () => {
-          resourceStopCode = "resource_run_deadline";
-          executionControl.controller.abort();
+          if (!executionControl.controller.signal.aborted) {
+            resourceStopCode = "resource_run_deadline";
+            executionControl.controller.abort();
+          }
           await executionControl.settled;
         }, onError: () => logger.warn({ runId: run.id }, "resource deadline stop did not settle") });
       }
@@ -24819,10 +24841,12 @@ export function heartbeatService(
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
         if (maxRunTokens && normalizedUsage?.totalTokens !== undefined && normalizedUsage.totalTokens >= maxRunTokens) {
-          resourceStopCode = "resource_run_token_limit";
+          resourceStopCode ??= "resource_run_token_limit";
         }
         const runErrorMessage =
-          outcome === "cancelled"
+          resourceStopCode && outcome !== "succeeded"
+            ? "The task's configured run resource limit was reached. Progress is preserved for its owner."
+            : outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
             : outcome === "succeeded"
               ? null
@@ -24834,7 +24858,9 @@ export function heartbeatService(
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
         const runErrorCode =
-          outcome === "timed_out"
+          resourceStopCode && outcome !== "succeeded"
+            ? resourceStopCode
+            : outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
               ? (latestRun?.errorCode ?? "cancelled")
@@ -24917,8 +24943,6 @@ export function heartbeatService(
                 sessionRotated: sessionCompaction.rotate,
                 sessionRotationReason: sessionCompaction.reason,
                 configFreshness: configFreshnessResultMetadata,
-                ...(resourceStopCode ? { resourceLimitStop: { code: resourceStopCode, nextOwnerId: issueContext?.responsibleUserId ?? null,
-                  granularity: "reported_provider_boundary" } } : {}),
                 provider:
                   readNonEmptyString(adapterResult.provider) ?? "unknown",
                 biller: resolveLedgerBiller(adapterResult),
@@ -24953,6 +24977,11 @@ export function heartbeatService(
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
                 configFreshness: configFreshnessResultMetadata,
+                ...(resourceStopCode ? { resourceLimitStop: {
+                  code: resourceStopCode,
+                  nextOwnerId: issueContext?.responsibleUserId ?? null,
+                  granularity: resourceStopCode === "resource_run_deadline" ? "wall_clock_deadline" : "reported_provider_boundary",
+                } } : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
@@ -25195,10 +25224,9 @@ export function heartbeatService(
             await db
               .update(heartbeatRuns)
               .set({
-                resultJson: {
-                  ...persistedResultJson,
-                  presentationDecision,
-                },
+                // Presentation is a separate durable projection. Preserve
+                // observations and owner-bound metadata committed meanwhile.
+                resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
                 updatedAt: new Date(),
               })
               .where(eq(heartbeatRuns.id, livenessRun.id));
@@ -25875,9 +25903,9 @@ export function heartbeatService(
             level: "error",
             message,
           }).catch(() => undefined);
-          const livenessRun = await classifyAndPersistRunLiveness(
+          const livenessRun = (await classifyAndPersistRunLiveness(
             failedRun,
-          ).catch(() => failedRun);
+          ).catch(() => failedRun)) ?? failedRun;
           const setupFailureIssueId = readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).issueId,
           );

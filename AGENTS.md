@@ -233,6 +233,8 @@ Read `project-library/README.md` before searching old task history or reusable r
 
 ## Local v3 foundation instructions (2026-09-27)
 
+The following v3 startup and ordinary-directory notes describe the macOS checkout named below. They do not select ports, instances, providers, or workspace layout for a different host. For the explicitly authorized WSL maintenance checkout at `/home/dains/Documents/paperclip`, use `doc/operations/2026-10-04-paperclip-agent-handoff.md`: preserve the default3100 instance, use isolated maintenance worktrees and test state, and do not import or resume the macOS instance's data.
+
 - User project name: 项目管理后台 v3. This independent clone is based on Paperclip v2026.916.1; preserve upstream source and MIT attribution.
 - Read `README.V3.md` and `project-library/README.md` first for local handoff and actual execution status.
 - Keep the old 项目管理后台 and its data, services, agents, artwork, and configs separate. Do not migrate them or resume legacy tasks implicitly.

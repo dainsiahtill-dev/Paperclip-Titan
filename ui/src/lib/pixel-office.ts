@@ -75,7 +75,7 @@ export function deriveOfficePresence(agent: OfficeAgent, runs: OfficeRun[], exec
   const liveRank = (r: OfficeRun) => r.status === "running" && r.execution && ["working", "finishing"].includes(r.execution.phase) ? 0 : r.status === "queued" ? 1 : r.execution?.phase === "completed" ? 3 : 2;
   live.sort((a, b) => liveRank(a) - liveRank(b) || a.id.localeCompare(b.id));
   const run = live[0];
-  const ranks: Record<OfficePhase, number> = { working: 0, finishing: 1, recovery_needed: 2, failed: 3, waiting_for_access: 4, waiting_for_answer: 5, queued: 6, retry_scheduled: 7, reconnecting: 8, completed: 9 };
+  const ranks: Record<OfficePhase, number> = { working: 0, finishing: 1, recovery_needed: 2, failed: 3, waiting_for_access: 4, waiting_for_answer: 5, queued: 6, retry_scheduled: 7, reconnecting: 8, preparing: 9, confirming: 10, completed: 11 };
   const candidates = executions.filter(e => e.agentId === agent.id && (e.currentRun || !["queued", "retry_scheduled", "reconnecting"].includes(e.phase)));
   candidates.sort((a, b) => ranks[a.phase] - ranks[b.phase] || (a.issueId ?? "").localeCompare(b.issueId ?? "") || (a.runId ?? "").localeCompare(b.runId ?? ""));
   const current = !run ? candidates[0] : undefined;
@@ -87,7 +87,7 @@ export function deriveOfficePresence(agent: OfficeAgent, runs: OfficeRun[], exec
   if (run?.status === "queued") return { action: "waiting", screen: "waiting", phase: "queued", run, issueId };
   if (phase === "failed" || phase === "recovery_needed") return { action: "error", screen: "error", phase, run, issueId };
   if (phase === "completed") return { action: "resting", screen: "off", phase, run, issueId };
-  if (phase && ["reconnecting", "retry_scheduled", "queued", "waiting_for_access", "waiting_for_answer"].includes(phase)) return { action: "waiting", screen: "waiting", phase, run, issueId };
+  if (phase && ["preparing", "confirming", "reconnecting", "retry_scheduled", "queued", "waiting_for_access", "waiting_for_answer"].includes(phase)) return { action: "waiting", screen: "waiting", phase, run, issueId };
   if (phase === "working" || phase === "finishing") return { action: "working", screen: "working", phase, run, issueId };
   if (run?.status === "running" || agent.status === "running") return { action: "waiting", screen: "waiting", run, issueId };
   return { action: agent.status === "active" ? "walking" : "resting", screen: "off" };

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -308,6 +309,7 @@ describe("budgetService", () => {
         amount: 100,
       }],
       [{ total: 120 }],
+      [], // remaining active hard stops for the same scope
       [{ id: "approval-1", status: "approved" }],
       [{
         companyId: "company-1",
@@ -399,6 +401,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     agentId: string;
     projectId?: string | null;
     costCents: number;
+    totalTokens?: number | null;
     occurredAt?: Date;
   }) {
     const [event] = await db
@@ -414,6 +417,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
         inputTokens: 100,
         cachedInputTokens: 10,
         outputTokens: 20,
+        totalTokens: input.totalTokens ?? null,
         costCents: input.costCents,
         occurredAt: input.occurredAt ?? new Date(),
       })
@@ -421,6 +425,60 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
 
     return event!;
   }
+
+  it.each(["company", "agent", "project"] as const)("keeps %s paused while another budget remains exhausted", async (scopeType) => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    const scopeId = scopeType === "company" ? companyId : scopeType === "agent" ? agentId : projectId;
+    const service = budgetService(db);
+    const base = { scopeType, scopeId, windowKind: "lifetime" as const, notifyEnabled: false };
+    await service.upsertPolicy(companyId, { ...base, metric: "billed_cents", amount: 100 }, "board");
+    await service.upsertPolicy(companyId, { ...base, metric: "total_tokens", amount: 1000 }, "board");
+    const event = await insertCostEvent({ companyId, agentId, projectId, costCents: 150, totalTokens: 1200 });
+    await service.evaluateCostEvent(event);
+    const readPause = async () => {
+      const table = scopeType === "company" ? companies : scopeType === "agent" ? agents : projects;
+      const [row] = await db.select({ reason: table.pauseReason }).from(table).where(eq(table.id, scopeId));
+      return row?.reason;
+    };
+    expect(await readPause()).toBe("budget");
+    await service.upsertPolicy(companyId, { ...base, metric: "billed_cents", amount: 200 }, "board");
+    expect(await readPause()).toBe("budget");
+    await service.upsertPolicy(companyId, { ...base, metric: "billed_cents", amount: 0 }, "board");
+    expect(await readPause()).toBe("budget");
+    await service.upsertPolicy(companyId, { ...base, metric: "total_tokens", amount: 1500 }, "board");
+    expect(await readPause()).toBeNull();
+  });
+
+  it("retains a token budget pause when missing provider usage still needs reconciliation", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    const base = { scopeType: "agent" as const, scopeId: agentId, windowKind: "lifetime" as const, notifyEnabled: false };
+    await service.upsertPolicy(companyId, { ...base, metric: "total_tokens", amount: 1000 }, "board");
+    await insertCostEvent({ companyId, agentId, costCents: 0 });
+    await db.update(agents).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() }).where(eq(agents.id, agentId));
+    await service.upsertPolicy(companyId, { ...base, metric: "total_tokens", amount: 2000 }, "board");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.pauseReason).toBe("budget");
+    expect(await service.getInvocationBlock(companyId, agentId)).toMatchObject({ scopeType: "agent", scopeId: agentId });
+  });
+
+  it.each(["company", "project"] as const)("preserves a manual %s pause through budget exhaustion and raise", async (scopeType) => {
+    const { companyId, agentId, projectId } = await createBudgetFixture();
+    const scopeId = scopeType === "company" ? companyId : projectId;
+    const service = budgetService(db);
+    const base = { scopeType, scopeId, windowKind: "lifetime" as const, notifyEnabled: false, metric: "billed_cents" as const };
+    await service.upsertPolicy(companyId, { ...base, amount: 100 }, "board");
+    const table = scopeType === "company" ? companies : projects;
+    await db.update(table).set({ pauseReason: "manual", pausedAt: new Date() }).where(eq(table.id, scopeId));
+    if (scopeType === "company") await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    const event = await insertCostEvent({ companyId, agentId, projectId, costCents: 150 });
+    await service.evaluateCostEvent(event);
+    const [paused] = await db.select({ reason: table.pauseReason }).from(table).where(eq(table.id, scopeId));
+    expect(paused.reason).toBe("manual");
+    await service.upsertPolicy(companyId, { ...base, amount: 200 }, "board");
+    const [raised] = await db.select({ reason: table.pauseReason }).from(table).where(eq(table.id, scopeId));
+    expect(raised.reason).toBe("manual");
+  });
 
   it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {
     const { companyId, agentId } = await createBudgetFixture();

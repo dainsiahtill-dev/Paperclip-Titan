@@ -940,28 +940,28 @@ export function Costs({
 
               <div className="space-y-5">
                 <section className="space-y-3">
-                  <h2 className="text-lg font-semibold">Token budget</h2>
-                  <p className="text-sm text-muted-foreground">Set a monthly limit on provider-normalized usage, including subscription runs. Unknown usage stays visible and cannot bypass a token hard-stop. Zero disables this limit.</p>
+                  <h2 className="text-lg font-semibold">{v3t("reliability.tokenBudget")}</h2>
+                  <p className="text-sm text-muted-foreground">{v3t("reliability.tokenBudgetHelp")}</p>
                   <div className="grid gap-3 sm:grid-cols-3">
                     <div className="space-y-2">
-                      <label htmlFor={tokenScopeId} className="text-sm font-medium">Scope</label>
+                      <label htmlFor={tokenScopeId} className="text-sm font-medium">{v3t("reliability.scope")}</label>
                       <Select value={effectiveTokenScope} onValueChange={setTokenScope}>
                         <SelectTrigger id={tokenScopeId}><SelectValue /></SelectTrigger>
                         <SelectContent>{tokenScopes.map(([key, scope]) => <SelectItem key={key} value={key}>{scope.name}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <label htmlFor={tokenAmountId} className="text-sm font-medium">Monthly tokens</label>
+                      <label htmlFor={tokenAmountId} className="text-sm font-medium">{v3t("reliability.monthlyTokens")}</label>
                       <Input id={tokenAmountId} inputMode="numeric" value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="0" />
                     </div>
                     <Button className="self-end" disabled={policyMutation.isPending || !tokenDraft.trim() || tokenAmount === null || tokenAmount > 2147483647} onClick={() => {
                       const scope = tokenScopes.find(([key]) => key === effectiveTokenScope)?.[1];
                       if (scope && tokenAmount !== null) policyMutation.mutate({ scopeType: scope.scopeType, scopeId: scope.scopeId,
                         metric: "total_tokens", windowKind: "calendar_month_utc", amount: tokenAmount });
-                    }}>{policyMutation.isPending ? "Saving..." : "Save token limit"}</Button>
+                    }}>{v3t(policyMutation.isPending ? "reliability.saving" : "reliability.saveTokenLimit")}</Button>
                   </div>
-                  {tokenAmount === null && <p role="alert" className="text-sm text-destructive">Enter a non-negative whole token count.</p>}
-                  {policyMutation.error && <p role="alert" className="text-sm text-destructive">{policyMutation.error instanceof Error ? policyMutation.error.message : "Could not save the budget. Try again."}</p>}
+                  {tokenAmount === null && <p role="alert" className="text-sm text-destructive">{v3t("reliability.invalidTokens")}</p>}
+                  {policyMutation.error && <p role="alert" className="text-sm text-destructive">{policyMutation.error instanceof Error ? policyMutation.error.message : v3t("reliability.saveBudgetFailed")}</p>}
                 </section>
                 {(["company", "agent", "project"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];

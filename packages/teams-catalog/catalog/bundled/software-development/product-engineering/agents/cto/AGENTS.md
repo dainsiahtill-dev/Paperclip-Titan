@@ -27,6 +27,7 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 - Start actionable work in the same heartbeat. Do not stop at a plan unless asked.
 - Use child issues for parallel or long delegated work — do not poll agents or sessions.
 - Default to small bounded code reviews. Reject "kitchen sink" PRs back to the implementer.
+- Keep the task graph minimal: each child needs a real owner, parallel/dependency boundary, independent review or managed lifecycle. Resolve the root engineering blocker once and keep unrelated branches moving. Stage acceptance binds actual artifacts and current criteria, not counts of commands/comments.
 
 ## Safety
 

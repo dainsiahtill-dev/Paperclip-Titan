@@ -32,3 +32,43 @@ Node24.21.0; own worktree dependencies; unset external database URLs; isolated P
 - Final combined source slice:9 server files95 tests passed (73.35s);2 UI files4 tests passed. Server direct `tsc --noEmit`, latest UI typecheck, token gates and `git diff --check` passed.
 
 These are scoped results; no global completion claim follows from them.
+# Integrated follow-up qualification
+
+The 2026-10-04 follow-up adds six real PostgreSQL budget regressions: company,
+agent and project pauses survive a raise or disable of another exhausted metric;
+unknown token usage keeps its hold; manually paused company/project scopes keep
+their original pause reason through budget exhaustion and a later raise. The
+first run reproduced all six failures. All fourteen budget tests subsequently
+passed in the combined integration run.
+
+An actual Node child was launched by a registered test adapter through the normal
+heartbeat admission/controller path. A two-second task deadline stopped that
+owned child. A second Agent stayed queued until the child closed and the first
+adapter's held log drain finished. The RED run exposed a generic cancelled
+reason and missing resource metadata. The fix retains the resource stop cause,
+owner and deadline granularity in result metadata, independently of usage
+availability. The existing twenty-four capacity tests passed before the final
+observation addition; the final physical-deadline case passed after it.
+
+Final run observations now retain execution liveness separately from material
+progress, with the observed content fingerprint and next owner. The observer
+locks the run and writes an advance event once per observed fingerprint. The
+presentation projection previously replaced this newly saved metadata using a
+stale result object; the physical integration reproduced that loss even after
+capacity release. Presentation now merges its own field into the current DB
+result. The regression checks the observation after physical release.
+
+Run-ledger copy displays material change, unchanged work or awaiting verification
+separately from run success, plus resource stop reasons. The new labels and
+resource controls use the Chinese/English locale catalogs. Twenty-eight ledger
+and locale tests passed; UI/server typechecks and token gates passed. The Chinese
+pixel office retains preparing/confirming as waiting states.
+
+CEO/CTO/QA bundled templates and onboarding state the minimal responsibility
+graph and actual-artifact handoff rules. The generated teams manifest, four team
+validations and ten catalog tests passed. Existing business Agent instructions
+were not rewritten.
+
+These are scoped implementation results. Whole-source review, full repository
+checks, integrated browser/provider qualification, the real-Agent application,
+controlled default deployment and rollback remain separate required gates.
