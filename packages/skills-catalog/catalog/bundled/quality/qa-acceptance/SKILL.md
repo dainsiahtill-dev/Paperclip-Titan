@@ -73,7 +73,14 @@ Each criterion needs evidence on the verification pass:
 
 - A failing criterion blocks acceptance unless explicitly waived by the owner with a tracked follow-up issue.
 - "Known issue" without a linked follow-up is not a waiver.
-- If you add a new criterion mid-pass, restart the pass — partial coverage hides regressions.
+- Adding or changing a criterion invalidates its old verdict and requires that
+  criterion plus necessary adjacent checks. Retain accepted evidence for unchanged,
+  independent criteria on the same unchanged artifact; an ordinary comment does
+  not reopen them. Record the criterion and artifact versions on each verdict.
+- A changed artifact requires fresh evidence for every criterion affected by
+  its changed behavior or shared dependencies. Retain older results as historical
+  evidence, not acceptance of the new artifact. Never carry a stale verdict forward
+  merely to avoid a required check.
 
 ## Handoff back to the author
 

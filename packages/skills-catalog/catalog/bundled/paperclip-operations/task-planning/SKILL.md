@@ -36,7 +36,12 @@ Produce implementation plans that the Paperclip executor can actually run: expli
 2. A short comment on the issue that links to the plan document and names the next action.
 3. Where the plan requires approval, an issue-thread interaction of kind `request_confirmation` bound to the latest plan revision.
 
-Do not create implementation subtasks until the plan is accepted.
+When implementation or this plan revision requires explicit approval, wait for
+that acceptance before creating its dependent implementation subtasks. Existing
+authorization to implement and delegate is sufficient for the authorized scope;
+save the coordination plan and create its tasks without adding a new confirmation
+gate. A new governed action waits on its own approval while independent authorized
+work continues.
 
 ## Plan structure
 
@@ -73,7 +78,7 @@ Use the Paperclip API to write the plan document, then comment:
 - If approval is required: `POST /api/issues/{issueId}/interactions` with `kind: request_confirmation`, `targetRevisionId` set to the new plan revision, `continuationPolicy: wake_assignee`, and `idempotencyKey: "confirmation:{issueId}:plan:{revisionId}"`.
 - Set the issue to `in_review` after creating the confirmation. Stay assigned so the acceptance wakes the planner.
 
-When the plan is accepted, see the companion skill for converting accepted plans into Paperclip executable tasks. Key requirements covered there: produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue.
+When implementation is authorized or its required plan approval is accepted, see the companion skill for converting the plan into Paperclip executable tasks. Produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue. Split by actual ownership, parallelism, dependency, acceptance or lifecycle boundaries; keep mechanical steps and related checks inside their cohesive task.
 
 ## Anti-patterns
 

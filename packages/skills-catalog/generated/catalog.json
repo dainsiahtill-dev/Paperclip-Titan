@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-11T15:05:34.526Z",
+  "generatedAt": "2026-10-04T01:44:53.396Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -207,11 +207,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4938,
-          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
+          "sizeBytes": 5461,
+          "sha256": "20b6f491965d44a2b0bee19f0b233f2957eca0f142191c948b2ab57f44d54c29"
         }
       ],
-      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
+      "contentHash": "sha256:191d5b2c9090d4c5b058d87a96b6f0cc9e0c9bebc794df8497b1650ade6acd3c"
     },
     {
       "id": "paperclipai:bundled:product:paperclip-capsules",
@@ -376,11 +376,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3861,
-          "sha256": "c631b437ab26d104af6cdb963d8f679a9341439041b3cb3ec8835f4ff551b378"
+          "sizeBytes": 4366,
+          "sha256": "75eadcfb7a53ceda57e53259ca433ab7a1e1f0b6cdca6be3492485321942ba45"
         }
       ],
-      "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+      "contentHash": "sha256:e96d977fa399813011f53b61d4239048cb72c773083ef585dfdabd9bf0caf695"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",

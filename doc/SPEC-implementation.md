@@ -312,7 +312,9 @@ Invariants:
 - `model` text not null
 - `cost_status` text not null default `reported`; `unpriced` when usage exists but no price was reported
 - `input_tokens` int not null default 0
+- `cached_input_tokens` int not null default 0; its relationship to input is adapter-specific
 - `output_tokens` int not null default 0
+- `total_tokens` int null; provider-normalized consumption, with unknown historical or incomplete usage left null
 - `cost_cents` int not null
 - `occurred_at` timestamptz not null
 
@@ -1270,6 +1272,29 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
+Long plans retain their complete immutable document revision. First/fresh
+physical attempts carry necessary full context; established resume/compact
+attempts use the current task and mandatory goal, scope, permission, acceptance,
+budget and stop constraints plus the exact revision reference. A matching hash
+does not prove the provider read that revision. The company-scoped revision
+endpoint supports bounded offset/limit pages for necessary replay. Prompt
+metrics measure bytes/chars and explicit estimates; they do not infer billed
+savings from payload length.
+
+Comment persistence and its initial unadmitted wake intent commit together.
+Existing heartbeat admission owns gates and reuses or coalesces that receipt.
+Provider I/O stays outside database locks. Same-turn delivery is acknowledged
+only against its original comment digest/version, target run/turn, generation
+and owner; an unknown external outcome retains its uncertainty and follows the
+natural boundary rather than being blindly sent again. Preparing or draining
+owned controls remain admission barriers even before a PID is published.
+
+Run success and material progress are separate observations. Changed document
+content, inspectable artifact identity, dependency readiness or a real decision
+can prove progress; narration, raw tool counts and repeated waiting comments
+cannot. A persisted observation retains its source fingerprint and next owner.
+Legitimate bounded waits keep their owner and check path.
+
 ## 11.5 Recovery Work Classes
 
 Status-only recovery coordination must include guard context that prevents deliverable work and document or plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`). Recovery work classes do not select or change the agent model.
@@ -1311,6 +1336,22 @@ Scheduler must skip invocation when:
 - agent is paused/terminated
 - an existing run is active
 - hard budget limit has been hit
+
+Optional issue `executionPolicy.resourceLimits` can bound task/subtree tokens,
+reported per-run tokens, automatic attempts, consecutive no-progress runs and
+run wall time. Ancestor limits remain effective across child tasks and model
+or role changes; executors cannot erase them or reparent to escape them. Sibling
+resource admission uses the existing capacity lock. Resource-only policies
+survive ordinary API normalization and monitor completion.
+
+Token hard stops use provider-normalized `total_tokens`; incomplete usage stays
+visible and prevents a new invocation under an applicable hard stop. Token
+policies coexist with billed-cents budgets, and relaxing one metric does not
+clear another metric's exhausted/incomplete hold or an operator's manual pause.
+Time limits use the original run's persisted deadline and its owned execution
+controller. A logical terminal status never releases physical capacity before
+provider and log drain. Token stopping is limited to trustworthy reported
+provider boundaries, not a universal instantaneous token cap.
 
 Legacy execution records a renewable controller lease when claiming a queued run,
 before provisioning. A live lease protects the run during overlapping service
