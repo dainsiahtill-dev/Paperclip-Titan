@@ -1,3 +1,8 @@
+import express from "express";
+import request from "supertest";
+import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -55,7 +60,7 @@ describe("engineering verified delivery", () => {
         requestId: randomUUID(), criterionId: criterion.id, workProductId: criterion.workProductId!, expectedContractHash: current.contractHash!, expectedCriterionDigest: criterion.criterionDigest, expectedContentDigest: criterion.contentDigest!, expectedMaterialVersion: criterion.materialVersion!, verdict: "accepted", reason: "Independent reviewer inspected implementation and meaningful assertions against requirement 42.",
       });
     };
-    return { companyId, projectId, issueId, workspaceId, executorId, reviewerId, root, jobs, run, bundle, accept, authority, engineeringEvidence };
+    return { companyId, projectId, issueId, workspaceId, executorId, reviewerId, reviewerRun, root, jobs, run, bundle, accept, authority, engineeringEvidence };
   }
   it("refuses a well-shaped self-reported successful manifest", async () => {
     const f = await fixture();
@@ -201,6 +206,91 @@ describe("engineering verified delivery", () => {
     expect(assessment.criteria[0]!.engineeringEvidence?.verified).toBe(true);
     expect(assessment.canComplete).toBe(false);
     await expect(f.authority.assertCanComplete(f.companyId, f.issueId)).rejects.toThrow(/independent acceptance/);
+  });
+
+  it.each(["ordinary", "none", "different_engineering"])("HTTP jobs use current issue B when workspace creation issue is %s", async (origin) => {
+    const f = await fixture(), originalIssueId = randomUUID(), runId = randomUUID();
+    const policy = { version: 1, mode: "verified_delivery", engineeringEvidence: f.engineeringEvidence, reviewerAgentIds: [f.reviewerId], criteria: [{ id: "engineering", requirement: "Implementation and meaningful tests meet requirement 42" }] };
+    await db.update(projects).set({ deliveryPolicy: null }).where(eq(projects.id, f.projectId));
+    await db.update(issues).set({ executionPolicy: { deliveryPolicy: policy } }).where(eq(issues.id, f.issueId));
+    await db.insert(issues).values({ id: originalIssueId, companyId: f.companyId, projectId: f.projectId, title: "Original issue A", status: "todo", executionPolicy: origin === "different_engineering" ? { deliveryPolicy: { ...policy, engineeringEvidence: { ...f.engineeringEvidence, requiredJobs: [{ id: "other-tests", role: "test" }, { id: "other-verifier", role: "verifier" }] } } } : null });
+    await db.update(executionWorkspaces).set({ sourceIssueId: origin === "none" ? null : originalIssueId }).where(eq(executionWorkspaces.id, f.workspaceId));
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.executorId, status: "running", contextSnapshot: { issueId: f.issueId } });
+    const app = (agentId: string, actorRunId: string) => {
+      const server = express(); server.use(express.json());
+      server.use((req, _res, next) => { (req as any).actor = { type: "agent", companyId: f.companyId, agentId, runId: actorRunId, source: "agent_jwt" }; next(); });
+      server.use("/api", executionWorkspaceRoutes(db));
+      server.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null, deliveryEnqueueWakeup: null } as any));
+      server.use(errorHandler); return server;
+    };
+    const executor = app(f.executorId, runId), reviewer = app(f.reviewerId, f.reviewerRun);
+    const operationIds: string[] = [];
+    for (const job of f.jobs) {
+      const response = await request(executor).post(`/api/execution-workspaces/${f.workspaceId}/runtime-commands/run`).send({ workspaceCommandId: job.id });
+      const effects = response.status === 200 ? [] : await db.select({ command: workspaceOperations.command, exitCode: workspaceOperations.exitCode, status: workspaceOperations.status }).from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId));
+      expect(response.status, JSON.stringify({ response: response.body, effects })).toBe(200);
+      operationIds.push(response.body.operation.metadata.nestedOperationId);
+    }
+    const inner = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, operationIds[1]!));
+    expect(inner[0]!.stderrExcerpt).toMatch(/Read-only file system/);
+    for (const operationId of operationIds) {
+      const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, operationId));
+      expect(operation).toMatchObject({ issueId: f.issueId, heartbeatRunId: runId, exitCode: 0 });
+      expect(operation!.metadata!.engineeringReceipt).toMatchObject({ authorization: { actorType: "agent", issueId: f.issueId, agentId: f.executorId, runId }, kind: "host_readonly_job" });
+    }
+    await f.bundle({ version: 1, executionWorkspaceId: f.workspaceId, operationIds, unresolvedLimits: "Fixture-only requirement 42." });
+    const assessed = await request(reviewer).get(`/api/issues/${f.issueId}/delivery-assessment`).expect(200);
+    const criterion = assessed.body.criteria[0];
+    await request(reviewer).post(`/api/issues/${f.issueId}/delivery-decisions`).send({ requestId: randomUUID(), criterionId: criterion.id, workProductId: criterion.workProductId, expectedContractHash: assessed.body.contractHash, expectedCriterionDigest: criterion.criterionDigest, expectedMaterialVersion: criterion.materialVersion, expectedContentDigest: criterion.contentDigest, verdict: "accepted", reason: "Independent reviewer inspected implementation 42, tests and actual read-only verifier." }).expect(201);
+    const completed = await request(executor).patch(`/api/issues/${f.issueId}`).send({ status: "done" });
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect(completed.body.status).toBe("done");
+  });
+
+  it("keeps ordinary source-less Board jobs and requires explicit issue selection for engineering", async () => {
+    const f = await fixture();
+    await db.update(executionWorkspaces).set({ sourceIssueId: null }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const server = express(); server.use(express.json());
+    server.use((req, _res, next) => { (req as any).actor = { type: "board", userId: "private-board", companyIds: [f.companyId], source: "local_implicit", isInstanceAdmin: true }; next(); });
+    server.use("/api", executionWorkspaceRoutes(db)); server.use(errorHandler);
+    const url = `/api/execution-workspaces/${f.workspaceId}/runtime-commands/run`;
+    const unbound = await request(server).post(url).send({ workspaceCommandId: "tests" });
+    expect(unbound.status, JSON.stringify(unbound.body)).toBe(422);
+    const ids: string[] = [];
+    for (const job of f.jobs) {
+      const response = await request(server).post(url).send({ workspaceCommandId: job.id, issueId: f.issueId });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      ids.push(response.body.operation.metadata.nestedOperationId);
+    }
+    const [verifier] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ids[1]!));
+    expect(verifier!.stderrExcerpt).toMatch(/Read-only file system/);
+    expect(verifier).toMatchObject({ issueId: f.issueId, heartbeatRunId: null });
+    expect(verifier!.metadata!.engineeringReceipt).toMatchObject({ authorization: { actorType: "board", issueId: f.issueId, runId: null } });
+    await f.bundle({ version: 1, executionWorkspaceId: f.workspaceId, operationIds: ids, unresolvedLimits: "" });
+    await f.accept(); await expect(f.authority.assertCanComplete(f.companyId, f.issueId)).resolves.toBeUndefined();
+    await db.update(projects).set({ deliveryPolicy: null }).where(eq(projects.id, f.projectId));
+    await db.update(issues).set({ executionPolicy: { deliveryPolicy: { version: 1, mode: "verified_delivery", engineeringEvidence: f.engineeringEvidence } } }).where(eq(issues.id, f.issueId));
+    await request(server).post(url).send({ workspaceCommandId: "tests" }).expect(422);
+    await db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, f.issueId));
+    const ordinary = await request(server).post(url).send({ workspaceCommandId: "tests" });
+    expect(ordinary.status, JSON.stringify(ordinary.body)).toBe(200);
+    const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, ordinary.body.operation.metadata.nestedOperationId));
+    expect(operation).toMatchObject({ issueId: null, heartbeatRunId: null });
+    expect(operation!.metadata!.engineeringReceipt).toBeUndefined();
+  });
+
+  it("rejects cross-company or unrelated Board issue targets and agent issue substitution before job effects", async () => {
+    const f = await fixture(), foreign = await fixture(), unrelatedId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: unrelatedId, companyId: f.companyId, projectId: f.projectId, title: "Unrelated", status: "todo" });
+    const server = (board: boolean) => { const app = express(); app.use(express.json()); app.use((req, _res, next) => { (req as any).actor = board ? { type: "board", userId: "private-board", companyIds: [f.companyId], source: "local_implicit", isInstanceAdmin: true } : { type: "agent", agentId: f.executorId, runId, companyId: f.companyId, source: "agent_jwt" }; next(); }); app.use("/api", executionWorkspaceRoutes(db)); app.use(errorHandler); return app; };
+    for (const issueId of [foreign.issueId, unrelatedId]) {
+      const response = await request(server(true)).post(`/api/execution-workspaces/${f.workspaceId}/runtime-commands/run`).send({ workspaceCommandId: "tests", issueId });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+    }
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.executorId, status: "running", contextSnapshot: { issueId: f.issueId } });
+    const substituted = await request(server(false)).post(`/api/execution-workspaces/${f.workspaceId}/runtime-commands/run`).send({ workspaceCommandId: "tests", issueId: unrelatedId });
+    expect(substituted.status, JSON.stringify(substituted.body)).toBe(422);
+    expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId))).toHaveLength(0);
   });
 
 });

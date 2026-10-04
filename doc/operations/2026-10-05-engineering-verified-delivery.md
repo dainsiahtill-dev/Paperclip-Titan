@@ -29,6 +29,20 @@ Wait for the existing source writer to drain. Use the execution workspace's
 issue, workspace and principal. Agent execution requires its current registered
 run bound to that issue. A Board execution records its principal and a null
 heartbeat run; the guard's private lifecycle UUID is never relabeled a run.
+For `POST /api/execution-workspaces/:id/runtime-commands/run`, Board may pass
+optional `issueId` alongside `workspaceCommandId`. It must select a same-company,
+same-project task explicitly bound to that workspace. Without that field, Board
+uses the workspace's source task when present. An authenticated agent always uses
+its current-run task; a different supplied issue ID is rejected. Creation provenance
+may name another task or be null without changing the current task's policy.
+
+A source-less Board job stays ordinary only when no project or explicitly linked
+task requires engineering evidence. Otherwise it returns `workspace_job_issue_required`:
+select the delivery task with `issueId` or use its authenticated agent run. Paperclip
+does not infer a task from newest timestamps or replace workspace creation provenance.
+If more than 100 tasks explicitly link to a source-less workspace, select `issueId`
+to keep the ambiguity check bounded.
+
 Jobs on an active source writer return `workspace_write_owner_busy`; wait for
 that owner to stop. Do not replace its PID or join its ownership generation.
 

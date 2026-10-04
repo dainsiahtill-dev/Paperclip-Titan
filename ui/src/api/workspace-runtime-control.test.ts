@@ -18,6 +18,9 @@ describe("sanitizeWorkspaceRuntimeControlTarget", () => {
     expect("action" in sanitized).toBe(false);
   });
 
+  it("preserves the explicit delivery issue selected by the task UI", () => {
+    expect(sanitizeWorkspaceRuntimeControlTarget({ workspaceCommandId: "tests", issueId: "issue-b" } as any)).toMatchObject({ issueId: "issue-b" });
+  });
   it("normalizes an omitted target to nullable fields", () => {
     expect(sanitizeWorkspaceRuntimeControlTarget()).toEqual({
       workspaceCommandId: null,

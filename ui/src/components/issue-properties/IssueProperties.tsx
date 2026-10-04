@@ -618,7 +618,7 @@ export function IssueProperties({
     mutationFn: (request: WorkspaceRuntimeControlRequest) => {
       const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
       if (!workspaceId) throw new Error("This task is not attached to a workspace.");
-      return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request);
+      return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request.action === "run" ? { ...request, issueId: issue.id } : request);
     },
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);

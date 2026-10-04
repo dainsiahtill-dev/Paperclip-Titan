@@ -116,6 +116,8 @@ export interface ProjectWorkspaceRuntimeConfig {
 }
 
 export interface WorkspaceRuntimeControlTarget {
+  /** Board-selected delivery issue; agents remain bound to their authenticated current issue. */
+  issueId?: string | null;
   workspaceCommandId?: string | null;
   runtimeServiceId?: string | null;
   serviceIndex?: number | null;

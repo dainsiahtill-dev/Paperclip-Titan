@@ -48,6 +48,7 @@ export const executionWorkspaceConfigSchema = z.object({
 }).strict();
 
 export const workspaceRuntimeControlTargetSchema = z.object({
+  issueId: z.string().uuid().optional().nullable(),
   workspaceCommandId: z.string().min(1).optional().nullable(),
   runtimeServiceId: z.string().guid().optional().nullable(),
   serviceIndex: z.number().int().nonnegative().optional().nullable(),

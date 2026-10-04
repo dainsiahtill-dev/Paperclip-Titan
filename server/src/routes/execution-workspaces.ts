@@ -60,6 +60,7 @@ import {
   issueWorkspaceLoginHandoff,
   workspaceLoginHandoffFailureStatus,
 } from "../services/workspace-login-handoff-issuer.js";
+import { parseDeliveryPolicy, resolveDeliveryDefinition } from "../services/delivery-authority.js";
 import { conflict, unprocessable } from "../errors.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
@@ -282,6 +283,33 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       sourceIssueId: existing.sourceIssueId,
     });
 
+    // A workspace's sourceIssueId records creation provenance, not the issue
+    // authorized by the current request. Resolve once before any job preparation.
+    let jobIssue: Pick<typeof issues.$inferSelect, "id" | "identifier" | "title"> | null = null;
+    if (action === "run") {
+      const explicitIssueId = (req.body as { issueId?: string | null }).issueId;
+      if (req.actor.type !== "board" && explicitIssueId && explicitIssueId !== authorization.issueId) throw unprocessable("Agents cannot substitute another task for their authenticated current task", { code: "workspace_job_issue_mismatch" });
+      const jobIssueId = req.actor.type === "board" ? explicitIssueId ?? existing.sourceIssueId : authorization.issueId;
+      if (jobIssueId) {
+        const [selected] = await db.select().from(issues).where(and(eq(issues.id, jobIssueId), eq(issues.companyId, existing.companyId)));
+        const workspaceMatches = selected?.executionWorkspaceId === existing.id || (!explicitIssueId && selected?.id === existing.sourceIssueId);
+        if (!selected || selected.projectId !== existing.projectId || !workspaceMatches) throw unprocessable("The selected task is not bound to this execution workspace", { code: "workspace_job_issue_mismatch" });
+        jobIssue = { id: selected.id, identifier: selected.identifier, title: selected.title };
+      } else {
+        if (req.actor.type !== "board") throw unprocessable("Workspace jobs require the agent's authenticated current task", { code: "workspace_job_issue_required" });
+        const [project] = await db.select({ deliveryPolicy: projects.deliveryPolicy }).from(projects).where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)));
+        const linked = await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, existing.companyId), eq(issues.executionWorkspaceId, existing.id))).limit(101);
+        let engineeringRequired = Boolean(parseDeliveryPolicy(project?.deliveryPolicy)?.engineeringEvidence) || linked.length > 100;
+        for (const issue of linked) {
+          if (engineeringRequired) break;
+          engineeringRequired = Boolean((await resolveDeliveryDefinition(db, existing.companyId, issue.id)).engineeringEvidence);
+        }
+        if (engineeringRequired) throw unprocessable("Select the delivery task by passing issueId, or run this job from that task's authenticated run", { code: "workspace_job_issue_required" });
+        // An ordinary source-less Board job has no issue/run evidence. Do not
+        // invent an owner from a newest/linked-issue heuristic.
+      }
+    }
+
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
       res.status(422).json({ error: "Execution workspace needs a local path before Paperclip can run workspace commands" });
@@ -454,7 +482,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const recorder = workspaceOperationsSvc.createRecorder({
       companyId: existing.companyId,
       executionWorkspaceId: existing.id,
-      issueId: authorization.issueId ?? existing.sourceIssueId,
+      issueId: action === "run" ? jobIssue?.id ?? null : authorization.issueId ?? existing.sourceIssueId,
       heartbeatRunId: authorization.runId,
     });
     let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
@@ -558,12 +586,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                   ?? null,
               },
             },
-            issue: existing.sourceIssueId
-              ? {
-                  id: existing.sourceIssueId,
-                  identifier: null,
-                  title: existing.name,
-                }
+            issue: action === "run" ? jobIssue : existing.sourceIssueId
+              ? { id: existing.sourceIssueId, identifier: null, title: existing.name }
               : null,
             agent: {
               id: actor.agentId ?? null,
@@ -583,19 +607,13 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           }
           return await runWorkspaceJobForControl({
             db,
-            authorization: { ...authorization, actorId: actor.actorId, issueId: authorization.issueId ?? existing.sourceIssueId },
+            authorization: { ...authorization, actorId: actor.actorId, issueId: jobIssue?.id ?? null },
             actor: {
               id: actor.agentId ?? null,
               name: actor.actorType === "user" ? "Board" : "Agent",
               companyId: existing.companyId,
             },
-            issue: existing.sourceIssueId
-              ? {
-                  id: existing.sourceIssueId,
-                  identifier: null,
-                  title: existing.name,
-                }
-              : null,
+            issue: jobIssue,
             workspace: availableWorkspace,
             command: workspaceCommand.rawConfig,
             adapterEnv: {},
