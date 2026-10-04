@@ -114,6 +114,8 @@ function subtree(companyId: string, issueId: string) {
 
 export async function getIssueResourceBlock(db: Db, input: {
   companyId: string; issueId: string; excludeRunId?: string | null;
+  /** Reuse this exact ledger accounting for server-authored continuation budgets. */
+  onObservedPolicy?: (snapshot: { issueId: string; limits: IssueResourceLimits; usage: ResourceUsage }) => void;
 }) {
   const policies = await readIssueResourcePolicies(db, input.companyId, input.issueId);
   for (const policy of policies) {
@@ -238,9 +240,11 @@ export async function getIssueResourceBlock(db: Db, input: {
         && Number.isFinite(Date.parse(monitor.nextCheckAt))
         && ((typeof monitorPolicy.timeoutAt === "string" && Date.parse(monitorPolicy.timeoutAt) > Date.now())
           || (typeof monitorPolicy.maxAttempts === "number" && monitorPolicy.maxAttempts > Number(monitor.attemptCount ?? 0))));
-    const decision = evaluateIssueResourceLimits(policy.limits, { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0) + legacyTotal,
+    const usage: ResourceUsage = { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0) + legacyTotal,
       unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0) + legacyUnknown + unqualifiedAcpRuns.size, automaticRuns: Number(runs?.count ?? 0),
-      noProgressRuns, boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 });
+      noProgressRuns, boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 };
+    input.onObservedPolicy?.({ issueId: policy.issueId, limits: policy.limits, usage });
+    const decision = evaluateIssueResourceLimits(policy.limits, usage);
     if (decision.blocked) return { ...decision, resourceIssueId: policy.issueId, title: policy.title };
   }
   return null;

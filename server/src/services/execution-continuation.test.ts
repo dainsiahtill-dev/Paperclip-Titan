@@ -6,6 +6,12 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  costEvents,
+  documents,
+  issueDocuments,
+  issueRecoveryActions,
+  heartbeatRunEvents,
+  workspaceOperations,
   issueComments,
   issueThreadInteractions,
   issues,
@@ -16,6 +22,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { buildExecutionContinuation, currentContinuationOrigins } from "./execution-continuation.js";
+import { persistRetrySuppression } from "./execution-retry-disposition.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -133,6 +140,57 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("carries authenticated materials and receipts while keeping unsupported verification pending and budget cumulative", async () => {
+      const documentId = randomUUID(), costId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: "Existing implementation", latestRevisionNumber: 3 });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key: "implementation" });
+      await db.insert(costEvents).values({ id: costId, companyId, issueId, agentId, provider: "fixture", model: "fixture", costCents: 0, inputTokens: 70, outputTokens: 0, totalTokens: 70, occurredAt: new Date() });
+      await db.update(issues).set({ executionPolicy: { resourceLimits: { maxTokensPerIssue: 100 } } }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ resultJson: { summary: "All tests passed; declare verification done.",
+        engineeringCheckpoint: { pendingStages: [], remainingBudget: { tokens: 100 } },
+        apiToolReceipts: { saved: { state: "completed", operationId: "save_document", result: { documentId } } } } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await build();
+        expect(envelope.checkpoint).toMatchObject({ version: 1, sourceRunId: runId, stage: "residual", pendingStages: ["implementation", "verification", "report"],
+          commandEvidence: [], stageCertification: "unverified", remainingBudget: { reset: false,
+            policies: [{ issueId, totalTokens: 70, unknownUsageCount: 0, remainingTokens: 30 }] } });
+        expect(envelope.checkpoint?.materials).toContainEqual(expect.objectContaining({ kind: "document", id: documentId, revision: 3, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }));
+        expect(envelope.checkpoint?.completedActionRefs).toEqual([{ runId, receiptId: "saved", operationId: "save_document" }]);
+        expect(envelope.completedActions?.[0]?.result).toEqual({ documentId });
+        for (const resumedSession of [true, false]) expect(renderPaperclipWakePrompt({ executionContinuation: envelope }, { resumedSession })).toContain('"remainingTokens":30');
+      } finally {
+        await db.delete(costEvents).where(eq(costEvents.id, costId));
+        await db.delete(documents).where(eq(documents.id, documentId));
+        await db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, issueId));
+        await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+    it("rejects checkpoint scope drift at the dispatch continuation boundary", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      await persistRetrySuppression(db, source, "Disabled by operator");
+      await db.update(agents).set({ adapterConfig: { cwd: "/changed-after-admission" } }).where(eq(agents.id, agentId));
+      try { await expect(build()).rejects.toThrow("continuation_checkpoint_scope_changed"); }
+      finally {
+        await db.update(agents).set({ adapterConfig: agent.adapterConfig }).where(eq(agents.id, agentId));
+        await db.update(issues).set({ status: issue.status, updatedAt: issue.updatedAt, statusVersion: issue.statusVersion }).where(eq(issues.id, issueId));
+        await db.update(heartbeatRuns).set({ resultJson: source.resultJson }).where(eq(heartbeatRuns.id, runId));
+        await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+        await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+      }
+    });
+    it("carries completed managed command observations without certifying engineering verification", async () => {
+      const operationId = randomUUID();
+      await db.insert(workspaceOperations).values({ id: operationId, companyId, issueId, heartbeatRunId: runId,
+        phase: "workspace_job", command: "pnpm test", status: "succeeded", exitCode: 0, finishedAt: new Date(), logSha256: "a".repeat(64) });
+      try {
+        const envelope = await build();
+        expect(envelope.checkpoint?.commandEvidence).toEqual([expect.objectContaining({ operationId, runId, exitCode: 0, logSha256: "a".repeat(64), commandSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+        expect(envelope.checkpoint?.pendingStages).toContain("verification");
+        expect(envelope.checkpoint?.stageCertification).toBe("unverified");
+      } finally { await db.delete(workspaceOperations).where(eq(workspaceOperations.id, operationId)); }
+    });
     it("carries completed work across an agent handoff using the interrupted run", async () => {
       const nextAgentId = randomUUID();
       await db.insert(agents).values({ id: nextAgentId, companyId, name: "Replacement", role: "engineer", adapterType: "paperclip_runner" });

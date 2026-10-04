@@ -39,6 +39,7 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+import { consumeSuppressedRetryResume, persistRetrySuppression, readVerifiedRetryDisposition, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -15312,6 +15313,8 @@ export function heartbeatService(
       delayMs?: number;
     },
   ) {
+    const retryDisposition = await readVerifiedRetryDisposition(db, run);
+    if (retryDisposition) return { outcome: "not_scheduled" as const, reason: "Retry is waiting for an explicit operator resume.", errorCode: retryDisposition.code, issueId: retryDisposition.issueId };
     const rejection = parseObject(parseObject(run.resultJson).configurationIncomplete);
     if (run.errorCode === "configuration_incomplete" && rejection.retryable === false) return { outcome: "not_scheduled" as const, reason: "Provider rejected this configured request; repair its execution configuration before a fresh turn", errorCode: "configuration_incomplete" as const, issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     const now = opts?.now ?? new Date();
@@ -15477,6 +15480,10 @@ export function heartbeatService(
         now,
       });
       if (!gate.allowed) {
+        if (gate.errorCode === "heartbeat_wake_on_demand_disabled") {
+          await persistRetrySuppression(db, run, gate.reason);
+          return { outcome: "not_scheduled" as const, reason: gate.reason, errorCode: gate.errorCode, issueId: gate.issueId };
+        }
         await appendRunEvent(run, {
           eventType: "lifecycle",
           stream: "system",
@@ -15608,13 +15615,20 @@ export function heartbeatService(
             | "issue_cancelled"
             | "issue_terminal_status"
             | "issue_not_in_progress"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "heartbeat_wake_on_demand_disabled";
           issueId: string | null;
           details: Record<string, unknown>;
         };
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        if (issueId) await tx.execute(sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`);
+        const [lockedSource] = await tx.select().from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id))).for("update");
+        const durableWait = lockedSource ? await readVerifiedRetryDisposition(tx as unknown as Db, lockedSource) : null;
+        if (durableWait) return { outcome: "not_scheduled", reason: "Retry is waiting for an explicit operator resume.",
+          errorCode: durableWait.code, issueId, details: { sourceRunId: run.id } };
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -20540,8 +20554,16 @@ export function heartbeatService(
       const maxRunTokens = runTokenCaps.length ? Math.min(...runTokenCaps) : null;
       if (maxRunSeconds) {
         const prior = parseObject(context.resourceDeadline);
+        const sourceRunId = run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId);
+        const [budgetSource] = sourceRunId ? await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.id, sourceRunId),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+        )) : [];
+        const inherited = parseObject(budgetSource?.context?.resourceDeadline);
+        const inheritedDeadline = typeof inherited.deadlineAt === "string" && Number.isFinite(Date.parse(inherited.deadlineAt))
+          ? Date.parse(inherited.deadlineAt) : null;
         const deadlineAt = prior.runId === run.id && typeof prior.deadlineAt === "string" && Number.isFinite(Date.parse(prior.deadlineAt))
-          ? Date.parse(prior.deadlineAt) : (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
+          ? Date.parse(prior.deadlineAt) : inheritedDeadline ?? (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
         context.resourceDeadline = { runId: run.id, deadlineAt: new Date(deadlineAt).toISOString(), maxRunSeconds };
         resourceDeadline = armIssueRunDeadline({ deadlineAt, stop: async () => {
           if (!executionControl.controller.signal.aborted) {
@@ -27331,6 +27353,9 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          const suppressedResume = opts.failedRunId ? await validateSuppressedRetryResume(tx as unknown as Db, {
+            companyId: issue.companyId, issueId: issue.id, agentId, sourceRunId: opts.failedRunId,
+            actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason }) : null;
           if (opts.failedRunId) {
             // The issue lock makes double-clicks and network retries adopt the
             // same successor, including after it has already finished.
@@ -27340,6 +27365,14 @@ export function heartbeatService(
               sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'retry_failed_run'`,
             )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
             if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
+          }
+          const suppressedCandidates = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, issue.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+            sql`${heartbeatRuns.resultJson}->'retryDisposition'->>'state' = 'blocked'`,
+          ));
+          for (const suppressedSource of suppressedCandidates) {
+            if (opts.failedRunId !== suppressedSource.id && await readVerifiedRetryDisposition(tx as unknown as Db, suppressedSource))
+              return { kind: "skipped" as const };
           }
 
           let reconciledSourceRunId: string | null = null;
@@ -28293,6 +28326,11 @@ export function heartbeatService(
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
+          if (suppressedResume) {
+            enrichedContextSnapshot.retryOfRunId = suppressedResume.source.id;
+            const deadline = parseObject(suppressedResume.source.contextSnapshot?.resourceDeadline);
+            if (typeof deadline.deadlineAt === "string") enrichedContextSnapshot.resourceDeadline = { ...deadline, runId: explicitContinuationRunId };
+          }
 
           const requestValues = {
               ...durableReceiptFields,
@@ -28380,7 +28418,7 @@ export function heartbeatService(
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
-              ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
+              ...(explicitContinuation || suppressedResume ? { id: explicitContinuationRunId } : {}),
               companyId: agent.companyId,
               agentId,
               invocationSource: source,
@@ -28399,12 +28437,19 @@ export function heartbeatService(
                 : enrichedContextSnapshot,
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
+              ...(suppressedResume ? { scheduledRetryAttempt: suppressedResume.source.scheduledRetryAttempt,
+                processLossRetryCount: suppressedResume.source.processLossRetryCount, scheduledRetryReason: suppressedResume.source.scheduledRetryReason } : {}),
               ...(reconciledSourceRunId
                 ? { retryOfRunId: reconciledSourceRunId }
                 : {}),
             })
             .returning()
             .then((rows) => rows[0]);
+
+          if (opts.failedRunId && suppressedResume) {
+            await consumeSuppressedRetryResume(tx as unknown as Db, suppressedResume.source, suppressedResume.disposition,
+              opts.requestedByActorId!, newRun.id);
+          }
 
           await tx
             .update(agentWakeupRequests)

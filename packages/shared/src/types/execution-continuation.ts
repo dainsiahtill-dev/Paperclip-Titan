@@ -1,3 +1,49 @@
+/** Durable, server-owned wait. A configuration toggle is not resume authority. */
+export interface ExecutionRetryDisposition {
+  version: 1;
+  state: "blocked" | "resumed";
+  code: "heartbeat_wake_on_demand_disabled";
+  sourceRunId: string;
+  issueId: string | null;
+  agentId: string;
+  issueRevision: string | null;
+  sourceFingerprint: string;
+  workspaceFingerprint: string;
+  scopeFingerprint: string;
+  requiresExplicitResume: true;
+  recoveryActionId: string | null;
+  resumedByUserId?: string;
+  successorRunId?: string;
+}
+
+/** Observed facts only; no engineering stage is certified from a model summary. */
+export interface ExecutionCheckpointEnvelope {
+  version: 1;
+  sourceRunId: string;
+  sourceFingerprint: string;
+  issueRevision: string;
+  agentId: string;
+  workspaceFingerprint: string;
+  scopeFingerprint: string;
+  artifactFingerprint: string;
+  stage: "residual";
+  stageCertification: "unverified";
+  pendingStages: Array<"implementation" | "verification" | "report">;
+  nextAction: "inspect_existing_work_then_complete_pending_stages";
+  materials: Array<{ kind: "document" | "attachment"; id: string; sha256: string; revision?: number }>;
+  completedActionRefs: Array<{ runId: string; receiptId: string; operationId: string }>;
+  commandEvidence: Array<{ operationId: string; runId: string; commandSha256: string; exitCode: number; logSha256: string | null; finishedAt: string }>;
+  remainingBudget: {
+    reset: false;
+    certification: "observed" | "unverified";
+    sourceDeadlineAt: string | null;
+    remainingWallTimeMs: number | null;
+    policies: Array<{ issueId: string; limits: Record<string, number | null | undefined>; totalTokens: number;
+      unknownUsageCount: number; automaticRuns: number; remainingTokens: number | null; remainingAutomaticRuns: number | null }>;
+    blockedCode: string | null;
+  };
+}
+
 /** Server-authored context. Each message retains its author and trust boundary. */
 export interface ExecutionContinuationEnvelope {
   version: 1;
@@ -35,6 +81,7 @@ export interface ExecutionContinuationEnvelope {
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
+  checkpoint?: ExecutionCheckpointEnvelope;
   /** Start a new turn from history; never replay prior tool calls automatically. */
   interruptedRunId?: string;
   /** Completed mutations are context, never instructions to replay them. */

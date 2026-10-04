@@ -13,6 +13,7 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { buildExecutionCheckpoint } from "./execution-checkpoint.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -129,7 +130,7 @@ export async function buildExecutionContinuation(input: {
   const sourceRun = sourceRunId
     ? (
         await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson, run: heartbeatRuns })
           .from(heartbeatRuns)
           .where(
             and(
@@ -315,6 +316,7 @@ export async function buildExecutionContinuation(input: {
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
   return {
+    ...(sourceRun ? { checkpoint: await buildExecutionCheckpoint(db, { source: sourceRun.run, issue, agentId: input.agentId, completedActions }) } : {}),
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations

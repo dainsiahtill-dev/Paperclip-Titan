@@ -6,6 +6,7 @@ import {
   approvals,
   issueApprovals,
   issueThreadInteractions,
+  issueRecoveryActions,
   agentRuntimeState,
   agentWakeupRequests,
   activityLog,
@@ -28,6 +29,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { issueRecoveryActionReadModelSchema } from "../../../packages/shared/src/validators/issue.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -72,6 +74,8 @@ const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const SUPPRESSED_RETRY_TEST_ADAPTER = "suppressed_retry_test";
+let suppressedRetryPhysicalInvocations = 0;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -102,6 +106,10 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-retry-scheduling-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    registerServerAdapter({ type: SUPPRESSED_RETRY_TEST_ADAPTER,
+      execute: async () => { suppressedRetryPhysicalInvocations += 1; return { exitCode: 0, signal: null, timedOut: false, resultJson: { summary: "Fake local completion" } }; },
+      testEnvironment: async () => ({ adapterType: SUPPRESSED_RETRY_TEST_ADAPTER, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
     registerServerAdapter({
       type: PROVIDER_QUOTA_TEST_ADAPTER,
       execute: async () => ({
@@ -138,10 +146,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await cleanupRetryFixture();
     vi.clearAllMocks();
+    suppressedRetryPhysicalInvocations = 0;
   });
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(SUPPRESSED_RETRY_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -598,6 +608,127 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
     expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("persists disabled retry suppression across concurrent sweeps, restart and re-enabled wakes", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    const resultJson = { conversationContinuation: "continue_conversation_v1", artifacts: ["kept"], summary: "Unverified tests passed" };
+    await db.update(agents).set({ adapterType: SUPPRESSED_RETRY_TEST_ADAPTER }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({ status: "timed_out", error: "Original timeout", resultJson }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+    await Promise.all(Array.from({ length: 3 }, () => heartbeat.scheduleBoundedRetry(runId, { now })));
+    for (let cycle = 0; cycle < 3; cycle += 1) await heartbeat.reconcileStrandedAssignedIssues();
+    const beforeRestart = await heartbeat.getRun(runId);
+    expect(beforeRestart?.resultJson?.retryDisposition).toMatchObject({ version: 1, state: "blocked", sourceRunId: runId, requiresExplicitResume: true });
+    expect(beforeRestart).toMatchObject({ status: "timed_out", error: "Original timeout", scheduledRetryAttempt: 0 });
+    expect(beforeRestart?.resultJson?.artifacts).toEqual(["kept"]);
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.filter(event => event.payload?.retrySuppression)).toHaveLength(1);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(issueRecoveryActionReadModelSchema.safeParse(actions[0]).success).toBe(true);
+    expect(actions[0]).toMatchObject({ ownerType: "board", cause: "retry_suppressed", status: "active" });
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, agentId));
+    const restarted = heartbeatService(db);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      expect(await restarted.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled", errorCode: "heartbeat_wake_on_demand_disabled" });
+      await restarted.reconcileStrandedAssignedIssues();
+    }
+    expect((await restarted.getRun(runId))?.updatedAt).toEqual(beforeRestart?.updatedAt);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).toHaveLength(events.length);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it("rolls suppression back completely when its event cannot persist", async () => {
+    const { issueId, runId } = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    mockedAppendHeartbeatRunEvent.mockRejectedValueOnce(new Error("event storage unavailable"));
+    await expect(heartbeat.scheduleBoundedRetry(runId, { retryReason: MAX_TURN_CONTINUATION_RETRY_REASON })).rejects.toThrow("event storage unavailable");
+    expect((await heartbeat.getRun(runId))?.resultJson?.retryDisposition).toBeUndefined();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
+  it("preserves another active recovery incident while recording source suppression", async () => {
+    const { companyId, agentId, issueId, runId } = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    const [existing] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
+      ownerType: "board", cause: "legacy_execution_requires_reconciliation", fingerprint: "other-source", evidence: { retained: true }, nextAction: "Inspect other incident" }).returning();
+    await heartbeat.scheduleBoundedRetry(runId, { retryReason: MAX_TURN_CONTINUATION_RETRY_REASON });
+    expect((await heartbeat.getRun(runId))?.resultJson?.retryDisposition).toMatchObject({ recoveryActionId: null });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0]).toEqual(existing);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, agentId));
+    await expect(heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: "local-board" })).rejects.toThrow("Another recovery incident");
+  });
+
+  async function seedSuppressedRetry(input?: { deadlineAt?: string; attempt?: number }) {
+    const fixture = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    await db.update(agents).set({ adapterType: SUPPRESSED_RETRY_TEST_ADAPTER }).where(eq(agents.id, fixture.agentId));
+    await db.update(heartbeatRuns).set({ status: "timed_out", error: "Original timeout",
+      ...(input?.deadlineAt ? { contextSnapshot: { issueId: fixture.issueId, resourceDeadline: { runId: fixture.runId, deadlineAt: input.deadlineAt, maxRunSeconds: 600 } } } : {}),
+      ...(input?.attempt ? { scheduledRetryAttempt: input.attempt } : {}), resultJson: {
+      conversationContinuation: "continue_conversation_v1", artifacts: ["kept"],
+      apiToolReceipts: { saved: { state: "completed", operationId: "save_document", result: { documentId: "kept" } } },
+    } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await heartbeat.scheduleBoundedRetry(fixture.runId);
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, fixture.agentId));
+    return fixture;
+  }
+
+  it("holds automatic wakes and consumes an exact operator retry once", async () => {
+    const { companyId, agentId, issueId, runId } = await seedSuppressedRetry();
+    const restarted = heartbeatService(db);
+    await restarted.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_assignment_recovery", payload: { issueId }, requestedByActorType: "system" });
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    const retry = () => restarted.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: "local-board" });
+    const [first, duplicate] = await Promise.all([retry(), retry()]);
+    expect(first?.id).toBe(duplicate?.id);
+    expect(first?.retryOfRunId).toBe(runId);
+    await waitForRunToFinish(restarted, first!.id);
+    expect(suppressedRetryPhysicalInvocations).toBe(1);
+    expect((await restarted.getRun(runId))?.resultJson?.retryDisposition).toMatchObject({ state: "resumed", successorRunId: first!.id, resumedByUserId: "local-board" });
+    expect((await restarted.getRun(runId))?.resultJson?.artifacts).toEqual(["kept"]);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0]).toMatchObject({ status: "resolved" });
+    expect(issueRecoveryActionReadModelSchema.safeParse((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0]).success).toBe(true);
+  });
+
+  it("retains the original source deadline and spent attempt count in its successor", async () => {
+    const deadlineAt = "2030-01-01T00:00:00.000Z";
+    const { agentId, issueId, runId } = await seedSuppressedRetry({ deadlineAt, attempt: 1 });
+    const successor = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: "local-board" });
+    expect(successor?.scheduledRetryAttempt).toBe(1);
+    await waitForRunToFinish(heartbeat, successor!.id);
+    expect((await heartbeat.getRun(successor!.id))?.contextSnapshot?.resourceDeadline).toMatchObject({ runId: successor!.id, deadlineAt, maxRunSeconds: 600 });
+  });
+
+  it("does not trust a provider-shaped suppression marker without its server event receipt", async () => {
+    const { agentId, issueId, runId } = await seedSuppressedRetry();
+    const original = (await heartbeat.getRun(runId))!;
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    expect(original.resultJson?.retryDisposition).toBeDefined();
+    expect(await heartbeat.scheduleBoundedRetry(runId)).toMatchObject({ outcome: "scheduled" });
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it.each(["terminal", "reassigned", "revision", "scope", "source", "workspace", "deadline", "physical_owner"])("rejects a %s suppressed retry without invoking a provider", async change => {
+    const { agentId, issueId, runId } = await seedSuppressedRetry(change === "deadline" ? { deadlineAt: "2020-01-01T00:00:00.000Z" } : undefined);
+    if (change === "terminal") await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    if (change === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+    if (change === "revision") await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issueId));
+    if (change === "scope") await db.update(issues).set({ description: "Different scope" }).where(eq(issues.id, issueId));
+    if (change === "source") await db.update(heartbeatRuns).set({ error: "Different incident" }).where(eq(heartbeatRuns.id, runId));
+    if (change === "workspace") await db.update(agents).set({ adapterConfig: { cwd: "/different-workspace" } }).where(eq(agents.id, agentId));
+    if (change === "physical_owner") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, runId));
+    await expect(heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: "local-board" })).rejects.toThrow();
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
   });
 
   it.each([
