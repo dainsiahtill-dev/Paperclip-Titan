@@ -30,6 +30,32 @@ function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** Server-observed lower bounds remain distinct from complete billing totals. */
+export function readTrustedLegacyUsageCheckpoint(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "controllerBootId" | "runtimeMode" | "runnerProfileJson" | "resultJson">) {
+  const checkpoint = object(object(run.resultJson).legacyUsageCheckpoint);
+  const pin = object(object(run.runnerProfileJson).legacyUsageScope);
+  const source = checkpoint.source;
+  const supportedSource = (source === "codex_session_cumulative_delta" && checkpoint.adapterType === "codex_local")
+    || (source === "claude_prompt_usage" && checkpoint.adapterType === "claude_local");
+  if (run.runtimeMode !== "legacy" || !run.controllerBootId || !supportedSource
+      || checkpoint.version !== 1 || pin.version !== 1
+      || checkpoint.bindingVerified !== true || checkpoint.baselineVerified !== true
+      || checkpoint.runId !== run.id || checkpoint.companyId !== run.companyId || checkpoint.agentId !== run.agentId
+      || checkpoint.controllerBootId !== run.controllerBootId
+      || typeof checkpoint.sessionId !== "string" || !checkpoint.sessionId.trim() || checkpoint.sessionId.length > 200
+      || typeof checkpoint.scopeHash !== "string" || !/^[a-f0-9]{64}$/.test(checkpoint.scopeHash)
+      || pin.source !== source || pin.sessionId !== checkpoint.sessionId || pin.scopeHash !== checkpoint.scopeHash
+      || typeof checkpoint.observedTotalTokens !== "number" || !Number.isSafeInteger(checkpoint.observedTotalTokens) || checkpoint.observedTotalTokens < 0
+      || typeof checkpoint.usageUnknown !== "boolean"
+      || typeof checkpoint.observedAt !== "string" || !Number.isFinite(Date.parse(checkpoint.observedAt))) return null;
+  return { version: 1 as const, source: source as "codex_session_cumulative_delta" | "claude_prompt_usage",
+    sessionId: checkpoint.sessionId, scopeHash: checkpoint.scopeHash,
+    observedTotalTokens: checkpoint.observedTotalTokens, usageUnknown: checkpoint.usageUnknown,
+    companyId: run.companyId, agentId: run.agentId, runId: run.id, controllerBootId: run.controllerBootId,
+  };
+}
+
 export async function readIssueResourcePolicies(db: Db, companyId: string, issueId: string) {
   const policies: Array<{ issueId: string; title: string; status: string; executionState: unknown; monitorPolicy: unknown; limits: IssueResourceLimits }> = [];
   const visited = new Set<string>();

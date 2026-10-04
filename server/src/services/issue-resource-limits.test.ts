@@ -1,5 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
-import { evaluateIssueResourceLimits, armIssueRunDeadline } from "./issue-resource-limits.js";
+import { evaluateIssueResourceLimits, armIssueRunDeadline, readTrustedLegacyUsageCheckpoint } from "./issue-resource-limits.js";
+
+function legacyCheckpointFixture() {
+  const scope = { version: 1, source: "codex_session_cumulative_delta", sessionId: "session-a", scopeHash: "a".repeat(64) };
+  return { id: "run-a", companyId: "company-a", agentId: "agent-a", controllerBootId: "boot-a", runtimeMode: "legacy",
+    runnerProfileJson: { legacyUsageScope: scope },
+    resultJson: { legacyUsageCheckpoint: { ...scope, runId: "run-a", companyId: "company-a", agentId: "agent-a", controllerBootId: "boot-a", adapterType: "codex_local",
+      bindingVerified: true, baselineVerified: true, observedTotalTokens: 160, usageUnknown: true, observedAt: "2026-10-04T08:00:00.000Z" } },
+  };
+}
+
+describe("legacy usage checkpoint trust", () => {
+  it("retains a scoped reported lower bound without claiming complete usage", () => {
+    expect(readTrustedLegacyUsageCheckpoint(legacyCheckpointFixture())).toMatchObject({ observedTotalTokens: 160, usageUnknown: true, source: "codex_session_cumulative_delta", sessionId: "session-a" });
+  });
+  it.each(["runId", "companyId", "agentId", "controllerBootId", "sessionId", "scopeHash", "source", "adapterType"])("rejects a changed %s binding", field => {
+    const row = legacyCheckpointFixture();
+    (row.resultJson.legacyUsageCheckpoint as Record<string, unknown>)[field] = "foreign";
+    expect(readTrustedLegacyUsageCheckpoint(row)).toBeNull();
+  });
+  it.each(["bindingVerified", "baselineVerified"])("requires affirmative %s provenance", field => {
+    const row = legacyCheckpointFixture();
+    (row.resultJson.legacyUsageCheckpoint as Record<string, unknown>)[field] = false;
+    expect(readTrustedLegacyUsageCheckpoint(row)).toBeNull();
+  });
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid reported totals %s", value => {
+    const row = legacyCheckpointFixture(); row.resultJson.legacyUsageCheckpoint.observedTotalTokens = value;
+    expect(readTrustedLegacyUsageCheckpoint(row)).toBeNull();
+  });
+  it("requires its own immutable scope pin and legacy runtime", () => {
+    const row = legacyCheckpointFixture(); row.runnerProfileJson = {} as typeof row.runnerProfileJson;
+    expect(readTrustedLegacyUsageCheckpoint(row)).toBeNull();
+    const native = legacyCheckpointFixture(); native.runtimeMode = "native";
+    expect(readTrustedLegacyUsageCheckpoint(native)).toBeNull();
+  });
+});
 
 describe("task resource limits", () => {
   it("keeps subscription token usage and automatic attempts bounded across runs", () => {
