@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { readCodexCumulativeUsage, type AcpUsageScope, type CodexCumulativeUsage } from "./usage-accounting.js";
@@ -11,6 +12,12 @@ export interface CodexRolloutEvidence {
   fileIdentity: { device: number; inode: number; uid: number; birthtimeMs: number };
   observedAt: string;
   counterTimestamp: string;
+  witness?: CodexRolloutWitness;
+}
+
+export interface CodexRolloutWitness {
+  verify(): Promise<boolean>;
+  close(): Promise<void>;
 }
 
 /** Read only an explicit managed home and exact provider session, never a default home. */
@@ -20,8 +27,14 @@ export async function readScopedCodexRollout(input: {
   scope: AcpUsageScope;
   requireCurrentRun?: boolean;
   expectedFileIdentity?: CodexRolloutEvidence["fileIdentity"];
+  expectedWitness?: CodexRolloutWitness;
+  holdOpen?: boolean;
   before?: number;
 }): Promise<CodexRolloutEvidence | null> {
+  // A closed stat tuple is not a generation witness: the filesystem can reuse
+  // inode and birthtime together. Only a still-open original inode is usable.
+  if (input.expectedFileIdentity && !input.expectedWitness) return null;
+  if (input.expectedWitness && !await input.expectedWitness.verify()) return null;
   if (!path.isAbsolute(input.codexHome) || !/^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(input.sessionId)) return null;
   const expectedUid = process.getuid?.();
   const candidates: string[] = [];
@@ -39,6 +52,8 @@ export async function readScopedCodexRollout(input: {
       else if (entry.isFile() && entry.name.endsWith(`-${input.sessionId}.jsonl`)) candidates.push(name);
     }
   }
+  let descriptor: Awaited<ReturnType<typeof fs.open>> | null = null;
+  let transferred = false;
   try {
     const home = await fs.lstat(input.codexHome);
     if (!home.isDirectory() || home.isSymbolicLink() || expectedUid !== undefined && home.uid !== expectedUid) return null;
@@ -50,7 +65,10 @@ export async function readScopedCodexRollout(input: {
     if (!before.isFile() || before.isSymbolicLink() || before.size > 16_000_000 || expectedUid !== undefined && before.uid !== expectedUid) return null;
     const identity = { device: before.dev, inode: before.ino, uid: before.uid, birthtimeMs: before.birthtimeMs };
     if (input.expectedFileIdentity && Object.entries(identity).some(([key, value]) => value !== input.expectedFileIdentity![key as keyof typeof identity])) return null;
-    const bytes = await fs.readFile(name);
+    descriptor = await fs.open(name, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = await descriptor.stat();
+    if (opened.dev !== before.dev || opened.ino !== before.ino || opened.uid !== before.uid) return null;
+    const bytes = await descriptor.readFile();
     const after = await fs.lstat(name);
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) return null;
     const lines = bytes.toString("utf8").split("\n").filter(Boolean);
@@ -75,6 +93,20 @@ export async function readScopedCodexRollout(input: {
       latest = usage; timestamp = new Date(at).toISOString();
     }
     if (!latest) return null;
-    return { usage: latest, sessionId: input.sessionId, scopeHash: createHash("sha256").update(JSON.stringify([input.scope.companyId, input.scope.agentId, input.scope.issueId, input.scope.cwd, input.scope.model, input.sessionId])).digest("hex"), fileSha256: createHash("sha256").update(bytes).digest("hex"), fileIdentity: identity, observedAt: new Date().toISOString(), counterTimestamp: timestamp };
+    const held = descriptor;
+    let closed = false;
+    const witness: CodexRolloutWitness = {
+      async verify() {
+        if (closed) return false;
+        try {
+          const [current, original] = await Promise.all([fs.lstat(name), held.stat()]);
+          return !current.isSymbolicLink() && current.isFile() && current.dev === original.dev && current.ino === original.ino && current.uid === original.uid && original.nlink > 0;
+        } catch { return false; }
+      },
+      async close() { if (!closed) { closed = true; await held.close(); } },
+    };
+    transferred = input.holdOpen === true;
+    return { usage: latest, sessionId: input.sessionId, scopeHash: createHash("sha256").update(JSON.stringify([input.scope.companyId, input.scope.agentId, input.scope.issueId, input.scope.cwd, input.scope.model, input.sessionId])).digest("hex"), fileSha256: createHash("sha256").update(bytes).digest("hex"), fileIdentity: identity, observedAt: new Date().toISOString(), counterTimestamp: timestamp, ...(transferred ? { witness } : {}) };
   } catch { return null; }
+  finally { if (descriptor && !transferred) await descriptor.close().catch(() => {}); }
 }

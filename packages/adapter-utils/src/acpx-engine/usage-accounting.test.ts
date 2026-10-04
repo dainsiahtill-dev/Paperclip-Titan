@@ -63,6 +63,20 @@ describe("physical ACP usage accounting", () => {
     const c = new AcpUsageAccounting(scope, "claude"); c.bindSession(sessionId); prompt(c); finish(c, meta(160, { complete: true }));
     expect(c.result().usageUnknown).toBe(true);
   });
+  it("pins a default model from the same correlated resumed session before binding", () => {
+    const c = new AcpUsageAccounting({ ...scope, model: null }, "codex");
+    c.observe("outbound", { id: 1, method: "session/load", params: { sessionId, cwd: scope.cwd } });
+    c.observe("inbound", { id: 1, result: { models: { currentModelId: "gpt-6.1-sol" } } });
+    c.bindSession(sessionId);
+    expect(c.scope.model).toBe("gpt-6.1-sol");
+  });
+  it("does not take default-model metadata from a different session", () => {
+    const c = new AcpUsageAccounting({ ...scope, model: null }, "codex");
+    c.observe("outbound", { id: 1, method: "session/load", params: { sessionId: "unrelated", cwd: scope.cwd } });
+    c.observe("inbound", { id: 1, result: { models: { currentModelId: "foreign" } } });
+    c.bindSession(sessionId);
+    expect(c.scope.model).toBeNull();
+  });
   it("retains Claude's actual producer prompt aggregate capability, separately from window updates", () => {
     const c = new AcpUsageAccounting(scope, "claude");
     c.observe("outbound", { id: 1, method: "initialize", params: {} });

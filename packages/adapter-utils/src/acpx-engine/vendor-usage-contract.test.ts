@@ -19,3 +19,16 @@ it("the shipped Codex ACP producer preserves inclusive physical counters and act
   expect(patch).toContain("baseInstructions: paperclipBaseInstructions(request)");
   expect(patch).toContain("!context.isToolApproval && this.shouldUseAcpElicitation(params)");
 });
+
+it("the frozen installed Codex ACP usage-update producer carries physical totals while keeping the window unchanged", () => {
+  const installed = fileURLToPath(new URL("../../../adapters/codex-local/node_modules/@agentclientprotocol/codex-acp/dist/index.js", import.meta.url));
+  const source = fs.readFileSync(installed, "utf8");
+  const functionBody = source.match(/^function paperclipCumulativeUsage\([\s\S]*?^}/m)![0];
+  const countBody = source.match(/^function toTokenCount\([\s\S]*?^}/m)![0];
+  const handlerBody = source.match(/^  handleTokenUsageUpdated\(params\) \{[\s\S]*?^  }/m)![0];
+  const updateBody = source.match(/^  createUsageUpdate\(params\) \{[\s\S]*?^  }/m)![0];
+  const implementation = vm.runInNewContext(`${functionBody}\n${countBody}\n({${handlerBody},${updateBody}})`, { process: { env: { PAPERCLIP_COMPANY_ID: "company", PAPERCLIP_AGENT_ID: "agent", PAPERCLIP_TASK_ID: "issue", PAPERCLIP_RUN_ID: "run" } } });
+  implementation.sessionState = { sessionId: "actual-provider-session", cwd: "/effective/cwd", currentModelId: "gpt-6.1-sol" };
+  const notification = { threadId: "actual-provider-session", turnId: "actual-provider-turn", tokenUsage: { last: { inputTokens: 60, cachedInputTokens: 20, outputTokens: 20, totalTokens: 80 }, total: { inputTokens: 120, cachedInputTokens: 40, outputTokens: 40, totalTokens: 160 }, modelContextWindow: 272000 } };
+  expect(implementation.createUsageUpdate(notification)).toMatchObject({ used: 80, size: 272000, _meta: { paperclipUsage: { sessionId: "actual-provider-session", providerTurnId: "actual-provider-turn", cumulative: { inputTokens: 120, cachedInputTokens: 40, outputTokens: 40, totalTokens: 160 } } } });
+});

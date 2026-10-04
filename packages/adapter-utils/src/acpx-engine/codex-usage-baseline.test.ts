@@ -41,3 +41,29 @@ it.each(["wrong_session", "wrong_writer", "stale_total", "changed_file", "symlin
   if (kind === "symlink") { await fs.rename(file, file + ".original"); await fs.symlink(file + ".original", file); }
   expect(await readScopedCodexRollout({ ...options, expectedFileIdentity: kind === "changed_file" ? baseline!.fileIdentity : undefined })).toBeNull();
 });
+
+it("holds the original file generation across repeated real unlink/rewrite trials and closes the witness", async () => {
+  const { home, file } = await fixture();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const capture = await readScopedCodexRollout({ codexHome: home, sessionId, scope, holdOpen: true });
+    expect(capture?.witness).toBeDefined();
+    try {
+      expect(await capture!.witness!.verify()).toBe(true);
+      const bytes = await fs.readFile(file);
+      await fs.unlink(file); await fs.writeFile(file, bytes);
+      expect(await capture!.witness!.verify()).toBe(false);
+      expect(await readScopedCodexRollout({ codexHome: home, sessionId, scope, expectedFileIdentity: capture!.fileIdentity, expectedWitness: capture!.witness })).toBeNull();
+    } finally { await capture!.witness!.close(); }
+    expect(await capture!.witness!.verify()).toBe(false);
+  }
+});
+
+it.each(["abort", "exception"])("closes held generation descriptors on %s", async (kind) => {
+  const { home } = await fixture();
+  const capture = await readScopedCodexRollout({ codexHome: home, sessionId, scope, holdOpen: true });
+  await expect((async () => {
+    try { throw new Error(kind); }
+    finally { await capture!.witness!.close(); }
+  })()).rejects.toThrow(kind);
+  expect(await capture!.witness!.verify()).toBe(false);
+});

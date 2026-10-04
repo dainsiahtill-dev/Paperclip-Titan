@@ -141,7 +141,7 @@ import {
 } from "./run-site-host.js";
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
 import { AcpUsageAccounting } from "./usage-accounting.js";
-import { readScopedCodexRollout } from "./codex-usage-baseline.js";
+import { readScopedCodexRollout, type CodexRolloutWitness } from "./codex-usage-baseline.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -4071,6 +4071,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let childStderrState!: ChildStderrState;
       let processIdentitySink!: AcpxProcessIdentitySink;
       let usageAccounting: AcpUsageAccounting | null = null;
+      let usageBaselineWitness: CodexRolloutWitness | null = null;
       let resumedSession = false;
       let clearSession = false;
       let referencedProjectStagingFailuresField:
@@ -4819,8 +4820,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // attributed to this run alone.
         preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         if (prepared.acpxAgent === "codex" && usageAccounting?.needsBaseline() && prepared.env.CODEX_HOME && sessionHandle.backendSessionId) {
-          const baseline = await readScopedCodexRollout({ codexHome: prepared.env.CODEX_HOME, sessionId: sessionHandle.backendSessionId, scope: usageAccounting.scope, before: Date.now() });
-          if (baseline) usageAccounting.setBaseline(baseline.usage, "scoped_rollout_pre_prompt");
+          const baseline = await readScopedCodexRollout({ codexHome: prepared.env.CODEX_HOME, sessionId: sessionHandle.backendSessionId, scope: usageAccounting.scope, before: Date.now(), holdOpen: true });
+          if (baseline?.witness) {
+            usageBaselineWitness = baseline.witness;
+            usageAccounting.setBaseline(baseline.usage, "scoped_rollout_pre_prompt");
+          }
         }
         // The prepare phase (prompt build + usage snapshot) finished; the turn
         // phase starts next.
@@ -4942,6 +4946,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               flushOutputSegment();
             }
             if (event.type === "status" && event.tag === "usage_update") {
+              if (usageBaselineWitness && !await usageBaselineWitness.verify()) usageAccounting?.invalidate("baseline_generation_changed");
               eventBreakdown = event.breakdown ?? eventBreakdown;
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
               const observation = usageAccounting?.result();
@@ -5026,6 +5031,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventCostUsd,
           qualifiedAgent: prepared.acpxAgent === "claude" || prepared.acpxAgent === "codex" ? prepared.acpxAgent : null,
         });
+        if (usageBaselineWitness && !await usageBaselineWitness.verify()) usageAccounting?.invalidate("baseline_generation_changed");
         usageAccounting?.certifyTerminal(terminal.status, terminal.status === "completed" ? terminal.stopReason : undefined);
         const physicalUsage = usageAccounting?.result();
         const finalObservedUsage = physicalUsage?.usageAccounting.observedUsage as UsageSummary | undefined;
@@ -5282,6 +5288,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           turnFinalize: stepTurnFinalize,
         });
       } finally {
+        // Retain the original inode through final verification; closing before
+        // the prompt settles would permit inode-generation reuse.
+        await usageBaselineWitness?.close().catch(() => {});
+        usageBaselineWitness = null;
         // End the agent turn span exactly once, on every return and on a throw.
         await ctx.onSteeringReady?.(null);
         // `runFailed` is `false` only on a completed, non-timed-out turn, so the

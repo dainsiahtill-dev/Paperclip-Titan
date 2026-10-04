@@ -26,11 +26,11 @@ it("attributes two physical 80-token requests to one 160-token logical prompt ov
   expect(result.resultJson).toMatchObject({ usageUnknown: false, usageAccounting: { version: 1, source: "codex_session_cumulative_delta", completeness: "complete", bindingVerified: true, baselineVerified: true } });
 });
 
-async function runFixture(input: { root?: string; runId?: string; runtime?: Record<string, unknown>; env?: Record<string, string>; onUsage?: (observation: any) => Promise<void>; signal?: AbortSignal; onSpawn?: (meta: any) => Promise<void> }) {
+async function runFixture(input: { root?: string; runId?: string; runtime?: Record<string, unknown>; omitModel?: boolean; env?: Record<string, string>; onUsage?: (observation: any) => Promise<void>; signal?: AbortSignal; onSpawn?: (meta: any) => Promise<void> }) {
   const root = input.root ?? await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acp-physical-stream-"));
   if (!input.root) roots.push(root);
   const fixture = fileURLToPath(new URL("./.test-fixtures/physical-usage-agent.mjs", import.meta.url));
-  return createAcpxEngineExecutor()({ runId: input.runId ?? "677a8d74-451c-4a2c-b2b8-51e4eea8beaf", agent: { id: "eaf0c4c8-290b-4739-a6a0-7ce276378472", companyId: "f35fbb9a-76d1-45db-a095-f867475c3bf0", adapterType: "codex_local" }, runtime: input.runtime ?? {}, config: { agent: "codex", agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`, cwd: root, model: "gpt-6.1-sol", stateDir: path.join(root, "state"), env: { CODEX_HOME: path.join(root, "codex-home"), ...input.env } }, context: { issueId: "e6597c9f-e154-49b6-a09f-64f3c7a00617", taskId: "e6597c9f-e154-49b6-a09f-64f3c7a00617" }, onLog: async () => {}, ...(input.signal ? { signal: input.signal } : {}), onUsage: input.onUsage, onSpawn: input.onSpawn } as never);
+  return createAcpxEngineExecutor()({ runId: input.runId ?? "677a8d74-451c-4a2c-b2b8-51e4eea8beaf", agent: { id: "eaf0c4c8-290b-4739-a6a0-7ce276378472", companyId: "f35fbb9a-76d1-45db-a095-f867475c3bf0", adapterType: "codex_local" }, runtime: input.runtime ?? {}, config: { agent: "codex", agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`, cwd: root, ...(input.omitModel ? {} : { model: "gpt-6.1-sol" }), stateDir: path.join(root, "state"), env: { CODEX_HOME: path.join(root, "codex-home"), ...input.env } }, context: { issueId: "e6597c9f-e154-49b6-a09f-64f3c7a00617", taskId: "e6597c9f-e154-49b6-a09f-64f3c7a00617" }, onLog: async () => {}, ...(input.signal ? { signal: input.signal } : {}), onUsage: input.onUsage, onSpawn: input.onSpawn } as never);
 }
 
 it("persists an actual 160-token lower bound before stopping at cap150 and keeps incomplete usage unknown", async () => {
@@ -60,7 +60,7 @@ it("retains qualified partial counters when ACP throws after physical usage upda
   expect(result.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { completeness: "partial", observedUsage: { totalTokens: 160 } } });
 });
 
-it("captures the exact owned file baseline before a real resumed prompt and excludes prior session usage", async () => {
+async function prepareRealResume() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acp-resume-physical-")); roots.push(root);
   const first = await runFixture({ root });
   const sessionId = first.sessionId!;
@@ -74,15 +74,56 @@ it("captures the exact owned file baseline before a real resumed prompt and excl
   ];
   await fs.writeFile(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
   await fs.writeFile(path.join(root, "fixture-provider-baseline.json"), "160");
+  return { root, file, first };
+}
+
+async function openRolloutDescriptors(root: string) {
+  const descriptors = await fs.readdir("/proc/self/fd");
+  let count = 0;
+  for (const fd of descriptors) {
+    const target = await fs.readlink(`/proc/self/fd/${fd}`).catch(() => "");
+    if (target.startsWith(root) && target.includes("rollout-fixture-")) count++;
+  }
+  return count;
+}
+
+it("captures the exact owned file baseline before a real resumed prompt and excludes prior session usage", async () => {
+  const { root, first } = await prepareRealResume();
   const resumed = await runFixture({ root, runId: "99bd73b6-7d8f-4e6c-aa31-cc978d7ee4a8", runtime: { sessionParams: first.sessionParams } });
   expect(resumed.usage?.totalTokens).toBe(160);
   expect(resumed.resultJson).toMatchObject({ usageUnknown: false, usageAccounting: { baselineSource: "scoped_rollout_pre_prompt" } });
+  expect(await openRolloutDescriptors(root)).toBe(0);
 });
 
-it.each(["PHYSICAL_USAGE_WRONG_SESSION", "PHYSICAL_USAGE_WINDOW_ONLY"])("never trusts %s as a per-run lower bound", async (kind) => {
+it.each(["abort", "throw", "replace"])("verifies and finally closes the held baseline across actual resumed %s", async (kind) => {
+  const { root, file, first } = await prepareRealResume();
+  if (kind !== "replace") await fs.writeFile(path.join(root, "fixture-provider-fault.json"), JSON.stringify(kind === "abort" ? "hold" : "throw"));
+  const control = new AbortController();
+  let heldAtObservation = false;
+  const resumed = await runFixture({ root, runId: "99bd73b6-7d8f-4e6c-aa31-cc978d7ee4a8", runtime: { sessionParams: first.sessionParams }, signal: control.signal, onUsage: async () => {
+    heldAtObservation = await openRolloutDescriptors(root) > 0;
+    if (kind === "replace") { const bytes = await fs.readFile(file); await fs.unlink(file); await fs.writeFile(file, bytes); }
+    if (kind === "abort") queueMicrotask(() => control.abort());
+  } });
+  expect(heldAtObservation).toBe(true);
+  expect(await openRolloutDescriptors(root)).toBe(0);
+  expect(resumed.usage).toBeUndefined();
+  expect(resumed.resultJson?.usageUnknown).toBe(true);
+  if (kind === "replace") expect(resumed.resultJson).toMatchObject({ usageAccounting: { invalidReason: "baseline_generation_changed" } });
+});
+
+it.each(["PHYSICAL_USAGE_WRONG_SESSION", "PHYSICAL_USAGE_WRONG_MODEL", "PHYSICAL_USAGE_WINDOW_ONLY"])("never trusts %s as a per-run lower bound", async (kind) => {
   const observations: number[] = [];
   const result = await runFixture({ env: { [kind]: "1" }, onUsage: async (observation) => { observations.push(observation.observedTotalTokens); } });
   expect(observations).toEqual([]);
   expect(result.usage).toBeUndefined();
   expect(result.resultJson?.usageUnknown).toBe(true);
+});
+
+it("pins the effective backend model before a prompt when optional saved model is omitted", async () => {
+  const observations: number[] = [];
+  const result = await runFixture({ omitModel: true, onUsage: async (observation) => { observations.push(observation.observedTotalTokens); } });
+  expect(result.usage?.totalTokens).toBe(160);
+  expect(result.resultJson?.usageUnknown).toBe(false);
+  expect(observations).toContain(160);
 });

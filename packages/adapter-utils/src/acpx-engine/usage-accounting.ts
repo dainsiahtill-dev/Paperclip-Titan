@@ -38,6 +38,7 @@ function sameScope(actual: unknown, expected: AcpUsageScope): boolean {
 export class AcpUsageAccounting {
   private requests = new Map<string, { method: string; sessionId?: string; cwd?: string }>();
   private freshSessions = new Set<string>();
+  private effectiveModels = new Map<string, string>();
   private sessionId: string | null = null;
   private promptRequestId: string | null = null;
   private baseline: CodexCumulativeUsage | null = null;
@@ -54,6 +55,7 @@ export class AcpUsageAccounting {
 
   bindSession(sessionId: string) {
     this.sessionId = sessionId;
+    if (this.scope.model === null && this.effectiveModels.has(sessionId)) this.scope.model = this.effectiveModels.get(sessionId)!;
     if (this.freshSessions.has(sessionId)) {
       this.baseline = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
       this.baselineSource = "correlated_fresh_session";
@@ -93,6 +95,17 @@ export class AcpUsageAccounting {
     if (request.method === "initialize") {
       this.producerName = typeof message.result?.agentInfo?.name === "string" ? message.result.agentInfo.name : null;
       this.producerVersion = typeof message.result?.agentInfo?.version === "string" ? message.result.agentInfo.version : null;
+    }
+    if (this.scope.model === null && ["session/new", "session/load", "session/resume", "session/set_model", "session/set_config_option"].includes(request.method)) {
+      const result = record(message.result);
+      const option = Array.isArray(result?.configOptions) ? result.configOptions.find((entry: any) => entry?.id === "model" || entry?.category === "model") : null;
+      const model = result?.models?.currentModelId ?? result?.currentModelId ?? option?.currentValue;
+      const sessionId = request.method === "session/new" ? result?.sessionId : request.sessionId;
+      if (typeof model === "string" && model.trim() && typeof sessionId === "string") {
+        const effective = model.trim().replace(/\[.*?\]$/, "");
+        this.effectiveModels.set(sessionId, effective);
+        if (sessionId === this.sessionId) this.scope.model = effective;
+      }
     }
     if (request.method === "session/new" && typeof message.result?.sessionId === "string" && typeof request.cwd === "string" && path.resolve(request.cwd) === path.resolve(this.scope.cwd)) this.freshSessions.add(message.result.sessionId);
     if (request.method === "session/prompt" && id === this.promptRequestId && message.result?._meta?.paperclipUsage) {
