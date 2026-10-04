@@ -25,7 +25,7 @@ export function IssueDeliveryAssessment({ issueId }: { issueId: string }) {
   if (assessment.isError) return <div className="flex flex-col gap-2"><p role="alert" className="text-sm text-destructive">无法读取交付验收：{assessment.error.message}</p><Button size="sm" variant="outline" onClick={() => void assessment.refetch()}>重试</Button></div>;
   if (!assessment.data || assessment.data.mode !== "verified_delivery") return null;
   const review = (criterion: DeliveryCriterionAssessment, verdict: "accepted" | "rejected", reason: string) => {
-    if (!assessment.data || !criterion.workProductId || !criterion.materialVersion || !criterion.contentDigest) return;
+    if (!assessment.data?.contractHash || !criterion.workProductId || !criterion.materialVersion || !criterion.contentDigest) return;
     decision.mutate({ requestId: crypto.randomUUID(), criterionId: criterion.id,
       workProductId: criterion.workProductId, expectedContractHash: assessment.data.contractHash,
       expectedCriterionDigest: criterion.criterionDigest, expectedMaterialVersion: criterion.materialVersion,
