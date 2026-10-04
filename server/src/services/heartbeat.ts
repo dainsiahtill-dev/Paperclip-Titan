@@ -9490,7 +9490,8 @@ export function heartbeatService(
         )).orderBy(asc(heartbeatRuns.id)).limit(limit),
         matches: async source => {
           const original = readQuotaFallbackPin(parseObject(source.runnerProfileJson).quotaFallback);
-          if (original?.effectiveFingerprint && original.effectiveFingerprint !== scope.effectiveFingerprint) return false;
+          // Current mutable context cannot establish a historical run's account.
+          if (original?.effectiveFingerprint !== scope.effectiveFingerprint) return false;
           try { return (await deriveQuotaProbeIdentity(db, agent, responsibleUserId, source.id)).effectiveFingerprint === scope.effectiveFingerprint; }
           catch { return false; }
         },

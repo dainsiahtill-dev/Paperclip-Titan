@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { agents, companies, createDb, environments, instanceSettings, projects, issues, heartbeatRuns, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentQuotaFallbackService as createQuotaService, type AgentQuotaFallbackDependencies } from "../services/agent-quota-fallback.js";
-import { quotaFallbackBook } from "../services/agent-quota-fallback-policy.js";
+import { quotaFallbackBook, selectQuotaFallbackAgent } from "../services/agent-quota-fallback-policy.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { agentService } from "../services/agents.js";
 import { probeQuotaModel, quotaProbeAvailable } from "../services/quota-model-probe.js";
@@ -44,15 +44,35 @@ describeDatabase("durable Agent quota fallback", () => {
     return { id: randomUUID(), companyId, agentId, finishedAt: now };
   }
 
-  it("actual recovery callback schedules every eligible matching failed predecessor once", async () => {
+  it("actual recovery callback schedules only immutable matching predecessors and holds legacy account history", async () => {
     const run = await seed(), sourceIds: string[] = [];
+    const projectA = randomUUID(), projectB = randomUUID();
+    await db.insert(projects).values([{ id: projectA, companyId: run.companyId, name: "Account A", env: { ANTHROPIC_AUTH_TOKEN: "fixture-account-a" } }, { id: projectB, companyId: run.companyId, name: "Historical account B", env: { ANTHROPIC_AUTH_TOKEN: "fixture-account-b" } }]);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
     for (const status of ["in_progress", "in_progress", "in_progress", "blocked"]) {
       const issueId = randomUUID(), sourceId = randomUUID(); sourceIds.push(sourceId);
-      await db.insert(issues).values({ id: issueId, companyId: run.companyId, title: "Synthetic quota predecessor", status, assigneeAgentId: run.agentId, responsibleUserId: "alice" });
+      await db.insert(issues).values({ id: issueId, companyId: run.companyId, projectId: projectA, title: "Synthetic quota predecessor", status, assigneeAgentId: run.agentId, responsibleUserId: "alice" });
       await db.insert(heartbeatRuns).values({ id: sourceId, companyId: run.companyId, agentId: run.agentId, responsibleUserId: "alice", invocationSource: "assignment", status: "failed", errorCode: "provider_quota", finishedAt: new Date(), resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, contextSnapshot: { issueId } });
+      const identity = await deriveQuotaProbeIdentity(db, agent!, "alice", sourceId);
+      const pin = selectQuotaFallbackAgent(agent!, "alice", undefined, identity.effectiveFingerprint).pin;
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { quotaFallback: pin } }).where(eq(heartbeatRuns.id, sourceId));
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceId));
       await createQuotaService(db, { probePrimary: async () => "error", resolveIdentity: (agent, user, id) => deriveQuotaProbeIdentity(db, agent, user, id) }).registerQuotaFailure(source!, "alice", new Date());
     }
+    const heldSources: string[] = [];
+    for (const proof of ["absent", "legacy", "different_account"]) {
+      const issueId = randomUUID(), sourceId = randomUUID(); heldSources.push(sourceId);
+      await db.insert(issues).values({ id: issueId, companyId: run.companyId, projectId: projectB, title: "Historical account B quota predecessor", status: "in_progress", assigneeAgentId: run.agentId, responsibleUserId: "alice" });
+      await db.insert(heartbeatRuns).values({ id: sourceId, companyId: run.companyId, agentId: run.agentId, responsibleUserId: "alice", invocationSource: "assignment", status: "failed", errorCode: "provider_quota", finishedAt: new Date(), resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, contextSnapshot: { issueId } });
+      const identity = await deriveQuotaProbeIdentity(db, agent!, "alice", sourceId);
+      const pin = selectQuotaFallbackAgent(agent!, "alice", undefined, identity.effectiveFingerprint).pin!;
+      const { effectiveFingerprint: _historicalScope, ...legacyPin } = pin;
+      if (proof !== "absent") await db.update(heartbeatRuns).set({ runnerProfileJson: { quotaFallback: proof === "legacy" ? legacyPin : pin } }).where(eq(heartbeatRuns.id, sourceId));
+    }
+    // Historical B's mutable project context now selects A. A current identity
+    // cannot establish which credential/model descriptor executed the old run.
+    await db.update(projects).set({ env: { ANTHROPIC_AUTH_TOKEN: "fixture-account-a" } }).where(eq(projects.id, projectB));
+    expect((await deriveQuotaProbeIdentity(db, agent!, "alice", heldSources[0]!)).effectiveFingerprint).toBe((await deriveQuotaProbeIdentity(db, agent!, "alice", sourceIds[0]!)).effectiveFingerprint);
     vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment").mockResolvedValue({ adapterType: "claude_local", status: "pass", testedAt: new Date().toISOString(), checks: [{ code: "claude_hello_probe_passed", level: "info", message: "Synthetic hello" }] });
     const heartbeat = heartbeatService(db);
     await heartbeat.checkQuotaFallbackPrimary(run.agentId, "alice");
@@ -60,6 +80,7 @@ describeDatabase("durable Agent quota fallback", () => {
     const successors = await db.select({ predecessor: heartbeatRuns.retryOfRunId, status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.agentId, run.agentId));
     const retries = successors.filter(row => row.predecessor);
     expect(retries.map(row => row.predecessor).sort()).toEqual(sourceIds.slice(0, 3).sort());
+    expect(retries.some(row => heldSources.includes(row.predecessor!))).toBe(false);
     expect(retries.every(row => row.status === "scheduled_retry")).toBe(true);
   });
 

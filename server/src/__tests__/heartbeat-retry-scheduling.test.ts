@@ -55,6 +55,8 @@ vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
 });
 
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { deriveQuotaProbeIdentity } from "../services/quota-probe-identity.js";
+import { selectQuotaFallbackAgent } from "../services/agent-quota-fallback-policy.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
@@ -446,8 +448,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     const first = await heartbeat.scheduleBoundedRetry(runId, { now });
     if (first.outcome !== "scheduled") throw new Error("Expected initial backup continuation");
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    const state = (agent!.metadata!.quotaFallbackState as { fingerprint: string });
-    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now, errorCode: "provider_quota", resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, runnerProfileJson: { quotaFallback: { version: 1, fingerprint: state.fingerprint, usingBackup: true, primaryAdapterType: "claude_local", adapterType: "codex_local", model: "gpt-6.1-sol" } } }).where(eq(heartbeatRuns.id, first.run.id));
+    const identity = await deriveQuotaProbeIdentity(db, agent!, "responsible-user", first.run.id);
+    const backupPin = selectQuotaFallbackAgent(agent!, "responsible-user", undefined, identity.effectiveFingerprint).pin;
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now, errorCode: "provider_quota", resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, runnerProfileJson: { quotaFallback: backupPin } }).where(eq(heartbeatRuns.id, first.run.id));
     const second = await heartbeat.scheduleBoundedRetry(first.run.id, { now });
     if (second.outcome !== "scheduled") throw new Error("Expected delayed backup retry");
     await db.update(heartbeatRuns).set({ contextSnapshot: { ...second.run.contextSnapshot, forceFreshSession: false, resumeSessionParams: { sessionId: "backup-old-session" }, resumeSessionDisplayId: "backup-old-session", providerQuotaRetryNotBefore: new Date(now.getTime() + 3_600_000).toISOString() } }).where(eq(heartbeatRuns.id, second.run.id));
