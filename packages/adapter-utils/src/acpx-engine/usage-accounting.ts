@@ -45,6 +45,7 @@ export class AcpUsageAccounting {
   private invalidReason: string | null = null;
   private boundary = false;
   private validatedTerminal = false;
+  private completionNote: string | null = null;
   private source: AdapterUsageObservation["usageAccounting"]["source"] = "window_only";
   private baselineSource: string | null = null;
   private producerName: string | null = null;
@@ -120,6 +121,12 @@ export class AcpUsageAccounting {
     if (!cumulative) { this.invalidate("invalid_cumulative_usage"); return; }
     if (this.latest && !delta(cumulative, this.latest)) { this.invalidate("cumulative_usage_regressed"); return; }
     if (this.baseline && !delta(cumulative, this.baseline)) { this.invalidate("baseline_usage_regressed"); return; }
+    if (this.boundary && !final && this.latest && cumulative.totalTokens > this.latest.totalTokens) {
+      // Later scoped spending is still a real lower bound, but the earlier
+      // reply cannot certify a counter value it did not contain.
+      this.boundary = false;
+      this.completionNote = "counter_after_typed_reply";
+    }
     this.latest = cumulative;
     this.source = "codex_session_cumulative_delta";
     this.boundary ||= final;
@@ -145,6 +152,7 @@ export class AcpUsageAccounting {
         baselineSource: this.baselineSource,
         boundary: this.boundary ? "typed_prompt_reply" : null,
         invalidReason: this.invalidReason,
+        completionNote: this.completionNote,
         ...(observedUsage ? { observedUsage } : {}),
         ...(this.latest ? { observedSessionCumulative: this.latest } : {}),
       },

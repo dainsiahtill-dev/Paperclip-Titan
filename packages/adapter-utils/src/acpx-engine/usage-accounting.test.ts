@@ -41,6 +41,13 @@ describe("physical ACP usage accounting", () => {
     expect(c.result().usageUnknown).toBe(true);
     expect(c.result().usage).toBeNull();
   });
+  it("does not extend a typed reply boundary to later physical counters", () => {
+    const c = collector(); prompt(c); finish(c, meta(160, { complete: true }));
+    update(c, meta(240));
+    expect(c.result().usageUnknown).toBe(true);
+    expect(c.result().usage).toBeNull();
+    expect(c.result().usageAccounting.observedUsage).toMatchObject({ totalTokens: 240 });
+  });
   it.each(["session", "writer", "regression", "window", "uncorrelated_reply", "missing_turn"])("rejects %s evidence as complete usage", (kind) => {
     const c = collector(); prompt(c);
     if (kind === "session") finish(c, meta(160, { complete: true, sessionId: "unrelated" }));
