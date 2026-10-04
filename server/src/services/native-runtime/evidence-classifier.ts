@@ -1,4 +1,4 @@
-import { and, eq, or } from "drizzle-orm";
+import { isNull,  and, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
@@ -158,6 +158,7 @@ async function classifyEvidenceRef(input: {
     }).from(issueWorkProducts).where(and(
       eq(issueWorkProducts.id, workProductId),
       eq(issueWorkProducts.companyId, input.companyId),
+            isNull(issueWorkProducts.deletedAt),
       eq(issueWorkProducts.issueId, input.issueId),
     )).limit(1).then((rows) => rows[0] ?? null);
     if (!row) return { ref: input.ref, kind: "work_product", outcome: "missing", reasonCode: "work_product_missing", durableRecordId: null };

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { assets, documents, heartbeatRuns, issueAttachments, issueDocuments, issueWorkProducts, type Db } from "@paperclipai/db";
+import { and, desc, eq } from "drizzle-orm";
+import { assets, documents, documentRevisions, heartbeatRuns, issueAttachments, issueDocuments, issueWorkProducts, type Db } from "@paperclipai/db";
 import { workspaceFileResourceService } from "./workspace-file-resources.js";
 
 export function deliveryCanonicalJson(value: unknown): string {
@@ -25,14 +25,21 @@ export function workProductMaterialIdentity(row: Partial<typeof issueWorkProduct
 }
 
 export async function workProductMaterialSnapshot(db: Db, row: typeof issueWorkProducts.$inferSelect) {
+  if (row.deletedAt) return null;
   const metadata = row.metadata ?? {};
-  const attachmentId = typeof metadata.attachmentId === "string" && /^[0-9a-f-]{36}$/i.test(metadata.attachmentId) ? metadata.attachmentId : null;
+  const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (metadata.attachmentId != null && (typeof metadata.attachmentId !== "string" || !guid.test(metadata.attachmentId))) return null;
+  const attachmentId = typeof metadata.attachmentId === "string" ? metadata.attachmentId : null;
+  const producers = new Set<string>([row.producerActorType === "agent" ? row.producerActorId : null, row.producerAgentId].filter((id): id is string => Boolean(id)));
+  let contentWriterId: string | null = row.materialWriterActorType === "agent" ? row.materialWriterActorId : row.materialWriterAgentId;
   let managedContent: Record<string, unknown> | null = null;
   if (attachmentId) {
     const [asset] = await db.select({ sha256: assets.sha256, assetId: assets.id, attachmentId: issueAttachments.id, producerAgentId: assets.createdByAgentId })
       .from(issueAttachments).innerJoin(assets, eq(assets.id, issueAttachments.assetId)).where(and(eq(issueAttachments.id, attachmentId), eq(issueAttachments.companyId, row.companyId), eq(issueAttachments.issueId, row.issueId), eq(assets.companyId, row.companyId)));
     if (!asset) return null;
-    managedContent = asset;
+    if (asset.producerAgentId) producers.add(asset.producerAgentId);
+    const { producerAgentId: _producer, ...content } = asset;
+    managedContent = content;
   }
   const resource = metadata.resourceRef && typeof metadata.resourceRef === "object" ? metadata.resourceRef as Record<string, unknown> : null;
   if (resource) {
@@ -53,11 +60,24 @@ export async function workProductMaterialSnapshot(db: Db, row: typeof issueWorkP
       throw error;
     }
   }
+  if (metadata.documentId != null && (typeof metadata.documentId !== "string" || !guid.test(metadata.documentId))) return null;
   if (typeof metadata.documentId === "string") {
-    const [document] = await db.select({ id: documents.id, revision: documents.latestRevisionId, body: documents.latestBody, producerAgentId: documents.createdByAgentId, writerAgentId: documents.updatedByAgentId })
+    if (!guid.test(metadata.documentId)) return null;
+    const [document] = await db.select({ id: documents.id, format: documents.format, body: documents.latestBody, producerAgentId: documents.createdByAgentId, writerAgentId: documents.updatedByAgentId })
       .from(issueDocuments).innerJoin(documents, eq(documents.id, issueDocuments.documentId)).where(and(eq(issueDocuments.companyId, row.companyId), eq(issueDocuments.issueId, row.issueId), eq(documents.companyId, row.companyId), eq(documents.id, metadata.documentId)));
     if (!document) return null;
-    managedContent = { ...(managedContent ?? {}), ...document };
+    if (document.producerAgentId) producers.add(document.producerAgentId);
+    const revisions = await db.select({ body: documentRevisions.body, format: documentRevisions.format, agentId: documentRevisions.createdByAgentId }).from(documentRevisions).where(and(eq(documentRevisions.companyId, row.companyId), eq(documentRevisions.documentId, document.id))).orderBy(desc(documentRevisions.revisionNumber));
+    // The first writer of the current contiguous body/format owns its content.
+    // Saving an unchanged body or renaming its display title does not create a
+    // new material author or invalidate prior independent byte acceptance.
+    let author = document.writerAgentId;
+    for (const revision of revisions) {
+      if (revision.body !== document.body || revision.format !== document.format) break;
+      author = revision.agentId;
+    }
+    contentWriterId = author;
+    managedContent = { ...(managedContent ?? {}), documentId: document.id, format: document.format, body: document.body };
   }
   // A mutable remote URL or service reference is not a content snapshot. Its
   // inspected output must be attached, a current issue document, or a readable
@@ -65,12 +85,14 @@ export async function workProductMaterialSnapshot(db: Db, row: typeof issueWorkP
   if (!managedContent && (row.type !== "document" || row.url || row.runtimeServiceId || !row.summary?.trim())) return null;
   const runId = row.materialUpdatedByRunId ?? row.createdByRunId;
   const [writer] = runId ? await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, row.companyId), eq(heartbeatRuns.id, runId))) : [];
+  if (writer?.agentId && !row.materialWriterActorType) contentWriterId ??= writer.agentId;
+  if (contentWriterId) producers.add(contentWriterId);
   return {
     workProductId: row.id,
     materialVersion: String(row.materialVersion),
     contentDigest: deliveryDigest({ version: 1, material: workProductMaterialIdentity(row), managedContent }),
-    producerAgentIds: [...new Set([row.producerAgentId, managedContent?.producerAgentId, writer?.agentId].filter((id): id is string => typeof id === "string"))],
-    producerAgentId: row.producerAgentId ?? (managedContent?.producerAgentId as string | null | undefined) ?? writer?.agentId ?? null,
-    materialWriterAgentId: (managedContent?.writerAgentId as string | null | undefined) ?? writer?.agentId ?? row.producerAgentId,
+    producerAgentIds: [...producers],
+    producerAgentId: row.producerAgentId ?? [...producers][0] ?? null,
+    materialWriterAgentId: contentWriterId,
   };
 }

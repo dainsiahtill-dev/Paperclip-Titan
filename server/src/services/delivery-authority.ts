@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, completionContracts, heartbeatRuns, issues, issueThreadInteractions, issueWorkProducts, projects, type Db } from "@paperclipai/db";
 import { issueDeliveryDecisions } from "@paperclipai/db/schema/issue_delivery_decisions";
 import type { DeliveryAssessment, DeliveryCriterion, DeliveryDecisionInput, DeliveryPolicy } from "@paperclipai/shared/types/delivery";
@@ -174,15 +174,18 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
     const current = await materializeContract(companyId, issueId, candidate);
     const criteria = await Promise.all(current.criteria.map(async (criterion) => {
       const ids = await productScope(companyId, issueId, criterion.scope ?? "issue");
-      const [product] = await db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), inArray(issueWorkProducts.issueId, ids), ...(criterion.artifactType ? [eq(issueWorkProducts.type, criterion.artifactType)] : [])))
+      const [product] = await db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), isNull(issueWorkProducts.deletedAt), inArray(issueWorkProducts.issueId, ids), ...(criterion.artifactType ? [eq(issueWorkProducts.type, criterion.artifactType)] : [])))
         .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.createdAt), desc(issueWorkProducts.id)).limit(1);
       const material = product ? await workProductMaterialSnapshot(db, product) : null;
       const [decision] = await db.select().from(issueDeliveryDecisions).where(and(eq(issueDeliveryDecisions.companyId, companyId), eq(issueDeliveryDecisions.issueId, issueId), eq(issueDeliveryDecisions.criterionId, criterion.id)))
         .orderBy(desc(issueDeliveryDecisions.createdAt), desc(issueDeliveryDecisions.id)).limit(1);
       const valid = Boolean(material && decision && decision.workProductId === material.workProductId && decision.criterionDigest === criterion.criterionDigest && decision.materialVersion === material.materialVersion && decision.contentDigest === material.contentDigest);
+      const [reviewer] = valid && decision?.agentId ? await db.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, decision.agentId))) : [];
       return { ...criterion, state: valid ? decision!.verdict as "accepted" | "rejected" : decision ? "stale" as const : "missing" as const,
         workProductId: material?.workProductId ?? null, materialVersion: material?.materialVersion ?? null, contentDigest: material?.contentDigest ?? null,
-        decisionId: valid ? decision!.id : null, reason: valid ? decision!.reason : null };
+        workProductIssueId: material ? product?.issueId ?? null : null,
+        decisionId: valid ? decision!.id : null, reason: valid ? decision!.reason : null,
+        provenance: valid ? { decisionId: decision!.id, actorType: decision!.actorType, actorId: decision!.actorId, agentId: decision!.agentId, runId: decision!.runId, createdAt: decision!.createdAt.toISOString(), reviewerName: reviewer?.name ?? (decision!.actorType === "user" ? "Board" : null) } : null };
     }));
     return { version: 1, mode: current.definition.mode, contractId: current.row.id, contractRevision: current.row.revision, contractHash: current.row.canonicalSha256, criteria, canComplete: current.definition.mode === "agent_claim_policy" || (criteria.length > 0 && criteria.every((criterion) => criterion.state === "accepted")), reviewerAgentIds: current.definition.reviewerAgentIds };
   }
@@ -209,7 +212,7 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
         } catch (error) { rethrowDeliveryInputLock(error); }
       }
       const definition = await resolveDeliveryDefinition(typed, companyId, issueId);
-      const [product] = await tx.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.id, input.workProductId))).for("update");
+      const [product] = await tx.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), isNull(issueWorkProducts.deletedAt), eq(issueWorkProducts.id, input.workProductId))).for("update");
       if (!product) throw notFound("Work product not found");
       const material = await workProductMaterialSnapshot(typed, product);
       if (!material) throw conflict("Work product has no verifiable current material");
@@ -293,5 +296,13 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
       currentId = issue.parentId;
     }
   }
-  return { assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes };
+  async function invalidateProjectScopes(companyId: string, projectId: string, publications: ActivityPublication[]) {
+    const scoped = await db.execute(sql`with recursive scope as (select id from issues where company_id=${companyId} and project_id=${projectId} union select child.id from issues child join scope on child.parent_id=scope.id where child.company_id=${companyId}) select id from scope`);
+    const ids = (scoped as unknown as Array<{id: string}>).map((row) => row.id);
+    if (!ids.length) return;
+    try { await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids))).orderBy(issues.id).for("update", { noWait: true }); }
+    catch (error) { rethrowDeliveryInputLock(error); }
+    for (const id of ids) await invalidateMaterialScopes(companyId, id, publications);
+  }
+  return { assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes, invalidateProjectScopes };
 }

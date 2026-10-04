@@ -640,6 +640,7 @@ export async function reconcileNativeFinalizations(
       const changedEvidence = assessment
         ? await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts).where(and(
             eq(issueWorkProducts.companyId, row.companyId),
+            isNull(issueWorkProducts.deletedAt),
             eq(issueWorkProducts.issueId, row.issueId),
             or(
               gt(issueWorkProducts.createdAt, assessment.createdAt),

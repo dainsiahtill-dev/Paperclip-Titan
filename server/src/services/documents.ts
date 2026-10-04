@@ -248,7 +248,9 @@ export function documentService(db: Db) {
       const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
-          return await db.transaction(async (tx) => {
+          const publications: import("./activity-log.js").ActivityPublication[] = [];
+          const result = await db.transaction(async (tx) => {
+          await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue.id)).for("update");
           const now = new Date();
           const existing = await tx
             .select({
@@ -425,6 +427,10 @@ export function documentService(db: Db) {
               .set({ updatedAt: now })
               .where(eq(issueDocuments.documentId, existing.id));
 
+            if (existing.latestBody !== input.body || existing.format !== input.format) {
+              const { deliveryAuthorityService } = await import("./delivery-authority.js");
+              await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(issue.companyId, issue.id, publications);
+            }
             return {
               created: false as const,
               document: {
@@ -527,6 +533,11 @@ export function documentService(db: Db) {
             },
           };
           });
+          if (typeof (db as unknown as { rollback?: unknown }).rollback !== "function") {
+            const { publishActivity } = await import("./activity-log.js");
+            for (const publication of publications) publishActivity(publication);
+          }
+          return result;
         } catch (error) {
           if (isUniqueViolation(error, "issue_documents_company_issue_key_uq")) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {

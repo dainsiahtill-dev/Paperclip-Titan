@@ -4247,6 +4247,7 @@ export function issueRoutes(
       .where(
         and(
           eq(issueWorkProducts.id, input.artifactId),
+          isNull(issueWorkProducts.deletedAt),
           eq(issueWorkProducts.issueId, input.issueId),
         ),
       )
@@ -6494,7 +6495,7 @@ export function issueRoutes(
       input,
       "createdByRunId",
     );
-    if (mode === "update" && !hasCreatedByRunId) return undefined;
+    if (mode === "update" && !hasCreatedByRunId && req.actor.type !== "agent") return undefined;
 
     const requestedRunId = input.createdByRunId ?? null;
     if (req.actor.type === "agent") {
@@ -9073,7 +9074,8 @@ export function issueRoutes(
     // Rejection feedback is already persisted atomically with the verdict.
     // Continue through ordinary wake admission; active runs, pauses, approval
     // waits and typed stage ownership retain their normal gates.
-    if (result.created && req.body.verdict === "rejected" && result.nextOwnerId && ["todo", "in_progress", "in_review"].includes(issue.status)) {
+    const currentDeliveryIssue = result.created && req.body.verdict === "rejected" ? await svc.getById(issue.id) : null;
+    if (result.created && req.body.verdict === "rejected" && result.nextOwnerId && currentDeliveryIssue && ["todo", "in_progress", "in_review"].includes(currentDeliveryIssue.status)) {
       const wakeup = opts.deliveryEnqueueWakeup === undefined ? heartbeat.wakeup : opts.deliveryEnqueueWakeup;
       await wakeup?.(result.nextOwnerId, { source: "assignment", triggerDetail: "system", reason: "issue_commented", idempotencyKey: `delivery-decision:${result.decision.id}`, requestedByActorType: result.decision.actorType as "user" | "agent", requestedByActorId: result.decision.actorId,
         payload: { issueId: issue.id, deliveryDecisionId: result.decision.id, criterionId: result.decision.criterionId, verdict: "rejected" }, contextSnapshot: { issueId: issue.id, taskId: issue.id, source: "issue.delivery_decision", wakeReason: "issue_commented", deliveryDecisionId: result.decision.id } }).catch((error) => logger.warn({ err: error, issueId: issue.id, decisionId: result.decision.id }, "Delivery rejection feedback persisted; normal continuation wake failed"));
@@ -10866,6 +10868,7 @@ export function issueRoutes(
               .where(
                 and(
                   eq(issueWorkProducts.companyId, issue.companyId),
+                  isNull(issueWorkProducts.deletedAt),
                   eq(issueWorkProducts.issueId, issue.id),
                   eq(issueWorkProducts.type, "artifact"),
                   eq(issueWorkProducts.provider, "paperclip"),
@@ -10880,11 +10883,13 @@ export function issueRoutes(
         ? await workProductsSvc.update(
             existingRunAttachmentProduct.id,
             createInput,
+            { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null, runId: actor.runId },
           )
         : await workProductsSvc.createForIssue(
             issue.id,
             issue.companyId,
             createInput,
+            { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null, runId: actor.runId },
           );
       if (!product) {
         res.status(422).json({ error: "Invalid work product payload" });
@@ -11277,7 +11282,7 @@ export function issueRoutes(
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
-      });
+      }, { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null, runId: actor.runId });
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
         return;
@@ -11326,7 +11331,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(
       req,
       res,
-      workProductsSvc.getById(id),
+      workProductsSvc.getById(id, { includeDeleted: true }),
       "Work product not found",
     );
     if (!existing) return;
@@ -11338,12 +11343,13 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
-    const removed = await workProductsSvc.remove(id);
+    if (existing.deletedAt) { res.json(existing); return; }
+    const actor = getActorInfo(req);
+    const removed = await workProductsSvc.remove(id, { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null, runId: actor.runId });
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
       return;
     }
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
@@ -18699,22 +18705,12 @@ export function issueRoutes(
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
 
-    try {
-      await storage.deleteObject(attachment.companyId, attachment.objectKey);
-    } catch (err) {
-      logger.warn(
-        { err, attachmentId },
-        "storage delete failed while removing attachment",
-      );
-    }
-
-    const removed = await svc.removeAttachment(attachmentId);
-    if (!removed) {
-      res.status(404).json({ error: "Attachment not found" });
-      return;
-    }
-
     const actor = getActorInfo(req);
+    const removed = await svc.removeAttachment(attachmentId, actor);
+    if (!removed) { res.status(404).json({ error: "Attachment not found" }); return; }
+    try { await storage.deleteObject(attachment.companyId, attachment.objectKey); }
+    catch (err) { logger.warn({ err, attachmentId }, "storage delete failed after removing attachment metadata"); }
+
     await logActivity(db, {
       companyId: removed.companyId,
       actorType: actor.actorType,

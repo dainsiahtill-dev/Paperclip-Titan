@@ -1377,6 +1377,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .from(issueWorkProducts)
       .where(and(
         eq(issueWorkProducts.companyId, workspace.companyId),
+            isNull(issueWorkProducts.deletedAt),
         eq(issueWorkProducts.type, "pull_request"),
         eq(issueWorkProducts.issueId, workspace.sourceIssueId),
       ))

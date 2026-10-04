@@ -53,6 +53,14 @@ export interface IssueWorkProduct {
   createdByRunId: string | null;
   materialVersion?: number;
   producerAgentId?: string | null;
+  producerActorType?: string | null;
+  producerActorId?: string | null;
+  materialWriterAgentId?: string | null;
+  materialWriterActorType?: string | null;
+  materialWriterActorId?: string | null;
+  deletedAt?: Date | null;
+  deletedByActorType?: string | null;
+  deletedByActorId?: string | null;
   materialUpdatedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;

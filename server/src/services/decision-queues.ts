@@ -690,6 +690,7 @@ export function decisionQueueService(db: Db) {
         .from(issueWorkProducts)
         .where(and(
           eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
           eq(issueWorkProducts.type, "pull_request"),
           inArray(issueWorkProducts.issueId, issueIds),
         )).then((rows) => rows.map((row) => row.issueId)));

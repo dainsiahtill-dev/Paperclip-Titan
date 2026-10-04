@@ -924,6 +924,7 @@ export function companySearchService(db: Db) {
         ];
         const workProductConditions = [
           eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
           eq(issueWorkProducts.type, "artifact"),
           eq(issueWorkProducts.provider, "paperclip"),
           sql<boolean>`(

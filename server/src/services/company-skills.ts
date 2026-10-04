@@ -6698,7 +6698,8 @@ export function companySkillService(db: Db) {
         : db
           .select()
           .from(issueWorkProducts)
-          .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, row.issueId)))
+          .where(and(eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt), eq(issueWorkProducts.issueId, row.issueId)))
           .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt)),
     ]);
     if (!version) throw notFound("Skill version not found");

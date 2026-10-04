@@ -13021,8 +13021,9 @@ export function issueService(db: Db) {
         .where(eq(issueAttachments.id, id))
         .then((rows) => rows[0] ?? null),
 
-    removeAttachment: async (id: string) =>
-      db.transaction(async (tx) => {
+    removeAttachment: async (id: string, actor?: { actorType?: "agent" | "user" | "system" | "plugin"; actorId?: string; agentId?: string | null; runId?: string | null }) => {
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
         const existing = await tx
           .select({
             id: issueAttachments.id,
@@ -13048,10 +13049,17 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
+        await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, existing.companyId), eq(issues.id, existing.issueId))).for("update");
+        await tx.update(issueWorkProducts).set({ deletedAt: new Date(), isPrimary: false, deletedByActorType: actor?.actorType ?? "system", deletedByActorId: actor?.actorId ?? "issue-service" }).where(and(eq(issueWorkProducts.companyId, existing.companyId), eq(issueWorkProducts.issueId, existing.issueId), sql`${issueWorkProducts.metadata}->>'attachmentId' = ${id}`, isNull(issueWorkProducts.deletedAt)));
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
+        await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(existing.companyId, existing.issueId, publications);
+        await logActivity(tx as unknown as Db, { companyId: existing.companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "issue-service", agentId: actor?.agentId ?? null, runId: actor?.runId ?? null, action: "issue.attachment_material_removed", entityType: "issue", entityId: existing.issueId, details: { attachmentId: id, assetId: existing.assetId, sha256: existing.sha256 } }, publications);
         return existing;
-      }),
+      });
+      for (const publication of publications) publishActivity(publication);
+      return result;
+    },
 
     findMentionedAgents: async (companyId: string, body: string) => {
       const explicitAgentMentionIds = extractAgentMentionIds(body);

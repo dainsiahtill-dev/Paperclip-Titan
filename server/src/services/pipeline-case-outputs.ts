@@ -407,6 +407,7 @@ export function pipelineCaseOutputsService(db: Db) {
           ))
           .where(and(
             eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
             inArray(issueWorkProducts.issueId, sourceIssueIds),
           ));
 

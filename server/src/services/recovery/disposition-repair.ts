@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { isNull,  and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -159,6 +159,7 @@ export async function collectDispositionRepairSourceState(
         .where(
           and(
             eq(issueWorkProducts.companyId, issue.companyId),
+            isNull(issueWorkProducts.deletedAt),
             eq(issueWorkProducts.issueId, issue.id),
           ),
         ),

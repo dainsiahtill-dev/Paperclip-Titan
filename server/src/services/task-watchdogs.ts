@@ -1364,6 +1364,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}, 
         .from(issueWorkProducts)
         .where(and(
           eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
           inArray(issueWorkProducts.issueId, subtreeIssueIds),
         ))
         .groupBy(issueWorkProducts.issueId),

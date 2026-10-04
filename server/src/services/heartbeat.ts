@@ -18465,6 +18465,7 @@ export function heartbeatService(
           .where(
             and(
               eq(issueWorkProducts.companyId, run.companyId),
+            isNull(issueWorkProducts.deletedAt),
               eq(issueWorkProducts.issueId, contextIssueId),
               eq(issueWorkProducts.createdByRunId, run.id),
             ),

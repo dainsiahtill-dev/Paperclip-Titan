@@ -898,12 +898,17 @@ export function projectService(db: Db) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const publications: import("./activity-log.js").ActivityPublication[] = [];
+      const row = await db.transaction(async (tx) => {
+        const [changed] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();
+        if (changed && projectData.deliveryPolicy !== undefined) {
+          const { deliveryAuthorityService } = await import("./delivery-authority.js");
+          await deliveryAuthorityService(tx as unknown as Db, true).invalidateProjectScopes(changed.companyId, changed.id, publications);
+        }
+        return changed ?? null;
+      });
+      const { publishActivity } = await import("./activity-log.js");
+      for (const publication of publications) publishActivity(publication);
       if (!row) return null;
 
       if (ids !== undefined) {

@@ -30,10 +30,12 @@ export interface DeliveryCriterionAssessment extends DeliveryCriterion {
   criterionDigest: string;
   state: "accepted" | "rejected" | "missing" | "stale";
   workProductId: string | null;
+  workProductIssueId?: string | null;
   materialVersion: string | null;
   contentDigest: string | null;
   decisionId: string | null;
   reason: string | null;
+  provenance?: { decisionId: string; actorType: string; actorId: string; agentId: string | null; runId: string | null; createdAt: string; reviewerName?: string | null } | null;
 }
 export interface DeliveryAssessment {
   version: 1;

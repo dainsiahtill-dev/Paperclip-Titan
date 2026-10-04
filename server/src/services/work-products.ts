@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns, issues, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import { deliveryAuthorityService } from "./delivery-authority.js";
@@ -125,6 +125,14 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
     createdByRunId: row.createdByRunId ?? null,
     materialVersion: row.materialVersion,
     producerAgentId: row.producerAgentId,
+    producerActorType: row.producerActorType,
+    producerActorId: row.producerActorId,
+    materialWriterAgentId: row.materialWriterAgentId,
+    materialWriterActorType: row.materialWriterActorType,
+    materialWriterActorId: row.materialWriterActorId,
+    deletedAt: row.deletedAt,
+    deletedByActorType: row.deletedByActorType,
+    deletedByActorId: row.deletedByActorId,
     materialUpdatedByRunId: row.materialUpdatedByRunId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -179,6 +187,13 @@ export function workProductService(
     resolveCommitDetails?: GitHubCommitDiffDetailsResolver;
   } = {},
 ) {
+  type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
+  async function writer(tx: Db, companyId: string, actor: Actor | undefined, attributedRunId?: string | null) {
+    const runId = actor ? actor.runId ?? null : attributedRunId ?? null;
+    const [run] = runId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId))) : [];
+    const agentId = actor ? actor.agentId ?? null : run?.agentId ?? null;
+    return { agentId, actorType: agentId ? "agent" : actor?.userId ? "user" : "system", actorId: agentId ?? actor?.userId ?? "work-product-service", runId: run ? runId : null };
+  }
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const resolveCommitDetails = opts.resolveCommitDetails ?? createGitHubCommitDiffDetailsResolver(db);
   return {
@@ -186,7 +201,7 @@ export function workProductService(
       const rows = await db
         .select()
         .from(issueWorkProducts)
-        .where(eq(issueWorkProducts.issueId, issueId))
+        .where(and(eq(issueWorkProducts.issueId, issueId), isNull(issueWorkProducts.deletedAt)))
         .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt));
       const products = rows.map(toIssueWorkProduct);
       const runtimeServiceIds = products
@@ -240,20 +255,20 @@ export function workProductService(
       return reference ? await resolveCommitDetails(companyId, reference) : null;
     },
 
-    getById: async (id: string) => {
+    getById: async (id: string, options: { includeDeleted?: boolean } = {}) => {
       const row = await db
         .select()
         .from(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
+        .where(and(eq(issueWorkProducts.id, id), ...(options.includeDeleted ? [] : [isNull(issueWorkProducts.deletedAt)])))
         .then((rows) => rows[0] ?? null);
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">, actor?: Actor) => {
       const publications: ActivityPublication[] = [];
       const row = await db.transaction(async (tx) => {
         await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
-        const [producer] = data.createdByRunId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, data.createdByRunId), eq(heartbeatRuns.companyId, companyId))) : [];
+        const producer = await writer(tx as unknown as Db, companyId, actor, data.createdByRunId);
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -263,6 +278,7 @@ export function workProductService(
                 eq(issueWorkProducts.companyId, companyId),
                 eq(issueWorkProducts.issueId, issueId),
                 eq(issueWorkProducts.type, data.type),
+                isNull(issueWorkProducts.deletedAt),
               ),
             );
         }
@@ -271,8 +287,11 @@ export function workProductService(
           .values({
             ...data,
             materialVersion: 1,
-            producerAgentId: producer?.agentId ?? null,
-            materialUpdatedByRunId: producer ? data.createdByRunId : null,
+            producerAgentId: producer.agentId,
+            producerActorType: producer.actorType, producerActorId: producer.actorId,
+            materialWriterAgentId: producer.agentId, materialWriterActorType: producer.actorType, materialWriterActorId: producer.actorId,
+            materialUpdatedByRunId: producer.runId,
+            deletedAt: null, deletedByActorType: null, deletedByActorId: null,
             companyId,
             issueId,
           })
@@ -285,7 +304,7 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>, actor?: Actor) => {
       const publications: ActivityPublication[] = [];
       const row = await db.transaction(async (tx) => {
         const [identity] = await tx.select({ issueId: issueWorkProducts.issueId, companyId: issueWorkProducts.companyId }).from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
@@ -295,12 +314,13 @@ export function workProductService(
         const existing = await tx
           .select()
           .from(issueWorkProducts)
-          .where(eq(issueWorkProducts.id, id))
+          .where(and(eq(issueWorkProducts.id, id), isNull(issueWorkProducts.deletedAt)))
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
         const materialChanged = deliveryDigest(workProductMaterialIdentity(existing)) !== deliveryDigest(workProductMaterialIdentity({ ...existing, ...patch }));
-        const { materialVersion: _requestedVersion, producerAgentId: _requestedProducer, materialUpdatedByRunId: _requestedWriter, ...safePatch } = patch;
+        const { materialVersion: _requestedVersion, producerAgentId: _requestedProducer, producerActorType: _pt, producerActorId: _pi, materialUpdatedByRunId: _requestedWriter, materialWriterAgentId: _wa, materialWriterActorType: _wt, materialWriterActorId: _wi, deletedAt: _deleted, deletedByActorType: _dt, deletedByActorId: _di, ...safePatch } = patch;
+        const editor = materialChanged ? await writer(tx as unknown as Db, existing.companyId, actor, patch.createdByRunId) : null;
 
         if (patch.isPrimary === true) {
           await tx
@@ -311,6 +331,7 @@ export function workProductService(
                 eq(issueWorkProducts.companyId, existing.companyId),
                 eq(issueWorkProducts.issueId, existing.issueId),
                 eq(issueWorkProducts.type, existing.type),
+                isNull(issueWorkProducts.deletedAt),
               ),
             );
         }
@@ -318,7 +339,10 @@ export function workProductService(
         const updated = await tx
           .update(issueWorkProducts)
           .set({ ...safePatch, materialVersion: materialChanged ? existing.materialVersion + 1 : existing.materialVersion,
-            materialUpdatedByRunId: materialChanged ? patch.createdByRunId ?? existing.materialUpdatedByRunId : existing.materialUpdatedByRunId, updatedAt: new Date() })
+            materialUpdatedByRunId: editor ? editor.runId : existing.materialUpdatedByRunId,
+            materialWriterAgentId: editor ? editor.agentId : existing.materialWriterAgentId,
+            materialWriterActorType: editor ? editor.actorType : existing.materialWriterActorType,
+            materialWriterActorId: editor ? editor.actorId : existing.materialWriterActorId, updatedAt: new Date() })
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
@@ -375,12 +399,18 @@ export function workProductService(
       });
     },
 
-    remove: async (id: string) => {
-      const row = await db
-        .delete(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+    remove: async (id: string, actor?: Actor) => {
+      const publications: ActivityPublication[] = [];
+      const row = await db.transaction(async (tx) => {
+        const [existing] = await tx.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
+        if (!existing || existing.deletedAt) return existing ?? null;
+        await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, existing.companyId), eq(issues.id, existing.issueId))).for("update");
+        const deleter = await writer(tx as unknown as Db, existing.companyId, actor);
+        const [removed] = await tx.update(issueWorkProducts).set({ deletedAt: new Date(), isPrimary: false, deletedByActorType: deleter.actorType, deletedByActorId: deleter.actorId }).where(and(eq(issueWorkProducts.id, id), isNull(issueWorkProducts.deletedAt))).returning();
+        if (removed) await deliveryAuthorityService(tx as unknown as Db, true).invalidateMaterialScopes(removed.companyId, removed.issueId, publications);
+        return removed ?? existing;
+      });
+      for (const publication of publications) publishActivity(publication);
       return row ? toIssueWorkProduct(row) : null;
     },
   };

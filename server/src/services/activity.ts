@@ -243,6 +243,7 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
             eq(issueWorkProducts.issueId, issueId),
             eq(issueWorkProducts.createdByRunId, run.id),
           ),

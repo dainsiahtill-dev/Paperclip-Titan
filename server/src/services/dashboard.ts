@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { isNull,  and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues, issueWorkProducts } from "@paperclipai/db";
 import { notFound } from "../errors.js";
@@ -92,6 +92,7 @@ export function dashboardService(db: Db) {
         .from(issueWorkProducts)
         .where(and(
           eq(issueWorkProducts.companyId, companyId),
+            isNull(issueWorkProducts.deletedAt),
           gte(issueWorkProducts.createdAt, runActivityStart),
         ));
       const [{ monthSpend }] = await db

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { isNull,  and, eq } from "drizzle-orm";
 import { assets, issueAttachments, issueWorkProducts, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
@@ -137,6 +137,7 @@ export async function validateNativeDeliverableEvidence(
   if (fileRequested && !registeredAttachment) {
     const products = refs.size ? await db.select().from(issueWorkProducts).where(and(
       eq(issueWorkProducts.companyId, binding.companyId), eq(issueWorkProducts.issueId, binding.issueId),
+            isNull(issueWorkProducts.deletedAt),
     )) : [];
     const accessibleProduct = products.some(product => {
       if (product.createdByRunId !== binding.runId) return false;

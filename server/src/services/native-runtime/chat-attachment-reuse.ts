@@ -1473,6 +1473,7 @@ export async function prepareReusedChatAttachment(input: {
         and(
           eq(issueWorkProducts.id, attachment.artifactWorkProductId),
           eq(issueWorkProducts.companyId, input.binding.companyId),
+            isNull(issueWorkProducts.deletedAt),
           eq(issueWorkProducts.issueId, input.binding.issueId),
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),
@@ -1498,6 +1499,7 @@ export async function prepareReusedChatAttachment(input: {
         and(
           eq(issueWorkProducts.id, attachment.artifactWorkProductId),
           eq(issueWorkProducts.companyId, input.binding.companyId),
+            isNull(issueWorkProducts.deletedAt),
           eq(issueWorkProducts.issueId, input.binding.issueId),
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),

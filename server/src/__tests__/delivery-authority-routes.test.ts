@@ -6,6 +6,7 @@ import { activityLog, agents, assets, companies, companyMemberships, completionC
 import { issueDeliveryDecisions } from "@paperclipai/db/schema/issue_delivery_decisions";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueRoutes } from "../routes/issues.js";
+import { projectRoutes } from "../routes/projects.js";
 import { errorHandler } from "../middleware/index.js";
 import { classifyNativeEvidence } from "../services/native-runtime/evidence-classifier.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
@@ -21,21 +22,22 @@ const describeDb = support.supported ? describe : describe.skip;
 describeDb("delivery authority API boundary", () => {
   let db!: ReturnType<typeof createDb>;
   let temp!: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let deliveryWakeup: ((agentId: string, options?: unknown) => Promise<null>) | null = null;
   beforeAll(async () => { temp = await startEmbeddedPostgresTestDatabase("paperclip-delivery-authority-"); db = createDb(temp.connectionString); }, 30_000);
   afterAll(async () => { await temp?.cleanup(); });
-  afterEach(async () => { await db.delete(issueDeliveryDecisions); await db.delete(completionContracts); await db.delete(activityLog); await db.delete(issueComments); await db.delete(issueWorkProducts); await db.delete(issueAttachments); await db.delete(assets); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(projects); await db.delete(agents); await db.delete(companyMemberships); await db.delete(companies); });
+  afterEach(async () => { await db.delete(issueDeliveryDecisions); await db.delete(completionContracts); await db.delete(activityLog); await db.delete(issueComments); await db.delete(issueWorkProducts); await db.delete(issueAttachments); await db.delete(assets); await db.delete((await import("@paperclipai/db")).heartbeatRunEvents); await db.delete((await import("@paperclipai/db")).agentWakeupRequests); await db.delete(heartbeatRuns); await db.delete((await import("@paperclipai/db")).issueDocuments); await db.delete((await import("@paperclipai/db")).documentRevisions); await db.delete((await import("@paperclipai/db")).documents); await db.delete(issues); await db.delete(projects); await db.delete(agents); await db.delete(companyMemberships); await db.delete(companies); });
 
   async function seedExecutor() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Isolated delivery authority", issuePrefix: `A${companyId.slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Executor", role: "engineer", status: "active", adapterType: "process", adapterConfig: {} });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Executor", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Deliver inspected report", status: "todo", assigneeAgentId: agentId, createdAt: new Date(Date.now() - 60_000) });
     // A real persisted legacy run provides request attribution. No native
     // assessment/finalization row is manufactured to satisfy an unrelated FK.
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "legacy", status: "running", contextSnapshot: { issueId } });
     const appForActor = (actor: Record<string, unknown>) => {
       const app = express(); app.use(express.json()); app.use((req, _res, next) => { (req as any).actor = actor; next(); });
-      app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null, deliveryEnqueueWakeup: null } as any)); app.use(errorHandler); return app;
+      app.use("/api", issueRoutes(db, {} as any, { taskWatchdogEnqueueWakeup: null, deliveryEnqueueWakeup: deliveryWakeup } as any)); app.use("/api", projectRoutes(db)); app.use(errorHandler); return app;
     };
     const app = appForActor({ type: "agent", agentId, companyId, runId, source: "agent_jwt" });
     return { app, appForActor, companyId, agentId, issueId, runId };
@@ -58,7 +60,7 @@ describeDb("delivery authority API boundary", () => {
 
   async function verifiedFixture() {
     const s = await seedExecutor(), reviewerId = randomUUID(), reviewerRunId = randomUUID();
-    await db.insert(agents).values({ id: reviewerId, companyId: s.companyId, name: "Independent QA", role: "qa", status: "active", adapterType: "process", adapterConfig: {} });
+    await db.insert(agents).values({ id: reviewerId, companyId: s.companyId, name: "Independent QA", role: "qa", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
     await db.insert(heartbeatRuns).values({ id: reviewerRunId, companyId: s.companyId, agentId: reviewerId, status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: s.issueId } });
     await db.insert(companyMemberships).values({ companyId: s.companyId, principalType: "user", principalId: "authority-board", status: "active", membershipRole: "owner" });
     const board = s.appForActor({ type: "board", userId: "authority-board", companyIds: [s.companyId], source: "cloud_tenant", memberships: [{ companyId: s.companyId, membershipRole: "owner", status: "active" }], isInstanceAdmin: false });
@@ -298,5 +300,90 @@ describeDb("delivery authority API boundary", () => {
     expect(current.criteria.every((criterion: any) => criterion.state === "accepted")).toBe(true);
     expect(current.criteria[0].contentDigest).toBe(initial.criteria[0].contentDigest);
     expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("done");
+  });
+
+  async function reviewStageFixture() {
+    const s = await verifiedFixture();
+    await request(s.board).patch(`/api/issues/${s.issueId}`).send({ executionPolicy: { stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: s.reviewerId }] }], deliveryPolicy: s.policy } }).expect(200);
+    const handoff = await request(s.app).patch(`/api/issues/${s.issueId}`).send({ status: "done", comment: "Implementation ready for independent criterion inspection." }).expect(200);
+    expect(handoff.body.assigneeAgentId).toBe(s.reviewerId);
+    expect(handoff.body.executionState.returnAssignee.agentId).toBe(s.agentId);
+    return s;
+  }
+
+  it("records the actual reviewer material editor when createdByRunId is omitted", async () => {
+    const s = await reviewStageFixture();
+    const update = await request(s.reviewer).patch(`/api/work-products/${s.productId}`).send({ summary: "Content rewritten by the current reviewer." }).expect(200);
+    const current = (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body;
+    await request(s.reviewer).post(`/api/issues/${s.issueId}/delivery-decisions`).send(s.decisionBody("report", current)).expect(403);
+    expect(update.body.materialWriterAgentId).toBe(s.reviewerId);
+    expect(update.body.materialUpdatedByRunId).toBe(s.reviewerRunId);
+  });
+
+  it("records a runless authenticated creator before they later obtain a review run", async () => {
+    const s = await reviewStageFixture();
+    const runless = s.appForActor({ type: "agent", agentId: s.reviewerId, companyId: s.companyId, source: "agent_key" });
+    const created = await request(runless).post(`/api/issues/${s.issueId}/work-products`).send({ type: "document", provider: "custom", title: "Reviewer-authored document", summary: "Material authored with a runless key", isPrimary: true }).expect(201);
+    const current = (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body;
+    await request(s.reviewer).post(`/api/issues/${s.issueId}/delivery-decisions`).send({ ...s.decisionBody("report", current), workProductId: created.body.id }).expect(403);
+    expect(created.body.producerAgentId).toBe(s.reviewerId);
+    expect(created.body.materialWriterAgentId).toBe(s.reviewerId);
+  });
+
+  async function acceptAll(s: Awaited<ReturnType<typeof verifiedFixture>>, current?: any) {
+    const assessment = current ?? (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`).expect(200)).body;
+    for (const criterion of assessment.criteria) await request(s.reviewer).post(`/api/issues/${s.issueId}/delivery-decisions`).send(s.decisionBody(criterion.id, assessment)).expect(201);
+    await request(s.app).patch(`/api/issues/${s.issueId}`).send({ status: "done" }).expect(200);
+  }
+
+  it("tombstones removed products, preserves history and reopens the affected completed source", async () => {
+    const s = await verifiedFixture(); await acceptAll(s);
+    await request(s.app).delete(`/api/work-products/${s.productId}`).expect(200);
+    await request(s.app).delete(`/api/work-products/${s.productId}`).expect(200);
+    expect((await request(s.board).get(`/api/issues/${s.issueId}/work-products`).expect(200)).body).toHaveLength(0);
+    expect(await db.select().from(issueDeliveryDecisions).where(eq(issueDeliveryDecisions.issueId, s.issueId))).toHaveLength(2);
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+    const [tombstone] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, s.productId));
+    expect(tombstone!.deletedAt).toBeTruthy(); expect(tombstone!.deletedByActorId).toBe(s.agentId);
+  });
+
+  it("invalidates only the changed inherited project criterion when completed work is reopened", async () => {
+    const s = await verifiedFixture(), projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: s.companyId, name: "Current project criteria", deliveryPolicy: s.policy });
+    await request(s.board).patch(`/api/issues/${s.issueId}`).send({ projectId, executionPolicy: null }).expect(200);
+    await acceptAll(s);
+    await request(s.board).put(`/api/projects/${projectId}/delivery-policy`).send({ ...s.policy, criteria: [s.policy.criteria[0], { ...s.policy.criteria[1], requirement: "Changed project format requirement" }] }).expect(200);
+    const current = (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`).expect(200)).body;
+    expect(current.criteria[0].state).toBe("accepted"); expect(current.criteria[1].state).toBe("stale");
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+  });
+
+  it("preserves identical document bytes across a title revision and reopens changed body content", async () => {
+    const s = await verifiedFixture();
+    const document = (await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "Before", format: "markdown", body: "Actual inspected document body" }).expect(201)).body;
+    await request(s.app).patch(`/api/work-products/${s.productId}`).send({ metadata: { documentId: document.id } }).expect(200);
+    await acceptAll(s);
+    const before = (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body;
+    const renamed = (await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "After", format: "markdown", body: document.body, baseRevisionId: document.latestRevisionId }).expect(200)).body;
+    const unchanged = (await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body;
+    expect(unchanged.criteria.every((criterion: any) => criterion.state === "accepted")).toBe(true);
+    expect(unchanged.criteria[0].contentDigest).toBe(before.criteria[0].contentDigest);
+    expect(unchanged.criteria[0].provenance).toMatchObject({ actorId: s.reviewerId, runId: s.reviewerRunId, reviewerName: "Independent QA" });
+    await request(s.app).put(`/api/issues/${s.issueId}/documents/output`).send({ title: "After", format: "markdown", body: "Changed actual content", baseRevisionId: renamed.latestRevisionId }).expect(200);
+    expect((await request(s.board).get(`/api/issues/${s.issueId}/delivery-assessment`)).body.canComplete).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+  });
+
+  it("uses committed reopened status for exactly one normal rejection continuation", async () => {
+    const wakes: string[] = [];
+    deliveryWakeup = async (agentId) => { wakes.push(agentId); return null; };
+    try {
+      const s = await verifiedFixture(); await acceptAll(s);
+      const body = { ...s.decisionBody("report"), verdict: "rejected", reason: "Concrete verified defect in current material." };
+      await request(s.reviewer).post(`/api/issues/${s.issueId}/delivery-decisions`).send(body).expect(201);
+      await request(s.reviewer).post(`/api/issues/${s.issueId}/delivery-decisions`).send(body).expect(200);
+      expect(wakes).toEqual([s.agentId]);
+      expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]!.status).toBe("in_review");
+    } finally { deliveryWakeup = null; }
   });
 });
