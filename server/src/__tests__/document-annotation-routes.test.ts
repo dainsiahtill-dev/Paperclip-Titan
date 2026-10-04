@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -157,11 +158,20 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
+const routeModules = hoistModuleGraph(() => {
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../middleware/index.js");
+  registerModuleMocks();
+}, async () => {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+  return { issueRoutes, errorHandler };
+});
+
+async function createApp(actor: "board" | "agent" = "board", actorCompanyId = companyId) {
+  const { issueRoutes, errorHandler } = routeModules.value;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -188,10 +198,6 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
 
 describe("document annotation routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue({
       id: issueId,

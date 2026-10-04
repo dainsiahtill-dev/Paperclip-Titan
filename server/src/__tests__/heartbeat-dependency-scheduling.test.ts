@@ -976,6 +976,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return run?.status === "succeeded";
     });
 
+    // The terminal row precedes cleanup and the next queue admission.
+    await heartbeat.drainActiveRunExecutions();
+
     const [blockedRun, blockedWakeup, blockedIssue, readyRun] = await Promise.all([
       db
         .select({

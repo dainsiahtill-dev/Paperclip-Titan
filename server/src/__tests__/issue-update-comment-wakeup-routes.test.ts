@@ -1,6 +1,8 @@
 import express from "express";
 import request from "supertest";
+import { agentWakeupRequests } from "@paperclipai/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const PREVIOUS_AGENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -36,6 +38,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  resumeOrdinaryCommentWakeRequests: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
@@ -201,11 +204,21 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+const routeModules = hoistModuleGraph(() => {
+  vi.doUnmock("../routes/issues.js");
+  vi.doUnmock("../routes/authz.js");
+  vi.doUnmock("../middleware/index.js");
+  registerModuleMocks();
+}, async () => {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+  return { errorHandler, issueRoutes };
+});
+
+async function createApp(options: { savedCommentWakeId?: string } = {}) {
+  const { errorHandler, issueRoutes } = routeModules.value;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -219,9 +232,21 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({
-    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
-  } as any, {} as any));
+  const db = {
+    // addComment is mocked in this route suite, so it persists no outbox row.
+    // A saved ID below qualifies only route delegation, never actual admission.
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () => ({
+          limit: async () => table === agentWakeupRequests && options.savedCommentWakeId
+            ? [{ id: options.savedCommentWakeId }]
+            : [],
+        }),
+      }),
+    }),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(db),
+  };
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -249,11 +274,6 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 
 describe("issue update comment wakeups", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
     mockPauseGate.mockResolvedValue(null);
@@ -602,6 +622,30 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("delegates a saved ordinary comment wake ID without a second assignee wake", async () => {
+    const existing = makeIssue({ assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null, status: "in_progress" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-saved", issueId: existing.id, companyId: existing.companyId, body: "Continue the task" });
+    const res = await request(await createApp({ savedCommentWakeId: "saved-ordinary-wake" }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "Continue the task" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "Continue the task", expect.anything(), expect.objectContaining({
+      authorType: "user",
+      wakeAssignee: {
+        resumeRequested: false,
+        reopened: false,
+        reopenedFrom: null,
+        interruptedRunId: null,
+        issueAtCommentStart: { checkoutRunId: undefined, executionRunId: undefined },
+      },
+    }), expect.anything());
+    expect(mockHeartbeatService.resumeOrdinaryCommentWakeRequests).toHaveBeenCalledOnce();
+    expect(mockHeartbeatService.resumeOrdinaryCommentWakeRequests).toHaveBeenCalledWith({ queueId: "saved-ordinary-wake" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("does not wake the assignee for its own run-authenticated top-level comment", async () => {
