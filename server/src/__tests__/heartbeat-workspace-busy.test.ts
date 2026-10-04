@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -24,6 +24,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  workspaceWriteOwners,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -81,6 +82,8 @@ describe("computeWorkspaceBusyRetryDelayMs", () => {
 
 describeEmbeddedPostgres("shared-workspace run serialization", () => {
   let physicalReady: (() => void) | undefined;
+  let zeroRowSpawn = false;
+  let physicalSettled: (() => void) | undefined;
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -99,13 +102,13 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       execute: async (input) => {
         executedRunIds.push(input.runId);
         executedInputs.set(input.runId, input);
-        if (physicalReady) {
+        if (physicalReady || zeroRowSpawn) {
           expect(input.workspaceProcessGuard).toBeDefined();
-          return runChildProcess(input.runId, "/bin/sh", ["-c", "printf ready; sleep 0.8; printf first > physical-effect"], {
+          try { return await runChildProcess(input.runId, "/bin/sh", ["-c", zeroRowSpawn ? "printf unsafe > missing-run-effect" : "printf ready; sleep 0.8; printf first > physical-effect"], {
             cwd: input.workspaceProcessGuard!.root, env: {}, timeoutSec: 2, graceSec: 1,
             signal: input.signal, onSpawn: input.onSpawn,
             onLog: async (stream, text) => { await input.onLog(stream, text); if (text.includes("ready")) physicalReady?.(); },
-          });
+          }); } finally { physicalSettled?.(); }
         }
         return {
           exitCode: 0,
@@ -133,6 +136,10 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       .where(eq(heartbeatRuns.status, "running"));
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     physicalReady = undefined;
+    zeroRowSpawn = false;
+    physicalSettled = undefined;
+    await db.delete(workspaceWriteOwners);
+    await fs.rm(path.join(workspaceCwd, "missing-run-effect"), { force: true });
     await cleanupFixture();
     executedRunIds.length = 0;
     executedInputs.clear();
@@ -421,6 +428,26 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect((deferred?.resultJson as any)?.workspaceBusy?.holderRunId ?? null).toBeNull();
     expect((await waitForRunToLeaveActiveStates(first!.id))?.status).toBe("succeeded");
     expect(await fs.readFile(path.join(workspaceCwd, "physical-effect"), "utf8")).toBe("first");
+  });
+
+  it("zero-row heartbeat metadata bind never ACKs a contained argv writer", async () => {
+    const fixture = await seedWorkspaceFixture();
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, fixture.holderRunId));
+    zeroRowSpawn = true;
+    const settled = new Promise<void>(resolve => { physicalSettled = resolve; });
+    await db.execute(sql`create function zero_row_process_bind() returns trigger language plpgsql as $$ begin if NEW.process_pid is not null and OLD.process_pid is null then return null; end if; return NEW; end $$`);
+    await db.execute(sql`create trigger zero_row_process_bind before update on heartbeat_runs for each row execute function zero_row_process_bind()`);
+    try {
+    const run = await heartbeat.invoke(fixture.agentId, "assignment", { issueId: fixture.issueId, wakeReason: "issue_assigned" }, "system");
+    expect(run).not.toBeNull(); await settled;
+    expect(await fs.readFile(path.join(workspaceCwd, "missing-run-effect"), "utf8").catch(() => null)).toBeNull();
+    const owner = (await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, run!.id)))[0]!;
+    expect(owner.state).toBe("unknown"); expect(owner.releasedAt).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.processPid).toBeNull();
+    } finally {
+      await db.execute(sql`drop trigger zero_row_process_bind on heartbeat_runs`);
+      await db.execute(sql`drop function zero_row_process_bind()`);
+    }
   });
 
   it("refuses unsupported protected sandbox writing before provider dispatch", async () => {

@@ -5930,6 +5930,17 @@ function createProvisioningRuntimeServiceRecord(
   };
 }
 
+async function observeRuntimeServiceOwnership(input: {
+  db?: Db; cwd: string | null; workspaceCwd: string; companyId: string; serviceId: string; serviceKey: string;
+}) {
+  if (currentWorkspaceProcessGuard()) throw conflict("A long-lived uncontained runtime service cannot join a protected writer lifetime", { code: "workspace_write_service_lifetime_unsupported" });
+  if (!input.db) return;
+  if (!input.cwd) throw conflict("Runtime service has no verified physical working directory", { code: "workspace_write_service_cwd_unverified" });
+  if (!await workspaceWriteOwnershipService(input.db).observeService({ ...input, cwd: input.cwd })) {
+    throw conflict("Workspace has an undrained physical writer", { code: "workspace_write_owner_busy" });
+  }
+}
+
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
@@ -6254,6 +6265,11 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     url: backendUrl,
   });
   if (adoptedRecord) {
+    try { await observeRuntimeServiceOwnership({ db: input.db, cwd: serviceCwd, workspaceCwd: input.workspace.cwd,
+      companyId: input.agent.companyId, serviceId: adoptedRecord.runtimeServiceId ?? runtimeId, serviceKey }); } catch (error) {
+      releasePortReservation(reservedPort);
+      throw error;
+    }
     const adoptedUrl = adoptedRecord.url ?? backendUrl;
     if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, {
       db: input.db,
@@ -6407,12 +6423,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
-    if (currentWorkspaceProcessGuard()) throw conflict("A long-lived uncontained runtime service cannot join a protected writer lifetime", { code: "workspace_write_service_lifetime_unsupported" });
-    if (input.db) {
-      const observation = await workspaceWriteOwnershipService(input.db).claim({ cwd: input.workspace.cwd,
-        companyId: input.agent.companyId, issueId: input.issue?.id, runId: startedByRunId ?? record.id, observeUnprotected: true });
-      if (observation.outcome === "busy") throw conflict("Workspace has an undrained physical writer", { code: "workspace_write_owner_busy" });
-    }
+    await observeRuntimeServiceOwnership({ db: input.db, cwd: serviceCwd, workspaceCwd: input.workspace.cwd,
+      companyId: input.agent.companyId, serviceId: record.id, serviceKey });
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });
@@ -7371,6 +7383,8 @@ async function ensureRuntimeServicesForRunInvocation(
       if (reuseKey) {
         const existing = await findHealthyRunningRuntimeService(reuseKey);
         if (existing) {
+          await observeRuntimeServiceOwnership({ db: input.db, cwd: existing.cwd, workspaceCwd: input.workspace.cwd,
+            companyId: input.agent.companyId, serviceId: existing.id, serviceKey: existing.serviceKey });
           existing.leaseRunIds.add(input.runId);
           existing.lastUsedAt = new Date().toISOString();
           existing.stoppedAt = null;
@@ -7605,6 +7619,8 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     if (reuseKey) {
       const existing = await findHealthyRunningRuntimeService(reuseKey);
       if (existing && (!requestedRuntimeServiceId || existing.id === requestedRuntimeServiceId)) {
+        await observeRuntimeServiceOwnership({ db: persistenceDb, cwd: existing.cwd, workspaceCwd: input.workspace.cwd,
+          companyId: input.actor.companyId, serviceId: existing.id, serviceKey: existing.serviceKey });
         const prepared = options?.preparedProvisioning;
         if (prepared?.service === service && prepared.record.id !== existing.id && persistenceDb) {
           await persistenceDb
@@ -8469,6 +8485,8 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       });
     }
     if (adoptedRecord) {
+      await observeRuntimeServiceOwnership({ db, cwd: adoptedRecord.cwd, workspaceCwd: row.cwd ?? adoptedRecord.cwd,
+        companyId: row.companyId, serviceId: row.id, serviceKey: adoptedRecord.serviceKey });
       const adoptedUrl = adoptedRecord.url ?? row.backendUrl ?? row.url ?? null;
       const adoptedHealthInput = {
         db,

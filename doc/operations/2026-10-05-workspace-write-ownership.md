@@ -53,6 +53,26 @@ observation before spawn and refuses to join a protected owner. Read-only
 governed stdio retains its existing read-only boundary. Long-lived local runtime
 services likewise register an unprotected observation at the actual spawn
 boundary when a database is supplied, and cannot start inside a guarded call.
+Service observations use a distinct server-owned `UNPROTECTED_SERVICE` cohort.
+Already-authorized service retries, multiple services, and healthy adoption can
+append their exact service identity and canonical roots to that cohort. They do
+not replace or release earlier observations, join a protected/unknown writer, or
+claim exclusivity between uncontained services. Native and stdio admission do
+not acquire this service-only reentry behavior.
+
+Protected admission also reconciles persisted local runtime-service rows,
+including Board starts with no run, before granting the first source owner.
+Logical stopped status, deleted initiating runs, and absent parent PIDs do not
+prove descendant drain. An unresolved historical root retains a conservative
+realm-wide hazard; deleting its old service row cannot remove that hazard.
+Healthy in-memory reuse, registry adoption and startup reconciliation register
+the same observations before returning success.
+
+New service cwd must canonically remain inside its selected workspace. Absolute
+or `../` paths and symlink aliases resolving outside it fail before raw spawn
+with `workspace_write_service_cwd_outside_workspace`; move the service or select
+its actual workspace. The observation covers the selected source root and actual
+service cwd. Stored configuration is not silently rewritten.
 A service writing the same source root can therefore prevent a protected agent
 from starting; separate its runtime root until its full lifetime is contained.
 Standalone internal helpers without a database are outside instance ownership.
@@ -66,6 +86,12 @@ writer, including its own issue. A command-recorder timeout is not physical stop
 an active/uncertain owner remains held. This seam produces no engineering
 acceptance receipt or immutable-source claim. Task 6 must bind approved job,
 authorized actor/run, source interval and command result separately.
+
+Protected heartbeat onSpawn must return the matching running company/agent/run
+and PID/process-group identity. A zero-row metadata update is a refused bind,
+just like a thrown persistence error: no ACK, no provider write, retained unknown
+physical ownership. Deleting a run after an acknowledged launch still cannot
+cascade away that ownership.
 
 The current job entry accepts `db`, `actor.companyId`, `issue` and a realized
 `workspace`; its physical owner uses a generated job UUID, not an authenticated

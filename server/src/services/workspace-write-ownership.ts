@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, workspaceWriteOwners, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, projectWorkspaces, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard } from "@paperclipai/adapter-utils/workspace-process-guard";
 
 type Owner = typeof workspaceWriteOwners.$inferSelect;
@@ -10,6 +10,9 @@ export type WorkspaceOwnerHandle = Pick<Owner, "id" | "companyId" | "runId" | "g
 const overlaps = (a: string, b: string) => { const rel = path.relative(a, b); return !rel || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)); };
 const privateResources = (owner: Owner) => owner.history.flatMap(event => event.event === "private_roots_reserved" && Array.isArray(event.roots)
   ? event.roots as Array<{ root: string; resourceKey: string }> : []);
+const ownerResources = (owner: Owner) => [{ root: owner.canonicalRoot, resourceKey: owner.resourceKey }, ...privateResources(owner),
+  ...owner.history.flatMap(event => event.kind === "UNPROTECTED_SERVICE" && Array.isArray(event.roots) ? event.roots as Array<{ root: string; resourceKey: string }> : [])];
+const resourceConflict = (owner: Owner, root: { root: string; resourceKey: string }) => ownerResources(owner).some(held => held.resourceKey === root.resourceKey || overlaps(held.root, root.root) || overlaps(root.root, held.root));
 
 export async function physicalWorkspaceIdentity(cwd: string) {
   if (process.platform !== "linux") throw new Error("workspace_write_ownership_unsupported_host");
@@ -26,7 +29,31 @@ export async function physicalWorkspaceIdentity(cwd: string) {
 }
 
 export function workspaceWriteOwnershipService(db: Db) {
+  type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+  type Identity = Awaited<ReturnType<typeof physicalWorkspaceIdentity>>;
   const selector = (handle: WorkspaceOwnerHandle) => and(eq(workspaceWriteOwners.id, handle.id), eq(workspaceWriteOwners.companyId, handle.companyId), eq(workspaceWriteOwners.runId, handle.runId), eq(workspaceWriteOwners.generation, handle.generation), isNull(workspaceWriteOwners.releasedAt));
+  async function observeServiceInTx(tx: Tx, input: { companyId: string; serviceId: string; serviceKey: string; roots: Identity[] }) {
+    const identity = input.roots[0]!;
+    const held = await tx.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.realm, identity.realm), isNull(workspaceWriteOwners.releasedAt))).for("update");
+    const conflicts = held.filter(owner => input.roots.some(root => resourceConflict(owner, root)));
+    // Service control authorization remains upstream. This lane records only
+    // coexistence of uncontained services, never a protected writer capability.
+    if (conflicts.some(owner => owner.state !== "unprotected_service" || !owner.history.some(event => event.kind === "UNPROTECTED_SERVICE"))) return false;
+    const event = { kind: "UNPROTECTED_SERVICE", event: "service_lifetime_observed", companyId: input.companyId,
+      serviceId: input.serviceId, serviceKey: input.serviceKey, roots: input.roots, at: new Date().toISOString() };
+    if (conflicts.length) {
+      const owner = conflicts[0]!;
+      if (!owner.history.some(prior => prior.kind === event.kind && prior.companyId === input.companyId && prior.serviceId === input.serviceId && prior.serviceKey === input.serviceKey
+        && Array.isArray(prior.roots) && prior.roots.length === event.roots.length && prior.roots.every((root: { root: string; resourceKey: string }, index: number) => root.root === event.roots[index]?.root && root.resourceKey === event.roots[index]?.resourceKey))) {
+        await tx.update(workspaceWriteOwners).set({ history: [...owner.history, event], updatedAt: new Date() }).where(eq(workspaceWriteOwners.id, owner.id));
+      }
+    } else {
+      await tx.insert(workspaceWriteOwners).values({ resourceKey: identity.resourceKey, realm: identity.realm, canonicalRoot: identity.root,
+        device: identity.device, inode: identity.inode, companyId: input.companyId, runId: input.serviceId,
+        state: "unprotected_service", history: [event] });
+    }
+    return true;
+  }
   async function transition(handle: WorkspaceOwnerHandle, event: string, change: (owner: Owner) => Partial<Owner> | null) {
     return db.transaction(async tx => {
       const owner = (await tx.select().from(workspaceWriteOwners).where(selector(handle)).for("update"))[0];
@@ -47,9 +74,39 @@ export function workspaceWriteOwnershipService(db: Db) {
         // Realm-wide short transaction lock also prevents parent/subdirectory
         // claims from creating separate writing lanes over the same files.
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity.realm}, 0))`);
+        if (!input.observeUnprotected) {
+          // Pre-PC06/Board services may have no initiating run or environment
+          // lease. Preserve their uncertain lifetime before deciding admission.
+          const services = await tx.select({ service: workspaceRuntimeServices, executionCwd: executionWorkspaces.cwd, projectCwd: projectWorkspaces.cwd })
+            .from(workspaceRuntimeServices).leftJoin(executionWorkspaces, eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaces.id))
+            .leftJoin(projectWorkspaces, eq(workspaceRuntimeServices.projectWorkspaceId, projectWorkspaces.id))
+            .where(eq(workspaceRuntimeServices.provider, "local_process"));
+          for (const historical of services) {
+            const actual = historical.service.cwd ? await physicalWorkspaceIdentity(historical.service.cwd).catch(() => null) : null;
+            const declaredPath = historical.executionCwd ?? historical.projectCwd;
+            const declared = declaredPath ? await physicalWorkspaceIdentity(declaredPath).catch(() => null) : null;
+            const unknown = { ...identity, root: "/", device: "unverified", inode: "unverified",
+              resourceKey: createHash("sha256").update(`${identity.realm}:unknown-service:${historical.service.id}`).digest("hex") };
+            const roots = actual ? [actual, ...(declared ? [declared] : [])] : [unknown];
+            const observed = await observeServiceInTx(tx, { companyId: historical.service.companyId, serviceId: historical.service.id,
+              serviceKey: `historical:${historical.service.id}`, roots });
+            if (!observed) {
+              // A historical process already exists; this is not permission
+              // to launch into the protected lane. Retain a separate hazard
+              // tombstone so deleting its old service row cannot erase it.
+              const first = roots[0]!;
+              await tx.insert(workspaceWriteOwners).values({ resourceKey: createHash("sha256").update(`${identity.realm}:historical-service:${historical.service.id}`).digest("hex"),
+                realm: identity.realm, canonicalRoot: first.root, device: first.device, inode: first.inode,
+                companyId: historical.service.companyId, runId: historical.service.id, state: "unprotected_service",
+                history: [{ kind: "UNPROTECTED_SERVICE", event: "historical_service_hazard", serviceId: historical.service.id, roots, at: new Date().toISOString() }],
+              }).onConflictDoNothing();
+            }
+            if (!actual || actual.resourceKey === identity.resourceKey || overlaps(actual.root, identity.root) || overlaps(identity.root, actual.root)
+              || (declared && (overlaps(declared.root, identity.root) || overlaps(identity.root, declared.root)))) return { outcome: "busy" as const };
+          }
+        }
         const held = await tx.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.realm, identity.realm), isNull(workspaceWriteOwners.releasedAt)));
-        const conflicts = held.filter(owner => owner.resourceKey === identity.resourceKey || overlaps(owner.canonicalRoot, identity.root) || overlaps(identity.root, owner.canonicalRoot)
-          || privateResources(owner).some(root => root.resourceKey === identity.resourceKey || overlaps(root.root, identity.root) || overlaps(identity.root, root.root)));
+        const conflicts = held.filter(owner => resourceConflict(owner, identity));
         // Native/unsupported isolated lifetimes retain an observation without
         // changing native controller ownership. Same task may reconnect; no
         // protected writer can reinterpret that observation as physical drain.
@@ -87,6 +144,14 @@ export function workspaceWriteOwnershipService(db: Db) {
         return { outcome: "claimed" as const, owner: owner! };
       });
     },
+    async observeService(input: { cwd: string; workspaceCwd: string; companyId: string; serviceId: string; serviceKey: string }) {
+      const actual = await physicalWorkspaceIdentity(input.cwd), source = await physicalWorkspaceIdentity(input.workspaceCwd);
+      if (!overlaps(source.root, actual.root)) throw new Error("workspace_write_service_cwd_outside_workspace: configure service cwd inside the selected workspace");
+      return db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${source.realm}, 0))`);
+        return observeServiceInTx(tx, { ...input, roots: [source, actual] });
+      });
+    },
     async beforeLaunch(handle: WorkspaceOwnerHandle) {
       const launchId = randomUUID();
       await transition(handle, "launch_reserved", owner => owner.state === "reserved" ? { state: "launching", launchId, launchIdentity: null, stopReceipt: null } : null);
@@ -100,7 +165,7 @@ export function workspaceWriteOwnershipService(db: Db) {
         const held = await tx.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.realm, roots[0]!.realm), isNull(workspaceWriteOwners.releasedAt))).for("update");
         const owner = held.find(row => row.id === handle.id && row.generation === handle.generation && row.companyId === handle.companyId && row.runId === handle.runId);
         if (!owner || owner.state !== "reserved") throw new Error("workspace_write_private_root_owner_unverified");
-        if (roots.some(root => held.some(row => row.resourceKey === root.resourceKey || overlaps(row.canonicalRoot, root.root) || overlaps(root.root, row.canonicalRoot)))) throw new Error("workspace_write_private_root_source_overlap");
+        if (roots.some(root => held.some(row => resourceConflict(row, root)))) throw new Error("workspace_write_private_root_source_overlap");
         await tx.update(workspaceWriteOwners).set({ history: [...owner.history, { event: "private_roots_reserved", roots, at: new Date().toISOString() }] }).where(selector(handle));
       });
     },

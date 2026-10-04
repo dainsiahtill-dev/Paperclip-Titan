@@ -24793,7 +24793,7 @@ export function heartbeatService(
                     },
                     onSpawn: async (meta) => {
                       markDispatchStarted();
-                      await persistRunProcessMetadata(run.id, {
+                      const boundProcess = await persistRunProcessMetadata(run.id, {
                         pid: meta.pid,
                         processGroupId:
                           "processGroupId" in meta &&
@@ -24803,6 +24803,12 @@ export function heartbeatService(
                         startedAt: meta.startedAt,
                         localProcess: executionTarget?.kind !== "remote",
                       });
+                      if (workspaceProcessGuard && (!boundProcess || boundProcess.id !== run.id
+                        || boundProcess.companyId !== agent.companyId || boundProcess.agentId !== agent.id
+                        || boundProcess.status !== "running" || boundProcess.processPid !== meta.pid
+                        || boundProcess.processGroupId !== meta.processGroupId || !boundProcess.processStartedAt)) {
+                        throw new Error("workspace_write_run_process_binding_missing");
+                      }
                     },
                     authToken: authToken ?? undefined,
                   });

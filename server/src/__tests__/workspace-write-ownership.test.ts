@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, workspaceWriteOwners, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { workspaceWriteOwnershipService } from "../services/workspace-write-ownership.js";
 import { runWorkspaceJobForControl } from "../services/workspace-runtime.js";
@@ -115,6 +115,23 @@ it("reserved private runtime roots cannot become another writer's source workspa
   await expect(service.reservePrivateRoots(owner, [second.cwd])).rejects.toThrow("private_root_source_overlap");
 });
 
+it("pre-PC06 board services block protected aliases while delayed descendants can still write", async () => {
+  const cwd = await fs.mkdtemp(path.join(root, "old-service-")), alias = `${cwd}-alias`;
+  await fs.symlink(cwd, alias);
+  const companyId = randomUUID(), serviceId = randomUUID(), service = workspaceWriteOwnershipService(db);
+  await db.insert(companies).values({ id: companyId, name: "Old service", issuePrefix: randomUUID().slice(0, 7) });
+  const child = spawn("/bin/sh", ["-c", "sleep 0.2; printf old-service > sentinel"], { cwd, stdio: "ignore" });
+  const drained = once(child, "close");
+  await db.insert(workspaceRuntimeServices).values({ id: serviceId, companyId, serviceName: "old-board-service", scopeType: "execution_workspace", lifecycle: "shared", status: "stopped", cwd, provider: "local_process", providerRef: String(child.pid), stoppedAt: new Date(0), startedByRunId: null });
+  try {
+    expect(await service.claim({ cwd: alias, companyId: randomUUID(), runId: randomUUID() })).toEqual({ outcome: "busy" });
+    await drained;
+    expect(await fs.readFile(path.join(cwd, "sentinel"), "utf8")).toBe("old-service");
+    expect(await service.claim({ cwd, companyId, runId: randomUUID() })).toEqual({ outcome: "busy" });
+    expect((await claimFixture()).owner.state).toBe("reserved");
+  } finally { await drained; await db.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, serviceId)); }
+});
+
 it("server death retains the owner until a restarted controller verifies the same namespace drain", async () => {
   const { cwd, service, owner } = await claimFixture();
   const launchId = await service.beforeLaunch(owner);
@@ -191,4 +208,14 @@ it("deleting run, issue, and company rows cannot cascade away an active physical
   expect(await fs.readFile(path.join(cwd, "effect"), "utf8")).toBe("retained");
   const durable = (await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, owner.id)))[0]!;
   expect(durable).toMatchObject({ companyId: owner.companyId, runId: owner.runId, issueId: owner.issueId, releasedAt: null });
+});
+
+it("retains an unverified historical service-root hold without inferring stop from logical status", async () => {
+  const cwd = await fs.mkdtemp(path.join(root, "unknown-old-service-")); const companyId = randomUUID(), serviceId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Unknown service root", issuePrefix: randomUUID().slice(0, 7) });
+  await db.insert(workspaceRuntimeServices).values({ id: serviceId, companyId, serviceName: "old", scopeType: "run", lifecycle: "shared", status: "stopped", cwd: null, provider: "local_process", providerRef: null, stoppedAt: new Date(0) });
+  const service = workspaceWriteOwnershipService(db);
+  expect(await service.claim({ cwd, companyId, runId: randomUUID() })).toEqual({ outcome: "busy" });
+  await db.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.id, serviceId));
+  expect(await service.claim({ cwd, companyId, runId: randomUUID() })).toEqual({ outcome: "busy" });
 });

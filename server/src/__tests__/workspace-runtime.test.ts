@@ -22,8 +22,10 @@ import {
   projects,
   workspaceOperations,
   workspaceRuntimeServices,
+  workspaceWriteOwners,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import { workspaceWriteOwnershipService } from "../services/workspace-write-ownership.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
@@ -6910,6 +6912,52 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       });
     });
   }
+
+  it.each(["absolute", "relative"] as const)("refuses %s service cwd outside workspace A before it can write protected B", async kind => {
+    const fixture = await createRuntimeFixture({ workspaceModes: ["isolated_workspace", "isolated_workspace"] });
+    const cleanupHome = await createRuntimeHome();
+    const [a, b] = fixture.workspaces;
+    const ownership = workspaceWriteOwnershipService(db);
+    const held = await ownership.claim({ cwd: b!.cwd, companyId: fixture.companyId, runId: randomUUID() });
+    expect(held.outcome).toBe("claimed");
+    const config = fixedPortRuntimeConfig(await findFreePort(), `${JSON.stringify(process.execPath)} -e ${JSON.stringify("require('node:fs').writeFileSync('outside-effect','unsafe')")}`);
+    Object.assign(config.workspaceRuntime.services[0]!, { cwd: kind === "absolute" ? b!.cwd : path.relative(a!.cwd, b!.cwd) });
+    try {
+      await expect(startRuntimeServicesForWorkspaceControl({ db, actor: fixture.actor, issue: null, workspace: fixture.realizedWorkspace(a!), executionWorkspaceId: a!.id, config, adapterEnv: {} })).rejects.toThrow("service_cwd_outside_workspace");
+      expect(await fs.readFile(path.join(b!.cwd, "outside-effect"), "utf8").catch(() => null)).toBeNull();
+    } finally {
+      if (held.outcome === "claimed") await ownership.releaseIfStopped(held.owner);
+      await resetRuntimeServicesForTests({ terminateProcesses: true }); await cleanupHome(); await fixture.cleanup();
+    }
+  });
+
+  it("protects a pre-PC06 Board service before first claim and records its healthy adoption without respawn", async () => {
+    const fixture = await createRuntimeFixture(); const cleanupHome = await createRuntimeHome(); const workspace = fixture.workspaces[0]!;
+    const script = "require('node:fs').appendFileSync('service-starts','started\\n'); require('node:http').createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')";
+    await fs.writeFile(path.join(workspace.cwd, "service-fixture.cjs"), script);
+    const config = fixedPortRuntimeConfig(await findFreePort(), "node service-fixture.cjs");
+    const request = { db, actor: fixture.actor, issue: null, workspace: fixture.realizedWorkspace(workspace), executionWorkspaceId: workspace.id, config, adapterEnv: {} };
+    try {
+      const [first] = await startRuntimeServicesForWorkspaceControl(request);
+      expect(first!.startedByRunId).toBeNull();
+      // The actual service survives. Removing only its private DB observation
+      // simulates a service predating PC06, without fabricating stop evidence.
+      await db.delete(workspaceWriteOwners);
+      const alias = `${workspace.cwd}-alias`; await fs.symlink(workspace.cwd, alias);
+      expect(await workspaceWriteOwnershipService(db).claim({ cwd: alias, companyId: randomUUID(), runId: randomUUID() })).toEqual({ outcome: "busy" });
+      await db.delete(workspaceWriteOwners);
+      await resetRuntimeServicesForTests({ simulateSupervisorExit: true });
+      expect(await reconcilePersistedRuntimeServicesOnStartup(db)).toMatchObject({ adopted: 1, stopped: 0 });
+      const [adopted] = await startRuntimeServicesForWorkspaceControl(request);
+      expect(adopted).toMatchObject({ reused: true, providerRef: first!.providerRef, port: first!.port });
+      expect(await fs.readFile(path.join(workspace.cwd, "service-starts"), "utf8")).toBe("started\n");
+      expect(await db.select().from(workspaceWriteOwners)).toEqual([expect.objectContaining({ state: "unprotected_service", releasedAt: null })]);
+      expect(await workspaceWriteOwnershipService(db).claim({ cwd: workspace.cwd, companyId: fixture.companyId, runId: randomUUID() })).toEqual({ outcome: "busy" });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: workspace.id, workspaceCwd: workspace.cwd }).catch(() => undefined);
+      await resetRuntimeServicesForTests({ terminateProcesses: true }); await cleanupHome(); await fixture.cleanup();
+    }
+  }, 15_000);
 
   function httpsRuntimeConfig(command: string) {
     return {
