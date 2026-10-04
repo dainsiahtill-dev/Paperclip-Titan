@@ -2745,7 +2745,10 @@ function nextProbeFileName() {
 // straight back out to a peer's very next create at the same path, so
 // (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
 // on every create, so a peer's replacement carries a different one even when
-// the inode number repeats. Node's filesystem API has no call that removes a
+// the inode number repeats. Coarse timestamps can also repeat on immediate
+// replacement: ctimeMs is additional evidence, while retaining the created
+// descriptor until cleanup prevents its unlinked inode from being reused.
+// Node's filesystem API has no call that removes a
 // path only when its identity still matches an earlier read as one atomic
 // step, so a gap remains between this wrapper's final identity read and the
 // removal call itself. A peer that wins this gap can put any entry at the
