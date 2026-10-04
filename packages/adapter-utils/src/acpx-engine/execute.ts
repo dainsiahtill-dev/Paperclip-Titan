@@ -4003,6 +4003,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let preserveInterruptedSession = false;
     const interruptionTools = new Map<string, { kind?: string; status?: string }>();
     let incompleteToolInventory = false;
+    let clearUsageObserver: (() => void) | undefined;
     try {
       await ctx.onCancellationReady?.();
       if (ctx.signal?.aborted) return {
@@ -4265,7 +4266,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           cwd: prepared.cwd,
           model: prepared.requestedModel || null,
         }, prepared.acpxAgent);
-        processIdentitySink.onUsageMessage = (direction, message) => usageAccounting?.observe(direction, message);
+        const ownedUsageObserver = (direction: string, message: unknown) => usageAccounting?.observe(direction, message);
+        processIdentitySink.onUsageMessage = ownedUsageObserver;
+        clearUsageObserver = () => {
+          if (processIdentitySink.onUsageMessage === ownedUsageObserver) processIdentitySink.onUsageMessage = undefined;
+        };
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
@@ -5033,7 +5038,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         });
         if (usageBaselineWitness && !await usageBaselineWitness.verify()) usageAccounting?.invalidate("baseline_generation_changed");
         usageAccounting?.certifyTerminal(terminal.status, terminal.status === "completed" ? terminal.stopReason : undefined);
-        const physicalUsage = usageAccounting?.result();
+        let physicalUsage = usageAccounting?.result();
         const finalObservedUsage = physicalUsage?.usageAccounting.observedUsage as UsageSummary | undefined;
         if (ctx.onUsage && physicalUsage?.usageAccounting.bindingVerified && physicalUsage.usageAccounting.baselineVerified && finalObservedUsage?.totalTokens !== undefined && (finalObservedUsage.totalTokens > reportedUsageTotal || physicalUsage.usageAccounting.completeness !== reportedUsageCompleteness)) {
           reportedUsageTotal = finalObservedUsage.totalTokens;
@@ -5097,6 +5102,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stopReason: terminalStopReason,
           message: errorMessage,
         });
+        // The awaited usage/log callbacks can admit additional scoped frames.
+        // Their counters remain evidence even when the earlier reply no longer
+        // certifies the newer value. Never serialize the pre-callback snapshot.
+        physicalUsage = usageAccounting?.result();
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status. A
         // completed terminal with a lost duplex channel keeps the flag set.
@@ -5290,6 +5299,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       } finally {
         // Retain the original inode through final verification; closing before
         // the prompt settles would permit inode-generation reuse.
+        if (usageBaselineWitness && !await usageBaselineWitness.verify()) usageAccounting?.invalidate("baseline_generation_changed");
         await usageBaselineWitness?.close().catch(() => {});
         usageBaselineWitness = null;
         // End the agent turn span exactly once, on every return and on a throw.
@@ -5528,6 +5538,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               } },
             };
           }
+          // Settlement closes/drains the owned runtime after turn callbacks and
+          // phase logging. Take the final collector view without another await:
+          // a later counter must remove any earlier authoritative usage fields.
+          const settledUsage = usageAccounting?.result();
+          if (settledUsage) {
+            const { usage: _earlierUsage, usageBasis: _earlierBasis, ...withoutEarlierUsage } = capturedResult;
+            capturedResult = {
+              ...withoutEarlierUsage,
+              ...(settledUsage.usage ? { usage: settledUsage.usage, usageBasis: "per_run" as const } : {}),
+              resultJson: {
+                ...capturedResult.resultJson,
+                usageUnknown: settledUsage.usageUnknown,
+                usageAccounting: settledUsage.usageAccounting,
+              },
+            };
+          }
           // The sync-back settlement step runs before this reproduces the result
           // (settlement precedes reproduction), so a failed workspace restore is
           // already recorded by the time we get here. Merge it into `resultJson`
@@ -5546,6 +5572,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       return await runAttempt(plan);
     } finally {
+      // A persistent runtime's options delegate through this mutable sink. Do
+      // not retain a settled run's collector or clear a successor's observer.
+      clearUsageObserver?.();
       clearTimeout(stopTimer);
       removeStopListener?.();
       removeLossListener?.();

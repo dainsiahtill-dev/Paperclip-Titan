@@ -26,12 +26,59 @@ it("attributes two physical 80-token requests to one 160-token logical prompt ov
   expect(result.resultJson).toMatchObject({ usageUnknown: false, usageAccounting: { version: 1, source: "codex_session_cumulative_delta", completeness: "complete", bindingVerified: true, baselineVerified: true } });
 });
 
-async function runFixture(input: { root?: string; runId?: string; runtime?: Record<string, unknown>; omitModel?: boolean; env?: Record<string, string>; onUsage?: (observation: any) => Promise<void>; signal?: AbortSignal; onSpawn?: (meta: any) => Promise<void> }) {
+async function runFixture(input: { root?: string; runId?: string; runtime?: Record<string, unknown>; omitModel?: boolean; env?: Record<string, string>; onUsage?: (observation: any) => Promise<void>; onLog?: (stream: string, chunk: string) => Promise<void>; onSteeringReady?: (delivery: unknown) => Promise<void>; signal?: AbortSignal; onSpawn?: (meta: any) => Promise<void> }) {
   const root = input.root ?? await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acp-physical-stream-"));
   if (!input.root) roots.push(root);
   const fixture = fileURLToPath(new URL("./.test-fixtures/physical-usage-agent.mjs", import.meta.url));
-  return createAcpxEngineExecutor()({ runId: input.runId ?? "677a8d74-451c-4a2c-b2b8-51e4eea8beaf", agent: { id: "eaf0c4c8-290b-4739-a6a0-7ce276378472", companyId: "f35fbb9a-76d1-45db-a095-f867475c3bf0", adapterType: "codex_local" }, runtime: input.runtime ?? {}, config: { agent: "codex", agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`, cwd: root, ...(input.omitModel ? {} : { model: "gpt-6.1-sol" }), stateDir: path.join(root, "state"), env: { CODEX_HOME: path.join(root, "codex-home"), ...input.env } }, context: { issueId: "e6597c9f-e154-49b6-a09f-64f3c7a00617", taskId: "e6597c9f-e154-49b6-a09f-64f3c7a00617" }, onLog: async () => {}, ...(input.signal ? { signal: input.signal } : {}), onUsage: input.onUsage, onSpawn: input.onSpawn } as never);
+  return createAcpxEngineExecutor()({ runId: input.runId ?? "677a8d74-451c-4a2c-b2b8-51e4eea8beaf", agent: { id: "eaf0c4c8-290b-4739-a6a0-7ce276378472", companyId: "f35fbb9a-76d1-45db-a095-f867475c3bf0", adapterType: "codex_local" }, runtime: input.runtime ?? {}, config: { agent: "codex", agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`, cwd: root, ...(input.omitModel ? {} : { model: "gpt-6.1-sol" }), stateDir: path.join(root, "state"), env: { CODEX_HOME: path.join(root, "codex-home"), ...input.env } }, context: { issueId: "e6597c9f-e154-49b6-a09f-64f3c7a00617", taskId: "e6597c9f-e154-49b6-a09f-64f3c7a00617" }, onLog: input.onLog ?? (async () => {}), ...(input.signal ? { signal: input.signal } : {}), onUsage: input.onUsage, onSpawn: input.onSpawn, onSteeringReady: input.onSteeringReady } as never);
 }
+
+it.each(["usage", "log", "cleanup"])("retains late scoped counters emitted during the final %s callback", async (callback) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acp-late-callback-")); roots.push(root);
+  await fs.writeFile(path.join(root, "fixture-provider-fault.json"), JSON.stringify("late_callback"));
+  let completeCallbacks = 0;
+  const permitLateCounter = async () => {
+    await fs.writeFile(path.join(root, "request-late-counter.json"), "1");
+    const until = Date.now() + 500;
+    while (Date.now() < until) {
+      if (await fs.readFile(path.join(root, "late-counter-240.json"), "utf8").catch(() => "") === "240") break;
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    expect(await fs.readFile(path.join(root, "late-counter-240.json"), "utf8")).toBe("240");
+    // The peer wrote the frame before its marker; let real stdio deliver it
+    // while the engine is still awaiting the final callback.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  };
+  const result = await runFixture({ root,
+    onUsage: async (observation) => {
+      if (observation.usageAccounting.completeness !== "complete") return;
+      completeCallbacks++;
+      if (callback === "usage") await permitLateCounter();
+    },
+    onLog: async (_stream, chunk) => {
+      if (callback === "log" && chunk.includes('"type":"acpx.result"')) await permitLateCounter();
+    },
+    onSteeringReady: async (delivery) => {
+      if (callback === "cleanup" && delivery === null) await permitLateCounter();
+    },
+  });
+  expect(completeCallbacks).toBe(1);
+  expect(result.errorMessage).toBeNull();
+  expect(result.usage).toBeUndefined();
+  expect(result.usageBasis).toBeUndefined();
+  expect(result.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { observedUsage: { totalTokens: 240 }, completeness: "partial", completionNote: "counter_after_typed_reply" } });
+});
+
+it("keeps a complete 160-token result and one final callback when no later counter arrives", async () => {
+  const complete: number[] = [];
+  const result = await runFixture({ onUsage: async (observation) => {
+    if (observation.usageAccounting.completeness === "complete") complete.push(observation.observedTotalTokens);
+  } });
+  expect(complete).toEqual([160]);
+  expect(result.usage?.totalTokens).toBe(160);
+  expect(result.usageBasis).toBe("per_run");
+  expect(result.resultJson?.usageUnknown).toBe(false);
+});
 
 it("persists an actual 160-token lower bound before stopping at cap150 and keeps incomplete usage unknown", async () => {
   const control = new AbortController();
@@ -110,6 +157,20 @@ it.each(["abort", "throw", "replace"])("verifies and finally closes the held bas
   expect(resumed.usage).toBeUndefined();
   expect(resumed.resultJson?.usageUnknown).toBe(true);
   if (kind === "replace") expect(resumed.resultJson).toMatchObject({ usageAccounting: { invalidReason: "baseline_generation_changed" } });
+});
+
+it("rechecks the held baseline after an awaited final usage callback", async () => {
+  const { root, file, first } = await prepareRealResume();
+  let replaced = false;
+  const resumed = await runFixture({ root, runId: "99bd73b6-7d8f-4e6c-aa31-cc978d7ee4a8", runtime: { sessionParams: first.sessionParams }, onUsage: async (observation) => {
+    if (observation.usageAccounting.completeness !== "complete") return;
+    const bytes = await fs.readFile(file); await fs.unlink(file); await fs.writeFile(file, bytes);
+    replaced = true;
+  } });
+  expect(replaced).toBe(true);
+  expect(await openRolloutDescriptors(root)).toBe(0);
+  expect(resumed.usage).toBeUndefined();
+  expect(resumed.resultJson).toMatchObject({ usageUnknown: true, usageAccounting: { invalidReason: "baseline_generation_changed" } });
 });
 
 it.each(["PHYSICAL_USAGE_WRONG_SESSION", "PHYSICAL_USAGE_WRONG_MODEL", "PHYSICAL_USAGE_WINDOW_ONLY"])("never trusts %s as a per-run lower bound", async (kind) => {

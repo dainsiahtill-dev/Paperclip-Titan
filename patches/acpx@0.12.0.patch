@@ -60,7 +60,19 @@ index 243c9d13b..8017967d3 100644
  	};
  }
  function isDevinRequestDiagnosticsMethod(method) {
-@@ -3957,9 +3960,26 @@ var AcpClient = class {
+@@ -3919,7 +3922,10 @@ var AcpClient = class {
+ 		this.eventHandlers = { ...handlers };
+ 	}
+ 	clearEventHandlers() {
+-		this.eventHandlers = {};
++		// Retain only the current raw observer through runtime settlement.
++		// Output/permission handlers still end at the prompt reply boundary.
++		const onAcpMessage = this.eventHandlers.onAcpMessage;
++		this.eventHandlers = onAcpMessage ? { onAcpMessage } : {};
+ 	}
+ 	updateRuntimeOptions(options) {
+ 		const shouldRefreshPermissionPolicy = options.permissionMode !== void 0 || options.nonInteractivePermissions !== void 0;
+@@ -3957,9 +3963,26 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -96,7 +108,7 @@ index 243c9d13b..8017967d3 100644
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4389,6 +4409,19 @@ var AcpClient = class {
+@@ -4389,6 +4412,19 @@ var AcpClient = class {
  		await this.cancel(active.sessionId);
  		return true;
  	}

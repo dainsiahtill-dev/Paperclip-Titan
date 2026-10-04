@@ -61,6 +61,14 @@ input.on("line", (line) => {
     if (process.env.PHYSICAL_USAGE_WRONG_SESSION === "1") result._meta.paperclipUsage.sessionId = "unrelated-provider-session";
     if (process.env.PHYSICAL_USAGE_WRONG_MODEL === "1") result._meta.paperclipUsage.scope.model = "foreign-model";
     if (process.env.PHYSICAL_USAGE_WINDOW_ONLY === "1") delete result._meta;
+    if (fault === "late_callback") {
+      const lateTimer = setInterval(() => {
+        if (!fs.existsSync(path.join(cwd, "request-late-counter.json"))) return;
+        clearInterval(lateTimer);
+        send(baseline + 240);
+        fs.writeFileSync(path.join(cwd, "late-counter-240.json"), "240");
+      }, 1);
+    }
   } else if (request.method === "session/cancel" && pendingPrompt) {
     write({ id: pendingPrompt.id, result: { stopReason: "cancelled", _meta: { paperclipUsage: usage(pendingBaseline + 160) } } });
     pendingPrompt = null;

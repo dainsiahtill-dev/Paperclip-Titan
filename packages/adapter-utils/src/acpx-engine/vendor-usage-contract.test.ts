@@ -1,7 +1,43 @@
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { expect, it } from "vitest";
+
+it("the installed raw tap follows the current observer through handler cleanup and detaches after settlement", async () => {
+  const require = createRequire(import.meta.url);
+  const runtimeDir = path.dirname(require.resolve("acpx/runtime"));
+  const installed = path.join(runtimeDir, fs.readdirSync(runtimeDir).find((name) => /^live-checkpoint-.*\.js$/.test(name))!);
+  const { k: AcpClient } = await import(pathToFileURL(installed).href);
+  const effects: string[] = [];
+  const sink: { current?: (direction: string, message: any) => void } = { current: (_direction, message) => effects.push(`first:${message.id}`) };
+  const client = Object.create(AcpClient.prototype);
+  client.options = { onAcpMessage: (_direction: string, message: any) => effects.push(`wrong-initial:${message.id}`) };
+  client.eventHandlers = {};
+  client.suppressReplaySessionUpdateMessages = false;
+  let feed!: ReadableStreamDefaultController;
+  const tapped = client.createTappedStream({ readable: new ReadableStream({ start(controller) { feed = controller; } }), writable: new WritableStream() });
+  const reader = tapped.readable.getReader();
+  const send = async (id: number) => { feed.enqueue({ jsonrpc: "2.0", id, result: {} }); await reader.read(); };
+  try {
+    client.setEventHandlers({ onAcpMessage: (direction: string, message: any) => sink.current?.(direction, message) });
+    await send(1);
+    client.clearEventHandlers();
+    await send(2);
+    sink.current = (_direction, message) => effects.push(`successor:${message.id}`);
+    client.setEventHandlers({ onAcpMessage: (direction: string, message: any) => sink.current?.(direction, message) });
+    await send(3);
+    client.clearEventHandlers();
+    await send(4);
+    client.clearEventHandlers();
+    sink.current = undefined;
+    await send(5);
+    expect(effects).toEqual(["first:1", "first:2", "successor:3", "successor:4"]);
+  } finally {
+    feed.close(); await reader.read(); reader.releaseLock();
+  }
+});
 
 it("the shipped Codex ACP producer preserves inclusive physical counters and actual session/scope identities", () => {
   const patch = fs.readFileSync(fileURLToPath(new URL("../../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch", import.meta.url)), "utf8");
