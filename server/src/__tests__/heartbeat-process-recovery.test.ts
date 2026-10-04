@@ -2926,7 +2926,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await Promise.all(logs);
         return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, provider: "test", model: "test-model", summary: "Qualified lowerbound token stop",
           usage: { inputTokens: 80, cachedInputTokens: 40, outputTokens: 40, totalTokens: finalEvidence === "partial" ? 160 : 80 }, usageBasis: "per_run",
-          sessionId, sessionDisplayId: sessionId, sessionParams: { sessionId }, resultJson: { usageUnknown: finalEvidence === "partial", usageAccounting: { ...accounting, completeness: finalEvidence === "partial" ? "partial" : "complete" } } };
+          sessionId, sessionDisplayId: sessionId, sessionParams: { sessionId }, resultJson: { usageUnknown: finalEvidence === "partial", usageAccounting: { ...accounting, boundary: "typed_prompt_reply", completeness: finalEvidence === "partial" ? "partial" : "complete" } } };
       } finally {
         ctx.signal?.removeEventListener("abort", abort);
         child.kill("SIGKILL");
@@ -2953,7 +2953,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(ledger[0]?.totalTokens).toBeNull();
   });
 
-  it.each(["complete", "partial", "missing", "unproven numeric", "foreign controller"] as const)(
+  it.each(["complete", "partial", "missing", "unproven numeric", "foreign controller", "foreign producer", "missing baseline", "static flags", "Claude prompt reset"] as const)(
     "retains graceful ACP late settlement once with %s usage evidence",
     async (evidence) => {
       let reportReady!: () => void;
@@ -2963,6 +2963,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       let releaseResult!: () => void;
       const resultRelease = new Promise<void>((resolve) => { releaseResult = resolve; });
       const sessionId = randomUUID();
+      const usesClaudeProof = evidence === "foreign producer" || evidence === "Claude prompt reset";
       const foreignControllerId = randomUUID();
       const ownedProcess: { child?: ChildProcess } = {};
       mockAdapterExecute.mockImplementationOnce((async (raw: unknown): Promise<AdapterExecutionResult> => {
@@ -2999,12 +3000,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           ...(evidence !== "missing" ? { usage: { inputTokens: 120, cachedInputTokens: 100, outputTokens: 30, totalTokens: 250 }, usageBasis: "per_run" as const } : {}),
           resultJson: {
             usageUnknown: evidence === "partial" || evidence === "missing",
-            ...(evidence !== "unproven numeric" ? { usageAccounting: { version: 1, source: "codex_session_cumulative_delta", completeness: evidence === "partial" ? "partial" : evidence === "missing" ? "unknown" : "complete",
-              runId: ctx.runId, sessionId, scopeHash: "c".repeat(64), bindingVerified: true, baselineVerified: true } } : {}),
+            ...(evidence !== "unproven numeric" ? { usageAccounting: { version: 1, source: usesClaudeProof ? "claude_prompt_usage" : "codex_session_cumulative_delta", completeness: evidence === "partial" ? "partial" : evidence === "missing" ? "unknown" : "complete",
+              runId: ctx.runId, sessionId, scopeHash: "c".repeat(64), bindingVerified: true,
+              baselineVerified: evidence !== "missing baseline" && !usesClaudeProof,
+              ...(usesClaudeProof ? { baselineSource: "producer_prompt_usage_reset" } : {}),
+              ...(evidence !== "static flags" ? { boundary: "typed_prompt_reply" } : {}),
+            } } : {}),
           },
         };
       }) as typeof mockAdapterExecute);
-      const { companyId, agentId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "queued" });
+      const { companyId, agentId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "queued", adapterType: evidence === "Claude prompt reset" ? "claude_local" : "codex_local" });
       await db.update(agents).set({ adapterConfig: { engine: "acp" } }).where(eq(agents.id, agentId));
       await db.update(issues).set({ executionPolicy: { resourceLimits: { maxTokensPerIssue: 1_500_000, maxTokensPerRun: 250_000 } } }).where(eq(issues.id, issueId));
       const heartbeat = heartbeatService(db);
@@ -3039,7 +3044,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           expect(settled?.stdoutExcerpt).toContain("fake ACP closed");
           expect(settled?.logSha256).toMatch(/^[0-9a-f]{64}$/);
           expect(settled?.capacityReleasedAt).toBeTruthy();
-          if (evidence === "complete") {
+          if (evidence === "complete" || evidence === "Claude prompt reset") {
             expect(settled?.usageJson).toMatchObject({ inputTokens: 120, cachedInputTokens: 100, outputTokens: 30, totalTokens: 250 });
             expect(ledger).toHaveLength(1);
             expect(ledger[0]).toMatchObject({ totalTokens: 250, inputTokens: 120, cachedInputTokens: 100, outputTokens: 30 });

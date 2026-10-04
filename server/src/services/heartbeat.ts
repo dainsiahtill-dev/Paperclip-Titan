@@ -25068,18 +25068,20 @@ export function heartbeatService(
         const streamScope = parseObject(latestRun?.runnerProfileJson?.legacyUsageScope);
         const requiresAcpUsageProof = run.runtimeMode === "legacy" && ["codex_local", "claude_local"].includes(agent.adapterType) &&
           (runtimeConfig.engine === "acp" || parseObject(adapterResult.sessionParams).engine === "acp");
+        const finalUsageProducerMatches =
+          (usageAccounting.source === "codex_session_cumulative_delta" && agent.adapterType === "codex_local" && usageAccounting.baselineVerified === true) ||
+          (usageAccounting.source === "claude_prompt_usage" && agent.adapterType === "claude_local" && usageAccounting.baselineSource === "producer_prompt_usage_reset");
         const usageUnknown = adapterResult.resultJson?.usageUnknown === true ||
           (requiresAcpUsageProof && usageAccounting.version !== 1) ||
           (usageAccounting.version === 1 && (
             usageAccounting.completeness !== "complete" || usageAccounting.bindingVerified !== true ||
             usageAccounting.runId !== run.id ||
-            !["codex_session_cumulative_delta", "claude_prompt_usage"].includes(String(usageAccounting.source)) ||
+            !finalUsageProducerMatches || adapterResult.usageBasis !== "per_run" || usageAccounting.boundary !== "typed_prompt_reply" ||
             typeof usageAccounting.sessionId !== "string" || !usageAccounting.sessionId.trim() ||
             typeof usageAccounting.scopeHash !== "string" || !/^[0-9a-f]{64}$/.test(usageAccounting.scopeHash) ||
             rawUsage?.totalTokens === undefined ||
             (observedLegacyUsage !== null && (rawUsage?.totalTokens ?? -1) < observedLegacyUsage.observedTotalTokens) ||
-            (streamScope.version === 1 && !legacyUsageScopeMatches(streamScope, usageAccounting)) ||
-            (usageAccounting.source === "codex_session_cumulative_delta" && usageAccounting.baselineVerified !== true)
+            (streamScope.version === 1 && !legacyUsageScopeMatches(streamScope, usageAccounting))
           ));
         const accountableUsage = usageUnknown && rawUsage
           ? { ...rawUsage, totalTokens: undefined } : rawUsage;

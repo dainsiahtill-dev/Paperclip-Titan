@@ -56,3 +56,26 @@ lock hashes. Root owns the regenerated combined lock, active ancestor aggregatio
 barrel export, final integrated verification and real-provider qualification.
 The fake child does not certify the actual interrupted DEL4 accounting, billing
 or safe historical replay; the original failed attempt remains preserved.
+
+## Independent final-producer boundary correction
+
+The independent reviewer reproduced an actual fake-child/Postgres service boundary
+failure: Codex accepted a foreign Claude producer envelope as total250, wrote a
+known ledger event and cleared the unknown usage hold. This did not establish that
+the bundled collector emitted that envelope. Owned RED cases confirmed a fully
+shaped foreign prompt-reset proof and static flags without a typed prompt boundary
+were accepted; missing Codex baseline remained held, and genuine Claude reset
+usage passed. Final acceptance now requires the source/actual-adapter pair,
+per_run basis and typed_prompt_reply boundary. Codex cumulative deltas require a
+verified baseline. Claude uses its producer_prompt_usage_reset capability without
+fabricating a session cumulative baseline. Scope/highwater and unknown controls
+remain enforced, and the original shutdown outcome remains unchanged.
+
+Fresh paired gates after ba5 frozen patch installation and ACP1136 edge correction:
+offline frozen ignore-scripts install exit0 (2.7s, resolution skipped); 11 active
+child/Postgres cases GREEN in40.00s; four installed SDK/accounting smoke files
+28/28 GREEN in10.64s; scoped prepared server typecheck exit0. Owners closed and
+diff check passed. These replace the earlier pending installed-SDK smoke note.
+No cap, application/default state, provider request or original DEL4 accounting
+record was changed. Root owns the final integrated source freeze and real-provider
+qualification.
