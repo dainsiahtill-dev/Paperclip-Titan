@@ -31,4 +31,18 @@ The eight suites are `AgentToolsTab`, `SidebarAgents`, `Sidebar`, `liveIssueIds`
 
 ## Remaining integration evidence
 
-The parent must rerun the full UI/CLI suite after merging these test-only changes. This worker did not rerun all 612 files, a production build, or desktop/mobile browser acceptance. This checkpoint establishes fixture correctness and the owned focused gate; it does not establish whole-application delivery.
+At the first checkpoint, the parent still needed to rerun the full UI/CLI suite after merging the eight-file patch. This worker had not run the broad suite, a production build, or desktop/mobile browser acceptance at that checkpoint. The subsequent broad evidence below replaces that pending test result; it does not establish whole-application delivery.
+
+## CompanySettings follow-up
+
+After integrating the first checkpoint, the parent reran all 612 UI/CLI files: the original owned failures closed, while CompanySettings exposed three form-navigation assertion failures and six unhandled scheduler/query callbacks accessing `window` after environment teardown. Its module import was already static. Its custom `act` merely ran `flushSync`; it did not use React's `act` to flush concurrent navigation. Each root was a test-local variable unmounted only after all assertions succeeded, so failed assertions skipped unmount while `afterEach` removed the DOM. Query clients were never cleared.
+
+The unmodified four-test cold baseline passed in 4.74 seconds; the broad failure remains the RED evidence. The approved fixture fix uses React `act`, owns the root and QueryClient in `beforeEach`, and unconditionally unmounts and clears them in `afterEach` before removing the DOM. All four test names, API mocks, exact Sandbox/SSH ordering, Local edit selection, provider-config preservation assertions, polling count, and default timeouts remain unchanged. Production code was not edited.
+
+Fixed narrow gate: 4/4 passed in 5.05 seconds, no unhandled errors. `/tmp/paperclip-ui-companysettings-green-20261004.log`. The follow-up branch is `fix/delivery-ui-companysettings-20261004`, based on the exact combined Root commit `5626fc93e20d2f75528fad0c59bd4c664121abab`; UI/CLI tracked sources matched the first worker checkpoint. The full UI/CLI source-only verification runs `pnpm exec vitest run --exclude '**/dist/**' --maxWorkers=4 ui/src cli/src` with isolated home/config/instance ID and external database/provider variables unset. Its log is `/tmp/paperclip-ui-cli-companysettings-full-20261004.log`.
+
+Full result on Node 24.13.0: **673 files / 6,879 tests** in **425.32 seconds**, **zero unhandled errors**. All **611 UI files / 6,394 UI tests passed**. Three assertions failed in two CLI files (`doctor`, `install-store`); consequently this run does not establish a green full CLI suite. Exact project metadata discovery with `--project @paperclipai/ui --project paperclipai --json` confirms UI 611/6,394 and CLI 62/485. The parent's earlier 612/6,400 selection was incomplete CLI coverage.
+
+Read-only boundary probes preserve all CLI source and assertions: the intended Node 24.21.0 passes all 13 install-store tests without edits; doctor remains failing because the ambient user-home managed shim is found while the isolated Paperclip home lacks its manifest. The unchanged doctor test passes 1/1 with a fresh HOME applied only to that child process (6.24 seconds). Logs: `/tmp/paperclip-cli-boundary-2421-20261004.log` and `/tmp/paperclip-cli-doctor-isolated-home-20261004.log`. The fixture's explicit install-store home/path seam and the full 485-test CLI gate are a separate approved follow-up.
+
+CompanySettings follow-up UI typecheck, token gates, and `git diff --check` all exit 0. No production build/browser check was repeated by this worker.
