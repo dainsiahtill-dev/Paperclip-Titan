@@ -1,0 +1,9 @@
+# Legacy usage checkpoints and scoped ledger reconciliation — 2026-10-04
+
+Legacy streaming observations are lower bounds until a qualified final report settles. Admission now reads their dedicated server checkpoint without borrowing native execution or effect authority. The checkpoint must match the stored company, agent, run, controller boot, supported provider source and immutable session/scope pin; bindings, baseline, safe integer count and observation time must be valid. Invalid or incomplete checkpoints remain unknown.
+
+Ancestor usage includes the verified highwater above the same scoped cost ledger exactly once. Partial numeric totals cannot clear uncertainty. A completed authoritative total must be explicit, known and at least the observed highwater. Foreign pins and incomplete reports remain held under the existing token policy.
+
+A new exact-count PostgreSQL control also exposed a preexisting correlated-query bug. Drizzle strips column qualifiers in single-table projections, turning an outer run ID reference into the inner cost row's ID. Ledger100 plus reported1000 became1100. Both subtraction and missing-usage checks now keep explicit outer heartbeat_runs identifiers. Independent extraction of the actual rendered query reproduced remainder1000 before the fix and900 after it on identical data.
+
+Verification: fifteen new provenance controls plus four deadline/resource controls passed19/19. The first legacy PostgreSQL sweep reproduced two failures; the complete resource admission, provenance and budget suites then passed56/56 in43.61s. Direct server typecheck passed. Independent real PostgreSQL verification separately confirmed the identifier form and unchanged limits. No live usage, queue, provider, application, default database or resource cap was changed by these checks. Heartbeat/ACP integration and the original project's recovery remain separate required gates.

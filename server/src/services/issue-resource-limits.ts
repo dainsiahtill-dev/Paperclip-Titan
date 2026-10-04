@@ -96,6 +96,11 @@ export async function getIssueResourceBlock(db: Db, input: {
     const ids = sql`(${subtree(input.companyId, policy.issueId)})`;
     const runIssue = sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`;
     const runIds = sql`(select id::text from ${ids} resource_run_scope)`;
+    // Drizzle removes Column qualifiers in a single-table select list. A
+    // correlated inner ledger query must keep these explicit outer identities.
+    const outerRunId = sql`${sql.identifier("heartbeat_runs")}.${sql.identifier("id")}`;
+    const outerCompanyId = sql`${sql.identifier("heartbeat_runs")}.${sql.identifier("company_id")}`;
+    const hasLegacyCheckpoint = sql`(${heartbeatRuns.runtimeMode} = 'legacy' and jsonb_typeof(${heartbeatRuns.resultJson}->'legacyUsageCheckpoint') is not null)`;
     const [tokens] = policy.limits.maxTokensPerIssue ? await db.select({
       totalTokens: sql<number>`coalesce(sum(${costEvents.totalTokens}), 0)::double precision`,
       unknownUsageCount: sql<number>`count(*) filter (where ${costEvents.totalTokens} is null)::int`,
@@ -104,20 +109,44 @@ export async function getIssueResourceBlock(db: Db, input: {
       totalTokens: sql<number>`coalesce(sum(case when jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') = 'number'
         then greatest(0, (${heartbeatRuns.usageJson}->>'totalTokens')::numeric - coalesce((
           select sum(recorded.total_tokens) from cost_events recorded
-          where recorded.company_id = ${heartbeatRuns.companyId} and recorded.heartbeat_run_id = ${heartbeatRuns.id}
+          where recorded.company_id = ${outerCompanyId} and recorded.heartbeat_run_id = ${outerRunId}
             and recorded.issue_id in ${ids}
         ), 0)) else 0 end), 0)::double precision`,
       unknownUsageCount: sql<number>`count(*) filter (where jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') is distinct from 'number'
         and ((${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1'
-          or not exists (select 1 from cost_events recorded where recorded.company_id = ${heartbeatRuns.companyId}
-            and recorded.heartbeat_run_id = ${heartbeatRuns.id} and recorded.issue_id in ${ids}
+          or not exists (select 1 from cost_events recorded where recorded.company_id = ${outerCompanyId}
+            and recorded.heartbeat_run_id = ${outerRunId} and recorded.issue_id in ${ids}
             and recorded.total_tokens is not null)))::int`,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds),
       isNotNull(heartbeatRuns.startedAt),
+      sql`not ${hasLegacyCheckpoint}`,
       sql`(${heartbeatRuns.finishedAt} is not null or (${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1')`,
       sql`((${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted') is distinct from 'false'
         or (${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1')`,
     )) : [{ totalTokens: 0, unknownUsageCount: 0 }];
+    const legacyRows = policy.limits.maxTokensPerIssue ? await db.select({
+      id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      controllerBootId: heartbeatRuns.controllerBootId, runtimeMode: heartbeatRuns.runtimeMode,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson, resultJson: heartbeatRuns.resultJson, usageJson: heartbeatRuns.usageJson,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds),
+      isNotNull(heartbeatRuns.startedAt), hasLegacyCheckpoint)) : [];
+    const legacyLedger = legacyRows.length ? await db.select({ runId: costEvents.heartbeatRunId,
+      total: sql<number>`coalesce(sum(${costEvents.totalTokens}), 0)::double precision`,
+    }).from(costEvents).where(and(eq(costEvents.companyId, input.companyId), inArray(costEvents.issueId, ids),
+      inArray(costEvents.heartbeatRunId, legacyRows.map(row => row.id)))).groupBy(costEvents.heartbeatRunId) : [];
+    const legacyRecorded = new Map(legacyLedger.map(row => [row.runId, Number(row.total)]));
+    let legacyTotal = 0, legacyUnknown = 0;
+    for (const row of legacyRows) {
+      const checkpoint = readTrustedLegacyUsageCheckpoint(row);
+      if (!checkpoint) { legacyUnknown += 1; continue; }
+      const usage = object(row.usageJson);
+      const total = typeof usage.totalTokens === "number" && Number.isSafeInteger(usage.totalTokens) && usage.totalTokens >= checkpoint.observedTotalTokens
+        && usage.usageUnknown === false ? usage.totalTokens : null;
+      // Count the highwater above the same scoped ledger only once. Partial
+      // observations never erase their uncertainty or borrow native authority.
+      legacyTotal += Math.max(0, Math.max(total ?? 0, checkpoint.observedTotalTokens) - (legacyRecorded.get(row.id) ?? 0));
+      if (total === null) legacyUnknown += 1;
+    }
     const [runs] = policy.limits.maxAutomaticRuns ? await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.startedAt),
         // A caller-supplied manual label is not authority. Only an original
@@ -163,8 +192,8 @@ export async function getIssueResourceBlock(db: Db, input: {
         && Number.isFinite(Date.parse(monitor.nextCheckAt))
         && ((typeof monitorPolicy.timeoutAt === "string" && Date.parse(monitorPolicy.timeoutAt) > Date.now())
           || (typeof monitorPolicy.maxAttempts === "number" && monitorPolicy.maxAttempts > Number(monitor.attemptCount ?? 0))));
-    const decision = evaluateIssueResourceLimits(policy.limits, { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0),
-      unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0), automaticRuns: Number(runs?.count ?? 0),
+    const decision = evaluateIssueResourceLimits(policy.limits, { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0) + legacyTotal,
+      unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0) + legacyUnknown, automaticRuns: Number(runs?.count ?? 0),
       noProgressRuns, boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 });
     if (decision.blocked) return { ...decision, resourceIssueId: policy.issueId, title: policy.title };
   }

@@ -132,6 +132,68 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
   });
 
+  function legacyCheckpoint(s: Awaited<ReturnType<typeof seed>>, id: string, boot: string) {
+    const scope = { version: 1, source: "codex_session_cumulative_delta", sessionId: "fixture-session", scopeHash: "a".repeat(64) };
+    return { runnerProfileJson: { legacyUsageScope: scope }, resultJson: { legacyUsageCheckpoint: {
+      ...scope, companyId: s.companyId, agentId: s.agentId, runId: id, controllerBootId: boot, adapterType: "codex_local",
+      bindingVerified: true, baselineVerified: true, observedTotalTokens: 1000, usageUnknown: true, observedAt: new Date().toISOString(),
+    } } };
+  }
+
+  it("keeps active legacy reported usage unknown despite a partial known ledger row", async () => {
+    const s = await seed({ maxTokensPerIssue: 1000 });
+    const id = randomUUID(), boot = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId: s.companyId, agentId: s.agentId,
+      controllerBootId: boot, runtimeMode: "legacy", invocationSource: "automation", status: "running", startedAt: new Date(), contextSnapshot: { issueId: s.childId },
+      usageJson: { observedTotalTokens: 1000, usageUnknown: true }, ...legacyCheckpoint(s, id, boot),
+    });
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 100, outputTokens: 0, totalTokens: 100, occurredAt: new Date() });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown", resourceIssueId: s.rootId });
+  });
+
+  it("retains legacy lower bounds while reconciling completed ledger attribution exactly once", async () => {
+    const s = await seed({ maxTokensPerIssue: 1100 });
+    const id = randomUUID(), boot = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId: s.companyId, agentId: s.agentId,
+      controllerBootId: boot, runtimeMode: "legacy", invocationSource: "automation", status: "succeeded", startedAt: new Date(Date.now() - 1000), finishedAt: new Date(), contextSnapshot: { issueId: s.childId },
+      usageJson: { totalTokens: 1000, observedTotalTokens: 1000, usageUnknown: false }, ...legacyCheckpoint(s, id, boot),
+    });
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 100, outputTokens: 0, totalTokens: 100, occurredAt: new Date() });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true, resourceLimits: { maxTokensPerIssue: 1000 } } }).where(eq(issues.id, s.rootId));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
+
+  it("does not accept a foreign legacy pin or a partial numeric total as complete usage", async () => {
+    const s = await seed({ maxTokensPerIssue: 1000 });
+    const id = randomUUID(), boot = randomUUID();
+    const binding = legacyCheckpoint(s, id, boot);
+    binding.resultJson.legacyUsageCheckpoint.scopeHash = "b".repeat(64);
+    await db.insert(heartbeatRuns).values({ id, companyId: s.companyId, agentId: s.agentId,
+      controllerBootId: boot, runtimeMode: "legacy", invocationSource: "automation", status: "running", startedAt: new Date(), contextSnapshot: { issueId: s.childId },
+      usageJson: { totalTokens: 0, usageUnknown: false }, ...binding,
+    });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
+    await db.update(heartbeatRuns).set({ ...legacyCheckpoint(s, id, boot), usageJson: { totalTokens: 1000, usageUnknown: true } }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
+  });
+
+  it("does not count a scoped ledger twice for a completed ordinary run", async () => {
+    const s = await seed({ maxTokensPerIssue: 1100 });
+    const id = await run(s, s.childId, 10);
+    await db.update(heartbeatRuns).set({ usageJson: { totalTokens: 1000 } }).where(eq(heartbeatRuns.id, id));
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 100, outputTokens: 0, totalTokens: 100, occurredAt: new Date() });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toBeNull();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [], commentRequired: true, resourceLimits: { maxTokensPerIssue: 1000 } } }).where(eq(issues.id, s.rootId));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
+
   it("reconciles known finished run usage even if its ledger publication lacks issue attribution", async () => {
     const s = await seed({ maxTokensPerIssue: 1000 });
     const id = await run(s, s.childId, 10);
