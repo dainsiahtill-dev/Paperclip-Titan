@@ -1,4 +1,4 @@
-import { notifyNativeUsageCheckpoint, type NativeUsageCheckpoint } from "./native-usage-checkpoint.js";
+import { notifyNativeUsageCheckpoint, readNativeAcpxTurnProof, type NativeUsageCheckpoint } from "./native-usage-checkpoint.js";
 import { normalizeNativeUsage, nativeUsageMeasurement, numericUsageField, mergeNativeUsageCheckpoint } from "./native-usage-normalization.js";
 export { normalizeNativeUsage } from "./native-usage-normalization.js";
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
@@ -8681,6 +8681,7 @@ async function executePaperclipNativeSessionWithinScope(
   const [usageOwner] = await input.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), eq(heartbeatRuns.agentId, input.execution.binding.agentId), eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId), eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
+  const finalProviderTurn = input.execution.provider.kind === "acpx" ? await readNativeAcpxTurnProof(input.db, { ...input.execution.binding, sourceInstanceId: effectiveRunnerInstanceId, sessionId: nativeSessionKey(input.execution) }, undefined, native.turnId) : null;
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
@@ -8700,7 +8701,7 @@ async function executePaperclipNativeSessionWithinScope(
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
     provider: "openai",
     model: input.execution.provider.model,
-    usage: mergeNativeUsageCheckpoint(normalizeNativeUsage(native.usage, input.execution.provider), usageOwner?.resultJson?.nativeUsageCheckpoint, attempt),
+    usage: mergeNativeUsageCheckpoint(normalizeNativeUsage(native.usage, input.execution.provider), usageOwner?.resultJson?.nativeUsageCheckpoint, attempt, { providerKind: input.execution.provider.kind, providerTurnId: finalProviderTurn?.providerTurnId, usageProviderTurnId: typeof native.usage?.providerTurnId === "string" ? native.usage.providerTurnId : null }),
     costUsd: nativeUsageCostUsd(native.usage),
     usageBasis: "per_run",
     nativeFinalization: finalization,

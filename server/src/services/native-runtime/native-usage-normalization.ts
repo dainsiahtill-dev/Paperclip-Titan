@@ -79,16 +79,27 @@ export function normalizeNativeUsage(usage: Record<string, unknown> | null, prov
 }
 
 /** Final presentation must not erase usage already committed by prior attempts. */
-export function mergeNativeUsageCheckpoint(usage: ReturnType<typeof normalizeNativeUsage>, value: unknown, attempt?: number) {
+export function mergeNativeUsageCheckpoint(usage: ReturnType<typeof normalizeNativeUsage>, value: unknown, attempt?: number, identity?: { providerKind: string; providerTurnId?: string | null; usageProviderTurnId?: string | null }) {
   const checkpoint = record(value);
-  if (checkpoint.version !== 1) return usage;
+  if (checkpoint.version !== 1) {
+    if (identity?.providerKind !== "acpx" || !usage) return usage;
+    const unknown = { ...usage }; delete unknown.totalTokens; return unknown;
+  }
   const result = { inputTokens: 0, outputTokens: 0, ...usage };
-  if (checkpoint.usageUnknown === true) { delete result.totalTokens; return result; }
+  if (checkpoint.usageUnknown === true || (usage && usage.totalTokens === undefined)) { delete result.totalTokens; return result; }
   const total = checkpoint.totalTokens;
   if (typeof total !== "number" || !Number.isSafeInteger(total) || total < 0) { delete result.totalTokens; return result; }
   const attempts = record(checkpoint.attempts);
-  if (attempt && usage?.totalTokens !== undefined && typeof attempts[String(attempt)] === "number") {
+  if (identity?.providerKind === "acpx" || checkpoint.accountingBasis === "provider_turn") {
+    const turn = record(checkpoint.currentTurn);
+    if (checkpoint.accountingBasis !== "provider_turn" || !identity?.providerTurnId || turn.attempt !== attempt || turn.providerTurnId !== identity.providerTurnId || turn.usageUnknown !== false || typeof turn.totalTokens !== "number" || !Number.isSafeInteger(turn.totalTokens)) { delete result.totalTokens; return result; }
+    // Final SDK usage is commonly unlabelled. A differing count cannot be
+    // added to the last physical call without its own provider-turn identity.
+    if (usage?.totalTokens !== undefined && usage.totalTokens !== turn.totalTokens && identity.usageProviderTurnId !== turn.providerTurnId) { delete result.totalTokens; return result; }
+    result.totalTokens = total + Math.max(0, (usage?.totalTokens ?? turn.totalTokens) - turn.totalTokens);
+  } else if (attempt && usage?.totalTokens !== undefined && typeof attempts[String(attempt)] === "number") {
     result.totalTokens = total + Math.max(0, usage.totalTokens - (attempts[String(attempt)] as number));
   } else result.totalTokens = Math.max(total, usage?.totalTokens ?? 0);
+  if (!Number.isSafeInteger(result.totalTokens)) delete result.totalTokens;
   return result;
 }

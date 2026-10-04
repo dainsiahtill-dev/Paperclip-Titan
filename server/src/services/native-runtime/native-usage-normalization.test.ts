@@ -23,3 +23,15 @@ it("final native usage preserves the durable multi-attempt checkpoint and earlie
   expect(mergeNativeUsageCheckpoint({ inputTokens: 20, outputTokens: 2, totalTokens: 22 }, { version: 1, totalTokens: null, usageUnknown: true })).toEqual({ inputTokens: 20, outputTokens: 2 });
   expect(mergeNativeUsageCheckpoint({ inputTokens: 70, outputTokens: 10, totalTokens: 80 }, { version: 1, totalTokens: 160, attempts: { 1: 110, 2: 50 }, usageUnknown: false }, 2)?.totalTokens).toBe(190);
 });
+
+it("final ACP usage updates only its canonical turn and rejects legacy or missing turn proof", () => {
+  const usage = { inputTokens: 30, outputTokens: 20, totalTokens: 90 };
+  const checkpoint = { version: 1, accountingBasis: "provider_turn", totalTokens: 160, usageUnknown: false, attempts: { 1: 160 }, currentTurn: { attempt: 1, providerTurnId: "turn-b", totalTokens: 80, usageUnknown: false } };
+  expect(mergeNativeUsageCheckpoint(usage, checkpoint, 1, { providerKind: "acpx", providerTurnId: "turn-b", usageProviderTurnId: "turn-b" })?.totalTokens).toBe(170);
+  expect(mergeNativeUsageCheckpoint(usage, checkpoint, 1, { providerKind: "acpx", providerTurnId: "turn-b" })?.totalTokens).toBeUndefined();
+  expect(mergeNativeUsageCheckpoint({ ...usage, totalTokens: 80 }, checkpoint, 1, { providerKind: "acpx", providerTurnId: "turn-b" })?.totalTokens).toBe(160);
+  expect(mergeNativeUsageCheckpoint(usage, checkpoint, 1, { providerKind: "acpx", providerTurnId: "other-turn" })?.totalTokens).toBeUndefined();
+  expect(mergeNativeUsageCheckpoint(usage, checkpoint, 1, { providerKind: "acpx" })?.totalTokens).toBeUndefined();
+  expect(mergeNativeUsageCheckpoint(usage, { version: 1, totalTokens: 80, usageUnknown: false }, 1, { providerKind: "acpx", providerTurnId: "turn-b" })?.totalTokens).toBeUndefined();
+  expect(mergeNativeUsageCheckpoint({ inputTokens: 20, outputTokens: 0 }, checkpoint, 1, { providerKind: "acpx", providerTurnId: "turn-b" })?.totalTokens).toBeUndefined();
+});
