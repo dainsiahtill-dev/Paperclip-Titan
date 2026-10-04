@@ -18,6 +18,7 @@ describe("qualified ACPX usage", () => {
       outputTokens: 30,
       cachedReadTokens: 40,
       cachedWriteTokens: 50,
+      totalTokens: 132,
       thoughtTokens: 0,
     });
   });
@@ -34,6 +35,7 @@ describe("qualified ACPX usage", () => {
       inputTokens: 12,
       outputTokens: 30,
       cachedReadTokens: 40,
+      totalTokens: 82,
       cachedWriteTokens: 0,
       thoughtTokens: 0,
     });

@@ -128,6 +128,25 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
   expect(result.summary).toContain("terminal request failure");
 });
 
+it.each(["oneshot", "persistent"])("preserves a permanent provider rejection through the actual ACP process in %s mode", async mode => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-permanent-model-"));
+  tempRoots.push(root);
+  const logs: string[] = [];
+  const token = "scoped-fixture-secret";
+  const title = JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", message: `The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account. token=${token}` } });
+  const result = await createAcpxEngineExecutor()({
+    runId: `permanent-model-${mode}`, authToken: token,
+    agent: { id: "spawn-agent", companyId: "spawn-company" }, runtime: {},
+    config: { agent: "custom", agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(fixturePath)}`, mode, warmHandleIdleMs: 0, stateDir: path.join(root, "state"), cwd: repoRoot, env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: title } },
+    context: {}, onLog: async (_stream: string, text: string) => { logs.push(text); }, onMeta: async () => {},
+  } as never);
+  expect(result.errorCode).toBe("configuration_incomplete");
+  expect(result.errorMessage).toContain("model is not supported");
+  expect(result.resultJson).toMatchObject({ configurationIncomplete: { status: 400, code: "invalid_request_error", retryable: false } });
+  expect(JSON.stringify(result)).not.toContain(token);
+  expect(logs.join("\n")).not.toContain(token);
+});
+
 it("preserves ordinary assistant text even when it resembles a provider error", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "paperclip-acpx-error-shaped-answer-"),

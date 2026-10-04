@@ -1,3 +1,6 @@
+import { notifyNativeUsageCheckpoint, type NativeUsageCheckpoint } from "./native-usage-checkpoint.js";
+import { normalizeNativeUsage, nativeUsageMeasurement, numericUsageField, mergeNativeUsageCheckpoint } from "./native-usage-normalization.js";
+export { normalizeNativeUsage } from "./native-usage-normalization.js";
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -6882,6 +6885,8 @@ export async function executePaperclipNativeSession(input: {
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  /** Internal callback after canonical durable usage projection; no provider/tool can set this. */
+  onUsage?: (checkpoint: NativeUsageCheckpoint) => Promise<{ stopReason?: string } | void>;
   /** Persist task-level continuity before a durable goal can outlive this run. */
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
@@ -7414,6 +7419,19 @@ async function executePaperclipNativeSessionWithinScope(
         payload: event.payload,
       },
     );
+  let pendingUsageStopReason: string | null = null;
+  let usageStopWork: Promise<unknown> | null = null;
+  const requestUsageStop = () => {
+    if (!pendingUsageStopReason || usageStopWork || !activeNativeSessions.has(input.execution.binding.runId)) return;
+    // Do not wait for provider stop while it is waiting for this event's ACK.
+    // executeNativeSession remains the physical owner through actual settlement.
+    usageStopWork = cancelNativeSession(input.execution.binding.runId, pendingUsageStopReason).catch(() => { usageStopWork = null; });
+  };
+  const reportCanonicalUsage = async (event: PrpEvent) => {
+    if (event.eventType !== "usage.reported") return;
+    const checkpoint = await notifyNativeUsageCheckpoint(input.db, { ...input.execution.binding, sourceInstanceId: effectiveRunnerInstanceId, sessionId: nativeSessionKey(input.execution) }, event.sourceEventId, input.execution.provider, async value => input.onUsage?.(value));
+    if (checkpoint?.stopReason) { pendingUsageStopReason = checkpoint.stopReason; requestUsageStop(); }
+  };
   let completedConversationReply: PrpEvent | null = null;
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
@@ -7430,6 +7448,7 @@ async function executePaperclipNativeSessionWithinScope(
     },
     {
       onCommittedEvent: async (event) => {
+        await reportCanonicalUsage(event);
         // This callback runs only after the bound event's durable commit.
         // Scheduling is observational; every send rebuilds the full cursor.
         notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
@@ -7651,6 +7670,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
       },
       onDuplicateEvent: async (event) => {
+        await reportCanonicalUsage(event);
         notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
         // A crash can happen after the event commit but before its callback
         // finishes. Recover only idempotent durable projections here; activity,
@@ -8089,6 +8109,7 @@ async function executePaperclipNativeSessionWithinScope(
                   session,
                   cancelRequested: false,
                 });
+                requestUsageStop();
                 notifyNativeSteeringReadiness(input.db, input.execution.binding.runId);
                 if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
                   await session.detachControllerForRestart?.();
@@ -8657,6 +8678,9 @@ async function executePaperclipNativeSessionWithinScope(
       false,
     );
   }
+  const [usageOwner] = await input.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), eq(heartbeatRuns.agentId, input.execution.binding.agentId), eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId), eq(heartbeatRuns.runtimeMode, "native"),
+  )).limit(1);
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
@@ -8676,7 +8700,7 @@ async function executePaperclipNativeSessionWithinScope(
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
     provider: "openai",
     model: input.execution.provider.model,
-    usage: normalizeNativeUsage(native.usage),
+    usage: mergeNativeUsageCheckpoint(normalizeNativeUsage(native.usage, input.execution.provider), usageOwner?.resultJson?.nativeUsageCheckpoint, attempt),
     costUsd: nativeUsageCostUsd(native.usage),
     usageBasis: "per_run",
     nativeFinalization: finalization,
@@ -8691,46 +8715,6 @@ async function executePaperclipNativeSessionWithinScope(
     native.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
   );
   return adapterResult;
-}
-
-function numericUsageField(
-  usage: Record<string, unknown> | null,
-  keys: string[],
-): number | undefined {
-  if (!usage) return undefined;
-  for (const key of keys) {
-    const value = usage[key];
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0)
-      return value;
-  }
-  return undefined;
-}
-
-function nativeUsageMeasurement(usage: Record<string, unknown>) {
-  const nestedUsage = record(usage.usage);
-  const candidates = [
-    record(usage.runDelta),
-    record(nestedUsage.runDelta),
-    record(usage.total),
-    record(nestedUsage.total),
-    record(usage.cumulative),
-    record(nestedUsage.cumulative),
-    nestedUsage,
-    usage,
-  ];
-  return (
-    candidates.find(
-      (candidate) =>
-        numericUsageField(candidate, [
-          "inputTokens",
-          "input",
-          "promptTokens",
-          "outputTokens",
-          "output",
-          "completionTokens",
-        ]) !== undefined,
-    ) ?? usage
-  );
 }
 
 export function nativeUsageCostUsd(usage: Record<string, unknown> | null) {
@@ -8755,33 +8739,6 @@ export function nativeUsageCostUsd(usage: Record<string, unknown> | null) {
   return numericUsageField(cost, ["amount", "total"]);
 }
 
-export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
-  if (!usage) return undefined;
-  const measurement = nativeUsageMeasurement(usage);
-  const cache = record(measurement.cache);
-  const cachedInputTokens =
-    numericUsageField(measurement, [
-      "cachedInputTokens",
-      "cacheReadInputTokens",
-      "cacheReadTokens",
-      "cachedReadTokens",
-    ]) ?? numericUsageField(cache, ["read"]);
-  return {
-    inputTokens:
-      numericUsageField(measurement, [
-        "inputTokens",
-        "input",
-        "promptTokens",
-      ]) ?? 0,
-    outputTokens:
-      numericUsageField(measurement, [
-        "outputTokens",
-        "output",
-        "completionTokens",
-      ]) ?? 0,
-    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-  };
-}
 
 function processEnvironment(
   environment: NodeJS.ProcessEnv,

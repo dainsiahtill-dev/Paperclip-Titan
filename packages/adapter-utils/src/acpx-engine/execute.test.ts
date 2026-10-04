@@ -160,6 +160,7 @@ function buildRuntime(
 async function runExecutor(
   config: Record<string, unknown>,
   options: {
+    agentId?: string;
     context?: Record<string, unknown>;
     runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
@@ -192,7 +193,7 @@ async function runExecutor(
   const result = await execute({
     runId: "run-1",
     agent: {
-      id: "agent-1",
+      id: options.agentId ?? "agent-1",
       companyId: "company-1",
     },
       runtime: options.runtime ?? {},
@@ -1216,6 +1217,23 @@ describe("shared ACPX engine runtime behavior", () => {
     ]);
   });
 
+  it.each(["result", "events"])("preserves nonretryable provider400 unsupported-model detail from %s instead of generic ACP retry", async source => {
+    const root = await makeTempRoot();
+    const provider = { typedSessionFailure: true, category: "service", message: JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", message: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account. token=fixture-api-secret" } }) };
+    const error = Object.assign(new Error("ACP agent reported a terminal error failure.", { cause: provider }), { code: "ACP_TURN_FAILED", retryable: false });
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({ events: (async function* () { if (source === "events") throw error; yield { type: "done", stopReason: "failed" }; })(), result: source === "events" ? new Promise(() => {}) : Promise.resolve({ status: "failed", error }), cancel: async () => {} }),
+      }) as never,
+    });
+    const result = await execute({ runId: "run-rejected-model", authToken: "fixture-api-secret", agent: { id: "agent-1", companyId: "company-1" }, runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") }, context: {}, onLog: async () => {} } as never);
+    expect(result.errorCode).toBe("configuration_incomplete");
+    expect(result.errorMessage).toContain("model is not supported");
+    expect(JSON.stringify(result)).not.toContain("fixture-api-secret");
+    expect(result.resultJson).toMatchObject({ configurationIncomplete: { reason: "provider_model_unsupported", status: 400, retryable: false } });
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -1452,6 +1470,23 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
   });
 
+  it("isolates ACP Codex writable homes and forwards Paperclip shell context without editing source config", async () => {
+    const root = await makeTempRoot(), source = path.join(root, "source"); await fs.mkdir(source);
+    const config = 'model = "fixture-model"\n'; await fs.writeFile(path.join(source, "config.toml"), config); await fs.writeFile(path.join(source, "auth.json"), '{}');
+    vi.stubEnv("CODEX_HOME", source); vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip")); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "isolated");
+    const one = await runExecutor({ agent: "codex", stateDir: path.join(root, "state-a"), paperclipRuntimeSkills: [] }, { agentId: "agent-a", context: { issueId: "task-a" }, authToken: "fixture-token-a" });
+    const two = await runExecutor({ agent: "codex", stateDir: path.join(root, "state-b"), paperclipRuntimeSkills: [] }, { agentId: "agent-b", context: { issueId: "task-b" }, authToken: "fixture-token-b" });
+    const homeA = (one.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.CODEX_HOME!;
+    const homeB = (two.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.CODEX_HOME!;
+    expect(homeA).not.toBe(homeB);
+    expect(homeA).toContain(path.join("agents", "agent-a")); expect(homeB).toContain(path.join("agents", "agent-b"));
+    const projected = JSON.parse(String((one.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env.CODEX_CONFIG));
+    expect(projected.shell_environment_policy.include_only).toContain("PAPERCLIP_COMPANY_ID"); expect(projected.shell_environment_policy.include_only).toContain("PAPERCLIP_TASK_ID");
+    expect(projected.shell_environment_policy.include_only).toContain("PAPERCLIP_API_KEY");
+    expect(await fs.readFile(path.join(source, "config.toml"), "utf8")).toBe(config);
+    expect(JSON.stringify(projected)).not.toContain("fixture-token-a");
+  });
+
   it.skipIf(process.platform === "win32")("replaces stale managed Codex auth files with source symlinks", async () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
@@ -1463,6 +1498,8 @@ describe("shared ACPX engine runtime behavior", () => {
       paperclipInstanceId,
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(sourceCodexHome, { recursive: true });
@@ -2880,6 +2917,20 @@ describe("gemini ACP flag selection", () => {
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
   }, 15_000);
+});
+
+describe("qualified ACPX token totals", () => {
+  it("counts Claude cache creation and reads exactly once", () => {
+    const summary = summarizeAcpxTurnUsage({ preStatus: null, postStatus: null, eventBreakdown: { inputTokens: 12, outputTokens: 30, cachedReadTokens: 40, cachedWriteTokens: 50 }, eventCostUsd: null, qualifiedAgent: "claude" });
+    expect(summary.usage?.totalTokens).toBe(132);
+  });
+  it("counts qualified Codex ACP uncached input and cached reads once", () => {
+    expect(summarizeAcpxTurnUsage({ preStatus: null, postStatus: null, eventBreakdown: { inputTokens: 4013, cachedReadTokens: 39936, outputTokens: 640 }, eventCostUsd: null, qualifiedAgent: "codex" }).usage?.totalTokens).toBe(44589);
+  });
+  it("does not infer a partial or unqualified total", () => {
+    const summary = summarizeAcpxTurnUsage({ preStatus: null, postStatus: null, eventBreakdown: { inputTokens: 12, outputTokens: 30, cachedReadTokens: 40 }, eventCostUsd: null, qualifiedAgent: "claude" });
+    expect(summary.usage?.totalTokens).toBeUndefined();
+  });
 });
 
 describe("summarizeAcpxTurnUsage", () => {

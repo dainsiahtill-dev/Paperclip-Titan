@@ -12,7 +12,7 @@ import {
   truncate,
   writeFile,
 } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -36,6 +36,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
+import * as usageCheckpointModule from "./native-usage-checkpoint.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeProviderTerminalFailure,
@@ -4237,6 +4238,7 @@ function leaseDb(
       const query = {
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
         where: () => query,
+        orderBy: () => query,
         for: () => query,
         limit: () => Promise.resolve(rows),
       };
@@ -4527,6 +4529,64 @@ describe("native session cancellation", () => {
         highestContiguousSourceSeq: 1,
       };
     });
+  });
+
+  it("stops at the committed usage boundary while retaining ownership through child close and log drain", async () => {
+    let child: ReturnType<typeof spawn> | undefined;
+    let output = "";
+    let appendError: unknown;
+    let settled = false;
+    let releaseLogs!: () => void;
+    const logsDrained = new Promise<void>(resolve => { releaseLogs = resolve; });
+    const usageObserver = vi.fn(async () => ({ stopReason: "resource_run_token_limit" }));
+    const checkpoint = vi.spyOn(usageCheckpointModule, "notifyNativeUsageCheckpoint").mockImplementation(async (_db, _binding, _eventId, _provider, observer) => {
+      const value = { totalTokens: 150, seq: 1, needsNotification: true, usageUnknown: false };
+      const response = await observer(value);
+      return { ...value, needsNotification: false, stopReason: response?.stopReason };
+    });
+    state.execute.mockImplementationOnce(async options => {
+      child = spawn(process.execPath, ["-e", 'process.on("SIGTERM",()=>process.stdout.write("stopping\\n"));process.stdin.on("data",()=>{process.stdout.write("late-log\\n");process.exit(0)});process.stdout.write("ready\\n");setInterval(()=>{},1000)'], { stdio: ["pipe", "pipe", "pipe"] });
+      child.stdout!.on("data", chunk => { output += String(chunk); });
+      const closed = new Promise<void>((resolve, reject) => { child!.once("error", reject); child!.once("close", () => resolve()); });
+      const drained = closed.then(() => logsDrained);
+      const cancel = vi.fn(() => { child!.kill("SIGTERM"); return { cleanup: drained }; });
+      state.cancel.mockImplementation(cancel);
+      await vi.waitFor(() => expect(output).toContain("ready"));
+      await options.onSession({ cancel: state.cancel });
+      await options.controlPlane.appendEvent({
+        schema: "paperclip.prp.event.v1", schemaVersion: 1, priority: 1,
+        sourceInstanceId: "runner", sourceEventId: "usage-stop:1", sourceSeq: 1, sourceKind: "runner",
+        runId: execution.binding.runId, normalizedSessionId: execution.session.normalizedSessionId,
+        turnId: "turn", eventType: "usage.reported", emittedAt: new Date().toISOString(),
+        payload: { runDelta: { inputTokens: 140, outputTokens: 10, cacheReadTokens: 20 } },
+      }).catch((error: unknown) => { appendError = error; });
+      await drained;
+      await options.onSession(null);
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" }, turnId: "turn", normalizedSessionId: execution.session.normalizedSessionId, providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    const running = executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner", onUsage: usageObserver }).finally(() => { settled = true; });
+    try {
+      await vi.waitFor(() => { expect(appendError).toBeUndefined(); expect(output).toContain("stopping"); });
+      expect(usageObserver).toHaveBeenCalledOnce();
+      expect(state.cancel).toHaveBeenCalledWith({ reason: "resource_run_token_limit", signal: expect.any(AbortSignal) });
+      expect(settled).toBe(false);
+      expect(child?.exitCode).toBeNull();
+      expect(await cancelNativeSession(execution.binding.runId, "duplicate token stop")).toBe(true);
+      expect(state.cancel).toHaveBeenCalledOnce();
+      child!.stdin!.write("drain");
+      await vi.waitFor(() => expect(child?.exitCode).toBe(0));
+      expect(output).toContain("late-log");
+      expect(settled).toBe(false);
+      expect(await cancelNativeSession(execution.binding.runId, "still draining logs")).toBe(true);
+      releaseLogs();
+      await running;
+      expect(await cancelNativeSession(execution.binding.runId, "after physical settlement")).toBe(false);
+    } finally {
+      releaseLogs();
+      child?.kill("SIGKILL");
+      checkpoint.mockRestore();
+      await running.catch(() => undefined);
+    }
   });
 
   it("routes control-plane cancellation to the active normalized session and removes the handle", async () => {

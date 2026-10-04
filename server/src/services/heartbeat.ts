@@ -15298,6 +15298,8 @@ export function heartbeatService(
       delayMs?: number;
     },
   ) {
+    const rejection = parseObject(parseObject(run.resultJson).configurationIncomplete);
+    if (run.errorCode === "configuration_incomplete" && rejection.retryable === false) return { outcome: "not_scheduled" as const, reason: "Provider rejected this configured request; repair its execution configuration before a fresh turn", errorCode: "configuration_incomplete" as const, issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     const now = opts?.now ?? new Date();
     const retryReason =
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
@@ -24335,6 +24337,15 @@ export function heartbeatService(
                       },
                       onLog,
                       onEvent: onAdapterEvent,
+                      onUsage: async usage => {
+                        if (!maxRunTokens) return;
+                        if (usage.usageUnknown || usage.totalTokens === undefined) resourceStopCode = "resource_run_token_usage_unknown";
+                        else if (usage.totalTokens >= maxRunTokens) resourceStopCode = "resource_run_token_limit";
+                        if (resourceStopCode) {
+                          executionControl.controller.abort();
+                          return { stopReason: resourceStopCode };
+                        }
+                      },
                       preparationSpans: nativeRunnerPreparationSpans,
                       // Bootstrap with executable/home discovery while keeping
                       // configured provider values and the server-selected

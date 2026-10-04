@@ -32,6 +32,11 @@ import {
   testCodexAcpEnvironment,
 } from "./acp.js";
 
+it("binds the native Codex executable independently from the ACP wrapper command", () => {
+  expect(buildCodexAcpConfig({ command: "/fixture/codex-0.160", agentCommand: "/fixture/codex-acp" })).toMatchObject({ agentCommand: "/fixture/codex-acp", env: { CODEX_PATH: "/fixture/codex-0.160" } });
+  expect(buildCodexAcpConfig({ command: "/fixture/config-codex", env: { CODEX_PATH: "/fixture/connected-codex" } })).toMatchObject({ env: { CODEX_PATH: "/fixture/connected-codex" } });
+});
+
 // A local stand-in for a sandbox runner: runs the managed-runtime staging
 // scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
 // be exercised end-to-end against the host filesystem.

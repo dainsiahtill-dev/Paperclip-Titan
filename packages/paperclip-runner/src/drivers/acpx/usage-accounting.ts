@@ -6,6 +6,16 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function providerTokenTotal(input: { provider: string | null; inputTokens: unknown; outputTokens: unknown; cachedReadTokens: unknown; cachedWriteTokens: unknown; explicitTotal: unknown }): number | undefined {
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  if (valid(input.explicitTotal)) return input.explicitTotal;
+  if (!valid(input.inputTokens) || !valid(input.outputTokens) || !valid(input.cachedReadTokens)) return undefined;
+  const write = input.provider === "codex_acp" && input.cachedWriteTokens === undefined ? 0 : input.cachedWriteTokens;
+  if (!valid(write)) return undefined;
+  const total = input.inputTokens + input.outputTokens + input.cachedReadTokens + write;
+  return valid(total) ? total : undefined;
+}
+
 /** Normalize only semantics established by the pinned, qualified ACP servers. */
 export function qualifiedAcpxUsageBreakdown(
   agent: QualifiedAcpxAgent | null,
@@ -14,11 +24,13 @@ export function qualifiedAcpxUsageBreakdown(
   if (value === null || value === undefined) return value;
   const breakdown = record(value);
   if (agent !== "claude" && agent !== "codex") return breakdown;
+  const totalTokens = providerTokenTotal({ provider: agent === "codex" ? "codex_acp" : agent, inputTokens: breakdown.inputTokens, outputTokens: breakdown.outputTokens, cachedReadTokens: breakdown.cachedReadTokens, cachedWriteTokens: breakdown.cachedWriteTokens, explicitTotal: breakdown.totalTokens });
   // Claude SDK aggregate output and Codex ACP toPromptUsage.outputTokens both
   // INCLUDE reasoning. PRP folds thought into output, so its additive component
   // is zero here, not the provider's diagnostic reasoning-token subset.
   return {
     ...breakdown,
+    ...(totalTokens === undefined ? {} : { totalTokens }),
     thoughtTokens: 0,
     // Codex ACP 1.6.2 has no cache-write billing category. Do not apply this
     // provider-specific zero to Claude/Pi or to an explicitly invalid value.

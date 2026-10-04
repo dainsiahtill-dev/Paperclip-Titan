@@ -220,7 +220,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       },
       permissions: {},
     });
-
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: input.companyId, title: "Retry fixture", status: "in_progress", assigneeAgentId: input.agentId });
     await db.insert(heartbeatRuns).values({
       id: input.runId,
       companyId: input.companyId,
@@ -242,7 +243,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           : {}),
       },
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId,
         wakeReason: "issue_assigned",
       },
       updatedAt: input.now,
@@ -418,19 +419,22 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     } }).where(eq(agents.id, agentId));
     const execute = vi.fn(async (_context: unknown) => ({ exitCode: 0, signal: null, timedOut: false, summary: "continued" }));
     registerServerAdapter({ type: "codex_local", execute, testEnvironment: async () => ({ adapterType: "codex_local", status: "pass", checks: [], testedAt: now.toISOString() }) });
+    registerServerAdapter({ type: "claude_local", execute: async () => { throw new Error("fixture unexpectedly selected primary instead of its bound backup"); }, testEnvironment: async () => ({ adapterType: "claude_local", status: "fail", checks: [{ code: "claude_hello_usage_limited", level: "error", message: "Fixture primary quota remains exhausted" }], testedAt: now.toISOString() }) });
     try {
-      await heartbeat.scheduleBoundedRetry(runId, { now });
-      const run = await heartbeat.invoke(agentId, "on_demand", { responsibleUserId: "responsible-user", forceFreshSession: true }, "manual", { actorType: "user", actorId: "responsible-user" });
-      expect(run).not.toBeNull();
-      const finished = await waitForRunToFinish(heartbeat, run!.id);
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      await heartbeat.resumeQueuedRuns();
+      const finished = await waitForRunToFinish(heartbeat, scheduled.run.id);
       expect(finished?.status).toBe("succeeded");
       expect(execute).toHaveBeenCalledOnce();
       const invocation = execute.mock.calls[0]?.[0] as unknown as { config: Record<string, unknown>; agent: { id: string; adapterType: string } };
       expect(invocation.agent).toMatchObject({ id: agentId, adapterType: "codex_local" });
-      expect(invocation.config).toMatchObject({ model: "gpt-6.1-sol", thinkingEffort: "high", dangerouslyBypassSandbox: true });
+      expect(invocation.config).toMatchObject({ model: "gpt-6.1-sol", thinkingEffort: "high", dangerouslyBypassSandbox: false });
       expect((invocation.config.env as Record<string, unknown>).ANTHROPIC_BASE_URL).toBeUndefined();
       expect(finished?.runnerProfileJson).toMatchObject({ adapterDispatch: { adapterType: "codex_local" }, quotaFallback: { usingBackup: true, model: "gpt-6.1-sol" } });
-    } finally { unregisterServerAdapter("codex_local"); }
+    } finally { unregisterServerAdapter("codex_local"); unregisterServerAdapter("claude_local"); }
   });
 
   it("clears deferred backup session and quota waits when primary availability returns", async () => {
@@ -659,6 +663,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       permissions: {},
     });
 
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Retry promotion", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({
       id: sourceRunId,
       companyId,
@@ -670,7 +676,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId,
         wakeReason: "issue_assigned",
       },
       updatedAt: now,
@@ -2027,6 +2033,21 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await cleanupRetryFixture();
   });
 
+  it("keeps a permanent provider model rejection on configuration repair instead of retrying", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-10-04T00:00:00Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "configuration_incomplete", resultJson: {
+      errorFamily: "transient_upstream", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      configurationIncomplete: { reason: "provider_model_unsupported", status: 400, code: "invalid_request_error", message: "The model is not supported for this account", retryable: false },
+    } });
+    try {
+      expect(await heartbeat.scheduleBoundedRetry(runId, { now, delayMs: 0 })).toMatchObject({ outcome: "not_scheduled", errorCode: "configuration_incomplete" });
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      expect(rows.map(row => row.id)).toEqual([runId]);
+      expect(rows[0]?.resultJson?.configurationIncomplete).toMatchObject({ status: 400, retryable: false });
+    } finally { await cleanupRetryFixture(); }
+  });
+
   it("requires reconciliation for an error-code-only Codex harness crash", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -2213,10 +2234,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       const companyId = randomUUID();
       const agentId = randomUUID();
       const sourceRunId = randomUUID();
-      const missingIssueId = randomUUID();
+      const cancelledIssueId = randomUUID();
       const now = new Date("2026-05-03T00:00:00.000Z");
 
       await seedRetryFixture({ runId: sourceRunId, companyId, agentId, now, errorCode: "adapter_failed" });
+      await db.insert(issues).values({ id: cancelledIssueId, companyId, title: "Cancelled retry target", status: "cancelled", assigneeAgentId: agentId });
 
       const wakeupRequestId = randomUUID();
       await db.insert(agentWakeupRequests).values({
@@ -2227,9 +2249,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         status: "queued",
       });
 
-      // A max-turn continuation whose issue no longer exists trips the gate's
-      // "issue_not_found" rejection without the legacy transient-retry
-      // exception, so promotion routes it to the cancel-suppressed-retry write.
+      // A cancelled real issue suppresses the continuation and exercises the
+      // transactional wakeup cancellation under the resource gate.
       const retryRunId = randomUUID();
       await db.insert(heartbeatRuns).values({
         id: retryRunId,
@@ -2241,7 +2262,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         scheduledRetryAttempt: 1,
         scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
         wakeupRequestId,
-        contextSnapshot: { issueId: missingIssueId, wakeReason: "issue_continuation_needed" },
+        contextSnapshot: { issueId: cancelledIssueId, wakeReason: "issue_continuation_needed" },
         updatedAt: now,
         createdAt: now,
       });
@@ -2393,6 +2414,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         source: "retry",
         status: "queued",
       });
+      const suppressedIssueId = randomUUID();
+      await db.insert(issues).values({ id: suppressedIssueId, companyId, title: "Suppressed company-scoped retry", status: "cancelled", assigneeAgentId: agentId });
       const suppressedRunId = randomUUID();
       await db.insert(heartbeatRuns).values({
         id: suppressedRunId,
@@ -2403,7 +2426,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         scheduledRetryAt: now,
         wakeupRequestId: suppressedWakeupId,
         scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-        contextSnapshot: { issueId: randomUUID() },
+        contextSnapshot: { issueId: suppressedIssueId },
         updatedAt: now,
         createdAt: now,
       });

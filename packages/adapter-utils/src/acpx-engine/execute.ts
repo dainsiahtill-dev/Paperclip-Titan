@@ -1,3 +1,4 @@
+import { providerTokenTotal } from "../provider-token-total.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -791,8 +792,8 @@ function defaultStateDir(companyId: string, agentId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acp-engine", "agents", agentId);
 }
 
-function resolveManagedCodexHomeDir(companyId: string): string {
-  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
+function resolveManagedCodexHomeDir(companyId: string, agentId: string): string {
+  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "agents", agentId, "codex-home");
 }
 
 // Mirrors `resolveManagedGrokHomeDir` in
@@ -1242,6 +1243,7 @@ async function reconcileManagedCodexSkills(input: {
 
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
+  agentId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
   moduleDir: string;
@@ -1269,7 +1271,7 @@ async function prepareCodexSkillRuntime(input: {
     typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
-  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
+  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId, input.agentId);
   const effectiveCodexHome = configuredCodexHome ??
     await prepareManagedCodexHome({
       companyId: input.companyId,
@@ -2002,6 +2004,16 @@ async function buildRuntime(input: {
       );
     }
     if (codexStartupConfig.value) env.CODEX_CONFIG = codexStartupConfig.value;
+    if (authToken && wakeTaskId) {
+      const startup = parseObject(env.CODEX_CONFIG ? JSON.parse(env.CODEX_CONFIG) : {});
+      const policy = parseObject(startup.shell_environment_policy);
+      if ((policy.inherit && policy.inherit !== "all" && policy.inherit !== "core") || policy.exclude || policy.filters || policy.include_only) {
+        throw new Error("Configured Codex shell environment policy conflicts with scoped Paperclip runtime access");
+      }
+      const names = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "CODEX_HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", ...Object.keys(env).filter(key => key.startsWith("PAPERCLIP_"))];
+      startup.shell_environment_policy = { ...policy, inherit: "all", ignore_default_excludes: true, include_only: [...new Set(names)] };
+      env.CODEX_CONFIG = JSON.stringify(startup);
+    }
   }
 
   let skillPromptInstructions = "";
@@ -2043,6 +2055,7 @@ async function buildRuntime(input: {
     const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
       prepareCodexSkillRuntime({
         companyId: agent.companyId,
+        agentId: agent.id,
         config,
         env,
         moduleDir: input.engine.moduleDir,
@@ -3200,6 +3213,7 @@ export function summarizeAcpxTurnUsage(input: {
   postStatus: AcpRuntimeStatus | null;
   eventBreakdown: AcpRuntimeUsageBreakdown | null;
   eventCostUsd: number | null;
+  qualifiedAgent?: "claude" | "codex" | null;
 }): {
   usage: UsageSummary | null;
   usageDetail: Record<string, number> | null;
@@ -3222,6 +3236,7 @@ export function summarizeAcpxTurnUsage(input: {
   const outputTokens = Math.max(0, Math.floor(asNumber(breakdown?.outputTokens, 0)));
   const cachedReadTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedReadTokens, 0)));
   const cachedWriteTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedWriteTokens, 0)));
+  const totalTokens = providerTokenTotal({ provider: input.qualifiedAgent === "codex" ? "codex_acp" : input.qualifiedAgent, inputTokens: breakdown?.inputTokens, outputTokens: breakdown?.outputTokens, cachedReadTokens: breakdown?.cachedReadTokens, cachedWriteTokens: breakdown?.cachedWriteTokens, explicitTotal: breakdown?.totalTokens });
   const hasTokens = inputTokens > 0 || outputTokens > 0 || cachedReadTokens > 0 || cachedWriteTokens > 0;
   // Cache-write tokens are prompt tokens the provider billed to create cache
   // entries; UsageSummary has no dedicated field, so count them as input.
@@ -3230,6 +3245,7 @@ export function summarizeAcpxTurnUsage(input: {
         inputTokens: inputTokens + cachedWriteTokens,
         outputTokens,
         cachedInputTokens: cachedReadTokens,
+        ...(totalTokens === undefined ? {} : { totalTokens }),
       }
     : null;
   const usageDetail = breakdown
@@ -3305,6 +3321,28 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
+function permanentProviderRejection(error: unknown, secretValues: string[] = []): { reason: string; status: number; code: string; message: string; retryable: false } | null {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 8 && !seen.has(current); depth++) {
+    seen.add(current);
+    const data = current && typeof current === "object" ? current as Record<string, unknown> : {};
+    let message = current instanceof Error ? current.message : typeof data.message === "string" ? data.message : typeof current === "string" ? current : "";
+    let parsed: Record<string, unknown> = {};
+    if (message.length <= 16000 && message.trimStart().startsWith("{")) { try { parsed = parseObject(JSON.parse(message)); } catch {} }
+    const providerError = parseObject(parsed.error);
+    const status = typeof data.status === "number" ? data.status : typeof data.statusCode === "number" ? data.statusCode : typeof parsed.status === "number" ? parsed.status : /\b400\b/.test(message) ? 400 : null;
+    const code = typeof providerError.type === "string" ? providerError.type : typeof data.code === "string" ? data.code : typeof data.type === "string" ? data.type : message.includes("invalid_request_error") ? "invalid_request_error" : "";
+    if (typeof providerError.message === "string") message = providerError.message;
+    if (status === 400 && code === "invalid_request_error" && /model.*(?:not supported|unsupported|does not support|unknown)/i.test(message)) {
+      for (const secret of secretValues) if (secret.length >= 4) message = message.replaceAll(secret, "[REDACTED]");
+      return { reason: "provider_model_unsupported", status, code, message: message.slice(0, 4000), retryable: false };
+    }
+    current = data.cause ?? data.error ?? data.data ?? data.details;
+  }
+  return null;
+}
+
 function isAcpxProviderLimitFailure(error: unknown): boolean {
   // acpx emits this exact message from typed sessionFailure(category=limit).
   // Inspect the actual terminal error, never user output or a stderr tail.
@@ -3314,7 +3352,10 @@ function isAcpxProviderLimitFailure(error: unknown): boolean {
 function classifyError(
   err: unknown,
   phase?: AcpxExecutionPhase,
+  secretValues: string[] = [],
 ): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
+  const rejection = permanentProviderRejection(err, secretValues);
+  if (rejection) return { errorCode: "configuration_incomplete", errorMeta: { category: "configuration", retryable: false, providerRejection: rejection } };
   const message = err instanceof Error ? err.message : String(err);
   const diagnostics = describeErrorDiagnostics(err);
   const { acpCode, errorName, causeMessage, retryable, stackPreview } = diagnostics;
@@ -3428,8 +3469,10 @@ async function emitAcpxFailure(input: {
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const message = messageOverride ?? rawMessage;
-  const classified = classifyError(err, phase);
+  const secretValues = [ctx.authToken ?? "", ...Object.entries(prepared.env).filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|AUTH/i.test(key)).map(([, value]) => value)];
+  const classified = classifyError(err, phase, secretValues);
+  const rejection = parseObject(classified.errorMeta?.providerRejection);
+  const message = messageOverride ?? (typeof rejection.message === "string" ? rejection.message : rawMessage);
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
@@ -4951,6 +4994,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           postStatus: postTurnStatus,
           eventBreakdown,
           eventCostUsd,
+          qualifiedAgent: prepared.acpxAgent === "claude" || prepared.acpxAgent === "codex" ? prepared.acpxAgent : null,
         });
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
         // ACPX can defer session/load until runTurn. Forget an unavailable
@@ -4993,11 +5037,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
+        const rejectionSecrets = [ctx.authToken ?? "", ...Object.entries(prepared.env).filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|AUTH/i.test(key)).map(([, value]) => value)];
+        const providerRejection = !timedOut && !channelLost && terminal.status === "failed" ? permanentProviderRejection(terminal.error, rejectionSecrets) : null;
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : channelLost
             ? channelLostMessage
-            : resultErrorMessage(terminal);
+            : providerRejection?.message ?? resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         const providerLimit = !timedOut && !channelLost && terminal.status === "failed" &&
           isAcpxProviderLimitFailure(terminal.error);
@@ -5021,9 +5067,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             : channelLost
               ? DUPLEX_CHANNEL_LOST_ERROR_CODE
               : terminal.status === "failed"
-                ? providerLimit ? "provider_quota" : "acpx_turn_failed"
+                ? providerLimit ? "provider_quota" : providerRejection ? "configuration_incomplete" : "acpx_turn_failed"
                 : null,
           ...(providerLimit ? { errorFamily: "provider_quota" as const } : {}),
+          ...(providerRejection ? { errorMeta: { category: "configuration", retryable: false, providerRejection } } : {}),
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -5035,6 +5082,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           resultJson: {
             status: channelLost ? "failed" : terminal.status,
             ...(providerLimit ? { errorFamily: "provider_quota" } : {}),
+            ...(providerRejection ? { configurationIncomplete: providerRejection } : {}),
             stopReason: terminalStopReason,
             permissionMode: prepared.permissionMode,
             mode: prepared.mode,
@@ -5152,9 +5200,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // retain their established classification; settlement already checks the
         // loss again before attempting a remote close.
         const channelLost = isAcpxProviderLimitFailure(err) && loss?.failed === true;
+        const rejection = !timedOut && !channelLost ? permanentProviderRejection(err, [ctx.authToken ?? "", ...Object.entries(prepared.env).filter(([key]) => /KEY|TOKEN|SECRET|PASSWORD|AUTH/i.test(key)).map(([, value]) => value)]) : null;
         const message = !timedOut && channelLost
           ? `The sandbox duplex control channel was lost (${loss.lossReason ?? "other"}) before the run completed.`
-          : emitted?.message ?? preEmitMessage;
+          : rejection?.message ?? emitted?.message ?? preEmitMessage;
         const providerLimit = !timedOut && !channelLost && phase === "turn" && isAcpxProviderLimitFailure(err);
         runtimeSettlement = { ...runtimeSettlement, skipRemoteClose: channelLost };
         capturedResult = {
@@ -5163,14 +5212,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           timedOut,
           errorMessage: message,
           errorCode: timedOut ? "acpx_timeout" : channelLost
-            ? DUPLEX_CHANNEL_LOST_ERROR_CODE : (emitted?.classified.errorCode ?? null),
-          errorMeta: emitted?.classified.errorMeta,
+            ? DUPLEX_CHANNEL_LOST_ERROR_CODE : rejection ? "configuration_incomplete" : (emitted?.classified.errorCode ?? null),
+          errorMeta: rejection ? { category: "configuration", retryable: false, providerRejection: rejection } : emitted?.classified.errorMeta,
           ...(providerLimit ? { errorFamily: "provider_quota" as const } : {}),
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession: clearSession || timedOut,
-          resultJson: { phase, ...(providerLimit ? { errorFamily: "provider_quota" } : {}) },
+          resultJson: { phase, ...(providerLimit ? { errorFamily: "provider_quota" } : {}), ...(rejection ? { configurationIncomplete: rejection } : {}) },
           summary: message,
         };
         // Return a typed failed completion so the coordinator settles for a cause

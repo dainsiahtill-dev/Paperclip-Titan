@@ -143,6 +143,10 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   );
 
   const env = parseObject(config.env);
+  // agentCommand selects the ACP server; command selects its native Codex CLI.
+  // A connection-provided CODEX_PATH remains the effective executable binding.
+  const nativeCommand = firstNonEmptyString(config.command);
+  const codexPath = firstNonEmptyString(env.CODEX_PATH, nativeCommand === "codex" ? undefined : nativeCommand);
   let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
   const extraArgs = asStringArray(config.extraArgs);
   for (const arg of extraArgs.length > 0 ? extraArgs : asStringArray(config.args)) {
@@ -152,7 +156,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
 
   return {
     ...config,
-    env: { ...env, PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
+    env: { ...env, ...(codexPath ? { CODEX_PATH: codexPath } : {}), PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
     agent: "codex",
     mode,
     permissionMode,
