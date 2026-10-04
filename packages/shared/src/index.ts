@@ -2770,6 +2770,11 @@ export type { ExecutionContinuationEnvelope } from "./types/execution-continuati
 export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
+export type { RestorationDisposition, RestorationLineage, RecoveryMutation, RecoveryBatch, RecoveryBatchReceipt } from "./types/watchdog.js";
+export { recoveryMutationSchema, recoveryBatchSchema, watchdogDispositionSchema } from "./validators/watchdog.js";
+export type { WatchdogDispositionInput } from "./validators/watchdog.js";
+export { issueResourceLimitsSchema } from "./validators/issue-resources.js";
+export type { IssueResourceLimits } from "./validators/issue-resources.js";
 
 export * from "./ai-connections.js";
 export * from "./types/email.js";
