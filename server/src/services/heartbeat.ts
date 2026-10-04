@@ -8544,6 +8544,8 @@ export function buildPaperclipTaskMarkdown(input: {
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
+  /** Keep the current assignment while projecting the separately versioned plan. */
+  taskPlanCompact?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -8724,7 +8726,7 @@ export function buildPaperclipTaskMarkdown(input: {
     if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
       const projection = projectTaskPlan({
         issueId: issue.id, title: issue.title, revisionId: input.taskPlan.revisionId,
-        body: input.taskPlan.body.trim(), compact: input.includeDescription === false,
+        body: input.taskPlan.body.trim(), compact: input.taskPlanCompact ?? input.includeDescription === false,
       });
       lines.push(
         "",
@@ -20988,6 +20990,9 @@ export function heartbeatService(
         taskPlan,
         includeDescription: false,
       });
+      context.paperclipTaskMarkdownResumed = buildPaperclipTaskMarkdown({
+        ...taskMarkdownInput, taskPlan, taskPlanCompact: true,
+      });
       if (taskPlan && issueRef) {
         const projection = projectTaskPlan({ issueId: issueRef.id, title: issueRef.title,
           revisionId: taskPlan.revisionId, body: taskPlan.body, compact: true });
@@ -21030,6 +21035,7 @@ export function heartbeatService(
           paperclipWakeComment: context.paperclipWakeComment,
           paperclipTaskMarkdown: context.paperclipTaskMarkdown,
           paperclipTaskMarkdownCompact: context.paperclipTaskMarkdownCompact,
+          paperclipTaskMarkdownResumed: context.paperclipTaskMarkdownResumed,
         });
         context.paperclipIssue = redactedWakeContext.paperclipIssue;
         if (redactedWakeContext.paperclipWakeComment) {
@@ -21044,6 +21050,7 @@ export function heartbeatService(
           context.paperclipTaskMarkdownCompact =
             redactedWakeContext.paperclipTaskMarkdownCompact;
         }
+        if (redactedWakeContext.paperclipTaskMarkdownResumed) context.paperclipTaskMarkdownResumed = redactedWakeContext.paperclipTaskMarkdownResumed;
       }
       // A native run's execution input is immutable once persisted. Recovery must therefore
       // restore the workspace bound to that input rather than consulting the issue's current
@@ -21303,6 +21310,7 @@ export function heartbeatService(
                 context.paperclipTaskMarkdownCompact,
               );
           }
+          if (typeof context.paperclipTaskMarkdownResumed === "string") context.paperclipTaskMarkdownResumed = appendConcurrentWorkspaceNote(context.paperclipTaskMarkdownResumed);
           logger.info(
             {
               event: "shared_workspace_concurrent_dispatch",
@@ -21324,6 +21332,7 @@ export function heartbeatService(
         const note = `Provider continuation: the previous run ${quotaHandoff.sourceRunId} stopped after a quota failure. This turn uses ${agent.adapterType}/${quotaFallbackPin.model ?? "configured model"}. Continue the same issue from its saved summary, existing files and Git changes; preserve completed work and avoid repeating completed external actions.`;
         context.paperclipTaskMarkdown = `${typeof context.paperclipTaskMarkdown === "string" ? context.paperclipTaskMarkdown : ""}\n\n${note}`;
         if (typeof context.paperclipTaskMarkdownCompact === "string") context.paperclipTaskMarkdownCompact += `\n\n${note}`;
+        if (typeof context.paperclipTaskMarkdownResumed === "string") context.paperclipTaskMarkdownResumed += `\n\n${note}`;
       }
       const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,

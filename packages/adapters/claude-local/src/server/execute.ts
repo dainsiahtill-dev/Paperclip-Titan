@@ -860,41 +860,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const renderedBootstrapPrompt =
-    !sessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-      : "";
-  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    resumedSession: Boolean(sessionId),
-    conversationMode: context.conversationMode === true,
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: taskContextNote.length > 0,
-  });
-  const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(promptTemplate, templateData);
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const prompt = joinPromptSections([
-    renderedBootstrapPrompt,
-    wakePrompt,
-    sessionHandoffNote,
-    taskContextNote,
-    renderedPrompt,
-  ]);
-  const promptMetrics = {
-    planSourceChars: asNumber(parseObject(context.paperclipPlanMetrics).sourceChars, 0),
-    planResumeChars: asNumber(parseObject(context.paperclipPlanMetrics).resumeChars, 0),
-    planOmittedChars: asNumber(parseObject(context.paperclipPlanMetrics).omittedChars, 0),
-    promptChars: prompt.length,
-    bootstrapPromptChars: renderedBootstrapPrompt.length,
-    wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
-    taskContextChars: taskContextNote.length,
-    heartbeatPromptChars: renderedPrompt.length,
+  const buildPromptForAttempt = (resumeSessionId: string | null) => {
+    const renderedBootstrapPrompt =
+      !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+        : "";
+    const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(resumeSessionId) });
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      resumedSession: Boolean(resumeSessionId),
+      conversationMode: context.conversationMode === true,
+      // The task-context markdown is the authoritative brief on this lane; keep
+      // the wake prompt's description copy out so the prompt carries it once.
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
+    const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+      ? ""
+      : renderTemplate(promptTemplate, templateData);
+    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const prompt = joinPromptSections([
+      renderedBootstrapPrompt,
+      wakePrompt,
+      sessionHandoffNote,
+      taskContextNote,
+      renderedPrompt,
+    ]);
+    const projectedBriefs = [context.paperclipTaskMarkdownCompact, context.paperclipTaskMarkdownResumed].map(value => asString(value, "").trim()).filter(Boolean);
+    const projectedPlan = projectedBriefs.includes(taskContextNote);
+    const promptMetrics = {
+      planSourceChars: asNumber(parseObject(context.paperclipPlanMetrics).sourceChars, 0),
+      planResumeChars: asNumber(parseObject(context.paperclipPlanMetrics).resumeChars, 0),
+      planOmittedChars: projectedPlan ? asNumber(parseObject(context.paperclipPlanMetrics).omittedChars, 0) : 0,
+      promptChars: prompt.length,
+      bootstrapPromptChars: renderedBootstrapPrompt.length,
+      wakePromptChars: wakePrompt.length,
+      sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
+      heartbeatPromptChars: renderedPrompt.length,
+    };
+    return { prompt, promptMetrics };
   };
+
   const passesConfiguredModel = Boolean(
     model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
@@ -951,6 +957,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const { prompt, promptMetrics } = buildPromptForAttempt(resumeSessionId);
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
     const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
     const commandNotes: string[] = [];

@@ -2244,7 +2244,9 @@ export function selectPaperclipTaskMarkdown(
     isAssignmentShapedPaperclipWakeReason(wake.reason) ||
     isPaperclipRecoveryWakePayload(context?.paperclipWake)
   ) {
-    return full;
+    // A valid resumed provider still needs current assignment/authority data;
+    // the plan can be projected independently of that full task brief.
+    return asString(context?.paperclipTaskMarkdownResumed, "").trim() || full;
   }
   const compact = asString(context?.paperclipTaskMarkdownCompact, "").trim();
   return compact || full;

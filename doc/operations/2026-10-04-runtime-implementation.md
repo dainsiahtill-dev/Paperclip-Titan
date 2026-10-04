@@ -62,3 +62,15 @@ Root prerequisites `ab2a8badf544ae15f9df4b816f77451c45fa1fcb` are present locall
 RED: simultaneous different child Agents under parent maxAutomaticRuns=1 admitted2. GREEN:1admitted/1queued, exactly1running. Adjacent maxWorkers1 capacity/resource-PG/policy/drain/quota:5files66/66pass, original timeouts unchanged. All test owners closed. The Root prerequisite commit must not be cherry-picked back as a new runtime change.
 
 Next owned qualification: PC-10 real first/resume/compact/stale-resume prompt path and measured10-turn100KB-plan sequence, with exact immutable revision and preserved latest steering/core constraints. Scope limited to plan projection/context, heartbeat context assembly, and Claude/Codex prompt selection/fallback tests; other Root UI/token changes remain protected.
+
+## PC-10 physical prompt-path qualification
+
+Actual CLI fixture subprocesses (not mocked stdin) execute Claude/Codex first/resume/compact-selection and stale-resume fallback paths. RED: both fresh retries reused the initial resume-delta prompt, losing the full plan/bootstrap. Attempt-local prompt construction now chooses against the actual attempted session; fresh retry restores full pinned brief/bootstrap/instructions. RED: assignment-shaped resume repeated105662-byte plan; a separately projected resumed brief retains full current assignment while omitting unrelated plan sections. New variant passes secret redaction and workspace/quota notes. RED: numeric omitted-plan metrics falsely reported compact savings on fresh attempts; now metrics match actual selected prompt.
+
+Measured10 physical small turns with105662-byte plan: Codex first stdin112860bytes, Claude112625bytes; subsequent turns3095–3145bytes. Each includes latest steering, scope/permission constraints and exact revision reference. Measurements are exported in `2026-10-04-plan-{codex,claude}-measurement.json`, explicitly synthetic CLI, estimatedPromptTokens=ceil(chars/4), billedTokenSavings=null. No paid-provider/cached-billing savings inferred. Compact here qualifies compact prompt selection, not universal provider context-compaction retention.
+
+Verification: stale/fresh,10-turn and saved-session config identity cases6/6 plus real immutable-approved-revision/company-boundary PG case1/1. Adjacent server-utils and remote adapter suites plus prompt/immutable cases:5files142/142pass before the two added config-identity cases; final2files7/7pass. FreshservertscGREEN. Complete plan stays in immutable document revision. No hash is treated as an Agent read receipt; projected prompt expressly requires the exact readable revision when context is missing/new.
+
+Ruling: retain all current assignment data on assignment/recovery resume, independently project long plan. Fresh invalid-model/cwd/session configuration gets full context. Root native-session prompt selection uses the same helper; actual ACP/paid-provider semantic acceptance remains Root qualification.
+
+Next owned PC-11: native/ACP provider-normalized totalTokens and canonical continuous-goal usage callback/durable highwater/stop proof. Root owns original maxRunSeconds deadlines and result classification.

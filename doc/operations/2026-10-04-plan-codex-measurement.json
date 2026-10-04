@@ -1,0 +1,89 @@
+{
+  "syntheticCli": true,
+  "kind": "codex",
+  "sourcePlanBytes": 105662,
+  "sourcePlanChars": 105662,
+  "billedTokenSavings": null,
+  "turns": [
+    {
+      "turn": 0,
+      "promptBytes": 112860,
+      "promptChars": 112860,
+      "estimatedPromptTokens": 28215,
+      "planMode": "full",
+      "resumed": false
+    },
+    {
+      "turn": 1,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 2,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 3,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 4,
+      "promptBytes": 3145,
+      "promptChars": 3145,
+      "estimatedPromptTokens": 787,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 5,
+      "promptBytes": 3097,
+      "promptChars": 3097,
+      "estimatedPromptTokens": 775,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 6,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 7,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 8,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    },
+    {
+      "turn": 9,
+      "promptBytes": 3095,
+      "promptChars": 3095,
+      "estimatedPromptTokens": 774,
+      "planMode": "sections",
+      "resumed": true
+    }
+  ]
+}
