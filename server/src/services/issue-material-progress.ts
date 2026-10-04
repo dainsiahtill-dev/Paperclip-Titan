@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { documentRevisions, documents, issueDocuments, issueExecutionDecisions,
   issueDeliveryDecisions, issueRelations, issues, issueWorkProducts, type Db } from "@paperclipai/db";
 
@@ -50,7 +50,7 @@ export async function readIssueMaterialProgress(db: Db, companyId: string, issue
       .innerJoin(documentRevisions, eq(documentRevisions.id, documents.latestRevisionId))
       .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId),
         eq(documents.companyId, companyId), eq(documentRevisions.companyId, companyId))).limit(bound),
-    db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId))).limit(bound),
+    db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.issueId, issueId), isNull(issueWorkProducts.deletedAt))).limit(bound),
     db.select({ id: issues.id, status: issues.status }).from(issueRelations)
       .innerJoin(issues, eq(issues.id, issueRelations.issueId))
       .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, issueId), eq(issues.companyId, companyId))).limit(bound),

@@ -96,3 +96,17 @@ PG **55432**，没有启动 API 或业务 Agent。在 `abea1e88c` 源码上升�
    测试、README、Git 产物及一次有证据的故障恢复；维护线程不代写应用。
 4. 按当前默认实例的实际 controller/config/active runs 做受控部署，保存新加载版本和
    每个原运行的处理结果；完成回滚兼容演练及可通过 Paperclip 查看的报告产物。
+
+## 最终验收 schema 的旧库升级核验
+
+`0286_curved_johnny_storm` 由 Drizzle 生成，SQL 中先创建 work-product 的
+company/id UNIQUE 再建立对应复合外键；snapshot/journal 未手工修改。
+第二次生成报告无 schema 变更。新库验收 API、页面评审和进展观察共36项通过。
+页面显示当前判定的真实评审者和时间；已删除的产物不参与当前进展观察。
+
+以最新 `paperclip-20261004-105251.sql.gz` 在受保护临时目录
+`/tmp/paperclip-restore-final-20261004` 恢复并升级0283–0286。210张原表、
+59,086行的全部原字段值保持一致；升级前后逐表行摘要总 SHA256 均为
+`c28807199e7ec53c6767ff75a29d8995903bba758bd0986611320830b1f2ba22`。
+实际结果记录在该目录 `result.json`，PG已停，没有启动Agent或写生产库。
+这是最终schema的数据保留证据，仍不代表旧binary写兼容、实际项目完成或默认部署。

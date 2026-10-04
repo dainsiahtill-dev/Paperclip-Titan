@@ -47,4 +47,11 @@ describe("issue delivery review", () => {
     await render();
     expect(container.textContent).toBe("");
   });
+  it("shows the actual current reviewer and review time for accepted content", async () => {
+    vi.mocked(issuesApi.getDeliveryAssessment).mockResolvedValue({ ...assessment, canComplete: true, criteria: [{ ...assessment.criteria[0], state: "accepted", provenance: { decisionId: "decision", actorType: "agent", actorId: "qa", agentId: "qa", runId: "run", createdAt: "2026-10-04T03:00:00.000Z", reviewerName: "QA" } }] });
+    await render();
+    expect(container.textContent).toContain("评审：QA");
+    expect(container.querySelector("time")?.getAttribute("datetime")).toBe("2026-10-04T03:00:00.000Z");
+    expect([...container.querySelectorAll("button")].some((node) => node.textContent === "要求修改")).toBe(true);
+  });
 });

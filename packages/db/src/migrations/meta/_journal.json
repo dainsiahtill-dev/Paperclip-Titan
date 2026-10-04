@@ -1989,6 +1989,13 @@
       "when": 1791071990461,
       "tag": "0285_simple_lady_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 286,
+      "version": "7",
+      "when": 1791085823311,
+      "tag": "0286_curved_johnny_storm",
+      "breakpoints": true
     }
   ]
 }
