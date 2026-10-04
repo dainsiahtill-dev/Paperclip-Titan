@@ -3715,7 +3715,11 @@ export async function ensureAbsoluteDirectory(
 export async function resolvePaperclipSkillsDir(
   moduleDir: string,
   additionalCandidates: string[] = [],
+  requiredSkillName?: string,
 ): Promise<string | null> {
+  if (requiredSkillName !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(requiredSkillName)) {
+    throw new Error("Required Paperclip runtime skill name must be a safe single path segment");
+  }
   const candidates = [
     ...PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES.map((relativePath) =>
       path.resolve(moduleDir, relativePath),
@@ -3731,7 +3735,13 @@ export async function resolvePaperclipSkillsDir(
       .stat(root)
       .then((stats) => stats.isDirectory())
       .catch(() => false);
-    if (isDirectory) return root;
+    if (!isDirectory) continue;
+    if (requiredSkillName) {
+      const hasRequiredSkill = await fs.stat(path.join(root, requiredSkillName, "SKILL.md"))
+        .then((stats) => stats.isFile()).catch(() => false);
+      if (!hasRequiredSkill) continue;
+    }
+    return root;
   }
 
   return null;

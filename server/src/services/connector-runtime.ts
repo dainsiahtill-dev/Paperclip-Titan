@@ -159,6 +159,7 @@ export async function applyConnectorSkills(
     const root = await resolvePaperclipSkillsDir(
       path.dirname(fileURLToPath(import.meta.url)),
       [fileURLToPath(new URL("../../../skills", import.meta.url))],
+      connector.skillName,
     );
     if (!root)
       throw new Error(`Bundled connector skill is missing: ${connector.key}`);

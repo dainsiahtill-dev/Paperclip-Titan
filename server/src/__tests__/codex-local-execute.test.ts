@@ -118,6 +118,17 @@ function createLocalSandboxRunner() {
   };
 }
 
+
+function expectManagedCodexConfig(config: string) {
+  expect(config).toMatch(/^model = "codex-mini-latest"$/m);
+  expect(config).toContain("[shell_environment_policy]");
+  expect(config).toMatch(/^inherit = "all"$/m);
+  expect(config).toMatch(/^ignore_default_excludes = true$/m);
+  for (const variable of ["PAPERCLIP_API_URL", "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID", "CODEX_HOME"]) {
+    expect(config).toContain(`"${variable}" = "include"`);
+  }
+}
+
 describe("codex execute", () => {
   it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
@@ -186,7 +197,7 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 });
+      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, totalTokens: 2 });
       expect(result.usageBasis).toBe("per_run");
       expect(result.costUsd).toBeNull();
 
@@ -198,7 +209,7 @@ describe("codex execute", () => {
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(managedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expectManagedCodexConfig(await fs.readFile(managedConfig, "utf8"));
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
       expect(logs).toContainEqual(
         expect.objectContaining({
@@ -1474,7 +1485,7 @@ process.exit(1);
       expect((await fs.lstat(isolatedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(isolatedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expectManagedCodexConfig(await fs.readFile(isolatedConfig, "utf8"));
       expect((await fs.lstat(homeSkill)).isSymbolicLink()).toBe(true);
       expect(logs).toContainEqual(
         expect.objectContaining({

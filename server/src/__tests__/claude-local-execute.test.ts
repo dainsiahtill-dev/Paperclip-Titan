@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -482,9 +483,10 @@ describe("claude execute", () => {
       await execute({
         runId: "run-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: { cwd: workspace, modelIdentity: `model:${DEFAULT_CLAUDE_LOCAL_MODEL}` }, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          model: DEFAULT_CLAUDE_LOCAL_MODEL,
           command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
@@ -552,9 +554,10 @@ describe("claude execute", () => {
       await execute({
         runId: "run-notes-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: { cwd: workspace, modelIdentity: `model:${DEFAULT_CLAUDE_LOCAL_MODEL}` }, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          model: DEFAULT_CLAUDE_LOCAL_MODEL,
           command: commandPath,
           cwd: workspace,
           env: {},
@@ -573,6 +576,24 @@ describe("claude execute", () => {
     }
   });
 
+  it.each([null, "model:other-model"])("starts fresh when persisted model identity is absent or mismatched (%s)", async (identity) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-model-identity-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const result = await execute({
+        runId: "run-identity-rotation",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: identity ? { cwd: workspace, modelIdentity: identity } : null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", model: DEFAULT_CLAUDE_LOCAL_MODEL, command: commandPath, cwd: workspace, env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath } },
+        context: {}, authToken: "fixture-token", onLog: async () => {},
+      });
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8"));
+      expect(capture.argv).not.toContain("--resume");
+      expect(capture.argv).toContain(DEFAULT_CLAUDE_LOCAL_MODEL);
+      expect(result.sessionParams?.modelIdentity).toBe(`model:${DEFAULT_CLAUDE_LOCAL_MODEL}`);
+    } finally { restore(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("rebuilds the combined instructions file when an unknown resumed session falls back to fresh", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-resume-fallback-"));
     const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
@@ -585,9 +606,10 @@ describe("claude execute", () => {
       const result = await execute({
         runId: "run-resume-fallback",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: { cwd: workspace, modelIdentity: `model:${DEFAULT_CLAUDE_LOCAL_MODEL}` }, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          model: DEFAULT_CLAUDE_LOCAL_MODEL,
           command: commandPath,
           cwd: workspace,
           env: {
@@ -810,7 +832,7 @@ describe("claude execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
-      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 });
+      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1, totalTokens: 2 });
       expect(result.usageBasis).toBe("per_run");
       expect(result.costUsd).toBeNull();
       expect(loggedCommand).toBe(commandPath);
@@ -1702,9 +1724,10 @@ describe("claude execute", () => {
       const result = await execute({
         runId: "run-poisoned-msgid",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
-        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        runtime: { sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sessionParams: { cwd: workspace, modelIdentity: `model:${DEFAULT_CLAUDE_LOCAL_MODEL}` }, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          model: DEFAULT_CLAUDE_LOCAL_MODEL,
           command: commandPath,
           cwd: workspace,
           env: {
@@ -1795,12 +1818,13 @@ describe("claude execute", () => {
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
         runtime: {
           sessionId: "aaaaaaaa-0000-4000-8000-000000000004",
-          sessionParams: null,
+          sessionParams: { cwd: workspace, modelIdentity: `model:${DEFAULT_CLAUDE_LOCAL_MODEL}` },
           sessionDisplayId: null,
           taskKey: null,
         },
         config: {
           engine: "cli",
+          model: DEFAULT_CLAUDE_LOCAL_MODEL,
           command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
