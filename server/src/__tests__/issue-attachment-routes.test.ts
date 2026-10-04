@@ -788,6 +788,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.mp4",
         },
       }),
+      { agentId: null, userId: "local-board", runId: null },
     );
   });
 
@@ -881,6 +882,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.webm",
         },
       }),
+      { agentId: null, userId: "local-board", runId: null },
     );
   });
 });
