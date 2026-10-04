@@ -1,5 +1,9 @@
 # Paperclip 项目交付可靠性完善计划
 
+**2026-10-04 实施状态：** A–J 代码、专项检查、本次隔离工程与默认部署已收口。
+当前结论、真实验收、预算例外和回滚范围以 [最终报告](../operations/2026-10-04-delivery-final-report.md) 为准。
+本文下方提案、复现步骤与原始未勾选清单保留为设计/执行基线；已实现 API 参照同日 implementation 文档及当前 API，不能继续按创建时“尚未实现”理解。
+
 > For agentic workers: 实施使用 superpowers:executing-plans；用户已明确允许安排专家，可按本文互斥写入边界使用 superpowers:subagent-driven-development。逐任务执行复现、最小修复、验证与提交；不要把整份计划复制进每个 heartbeat。
 
 **Goal：** 让 Paperclip 能持续推进有明确目标的工程项目，正确交接、恢复阻塞、控制资源，并以实际产物与业务验收收口。
