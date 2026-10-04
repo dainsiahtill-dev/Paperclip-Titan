@@ -186,13 +186,16 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt, params.onPromptRequestStarted, params.onElicitation);
-@@ -6444,6 +6508,9 @@ async function runPromptTurn(params) {
+@@ -6444,6 +6508,12 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
-+		if (terminalFailureCategory !== null)
-+			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);
++		if (terminalFailureCategory !== null) {
++			const failure = response._meta.jetbrains.air.sessionFailure;
++			const title = typeof failure.title === "string" ? failure.title.slice(0, 4000) : undefined;
++			throw Object.assign(new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`), { cause: { typedSessionFailure: true, category: terminalFailureCategory, message: title } });
++		}
  		recordPromptResponseUsage(params.conversation, response.usage, params.promptMessageId);
  		return {
  			stopReason: response.stopReason,
@@ -204,7 +207,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..17f0739318e61744af3eaa760cfbdc84
 \ No newline at end of file
 +//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f56949778b1f1 100644
+index e8102acb0..fedebca45 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -240,7 +243,15 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f5694
  } | {
    type: "tool_call";
    text: string;
-@@ -313,6 +323,35 @@ type AcpRuntimeOptions = {
+@@ -219,6 +229,7 @@ type AcpRuntimeEvent = {
+   retryable?: boolean;
+ };
+ type AcpRuntimeTurnResultError = {
++  cause?: { typedSessionFailure: true; category: string; message?: string };
+   message: string;
+   code?: string;
+   detailCode?: string;
+@@ -313,6 +324,35 @@ type AcpRuntimeOptions = {
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
@@ -277,7 +288,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..fa94c67bb8389437fe3ac3e8b92f5694
  type AcpFileSessionStoreOptions = {
    stateDir: string;
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f83e5a8b5 100644
+index a1f4a70a0..7622dbb76 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -324,7 +335,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  function normalizeUsageCost(value) {
  	if (!isRecord(value)) return;
  	const amount = asOptionalFiniteNumber(value.amount);
-@@ -812,7 +826,17 @@ var AcpRuntimeManager = class {
+@@ -812,7 +840,17 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -343,7 +354,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	}
  	createSessionOwner(input) {
  		const owner = {
-@@ -821,12 +845,16 @@ var AcpRuntimeManager = class {
+@@ -821,12 +859,16 @@ var AcpRuntimeManager = class {
  			pendingSessionUpdates: []
  		};
  		input.client.setEventHandlers({
@@ -360,7 +371,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		const active = owner.activeTurn;
  		if (active) {
  			const { task, turn } = active;
-@@ -863,6 +891,9 @@ var AcpRuntimeManager = class {
+@@ -863,6 +905,9 @@ var AcpRuntimeManager = class {
  		projection.checkpoint.request();
  	}
  	routeOwnedClientOperation(owner, operation) {
@@ -370,7 +381,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
-@@ -1008,6 +1062,8 @@ var AcpRuntimeManager = class {
+@@ -1008,6 +1053,8 @@ var AcpRuntimeManager = class {
  		record.closedAt = void 0;
  		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
  		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
@@ -379,7 +390,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
  	}
  	async finishBufferedOwnerControl(owner, record) {
-@@ -1086,6 +1142,11 @@ var AcpRuntimeManager = class {
+@@ -1086,6 +1133,11 @@ var AcpRuntimeManager = class {
  		record.closed = false;
  		record.closedAt = void 0;
  		this.closingActiveRecords.delete(record.acpxRecordId);
@@ -391,7 +402,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		await this.options.sessionStore.save(record);
  		return record;
  	}
-@@ -1149,6 +1210,8 @@ var AcpRuntimeManager = class {
+@@ -1149,6 +1201,8 @@ var AcpRuntimeManager = class {
  		this.closingActiveRecords.delete(record.acpxRecordId);
  		record.protocolVersion = client.initializeResult?.protocolVersion;
  		record.agentCapabilities = client.initializeResult?.agentCapabilities;
@@ -400,7 +411,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		applyConfigOptionsToRecord(record, session.sessionResult);
  		const modelApplication = await applyRequestedModelIfAdvertised({
  			client,
-@@ -1469,6 +1532,10 @@ var AcpRuntimeManager = class {
+@@ -1469,6 +1523,10 @@ var AcpRuntimeManager = class {
  			setSessionConfigOption: async (configId, value) => {
  				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
  			},
@@ -411,7 +422,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
  		};
  	}
-@@ -1575,6 +1642,8 @@ var AcpRuntimeManager = class {
+@@ -1575,6 +1633,8 @@ var AcpRuntimeManager = class {
  		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
  		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
  		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
@@ -420,7 +431,19 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  		turn.record.acpx = turn.acpxState;
  		applyConversation(turn.record, turn.conversation);
  		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
-@@ -1707,6 +1776,17 @@ var AcpRuntimeManager = class {
+@@ -1584,9 +1644,11 @@ var AcpRuntimeManager = class {
+ 		task.promptStarted.reject(error);
+ 		task.sessionReady.reject(error);
+ 		const normalized = normalizeOutputError(error, { origin: "runtime" });
++		const failure = error?.cause?.typedSessionFailure === true ? error.cause : null;
+ 		return {
+ 			status: "failed",
+ 			error: {
++				...failure ? { cause: { typedSessionFailure: true, category: failure.category, message: typeof failure.message === "string" ? failure.message.slice(0, 4000) : undefined } } : {},
+ 				message: normalized.message,
+ 				...normalized.code ? { code: normalized.code } : {},
+ 				...normalized.detailCode ? { detailCode: normalized.detailCode } : {},
+@@ -1707,6 +1769,17 @@ var AcpRuntimeManager = class {
  		});
  		await this.options.sessionStore.save(result.record);
  	}
@@ -438,7 +461,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2119,6 +2199,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2192,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -453,7 +476,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..5c0562034f5bcb726536136db3cb2d3f
  	async cancel(input) {
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
-@@ -2178,4 +2266,4 @@ function createRuntimeStore(options) {
+@@ -2178,4 +2259,4 @@ function createRuntimeStore(options) {
  //#endregion
  export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
 
