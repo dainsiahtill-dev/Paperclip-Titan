@@ -27,9 +27,9 @@ export function DeliveryAssessmentPanel({ assessment, onDecision, pending, error
               <span className="shrink-0 text-xs text-muted-foreground">{stateLabels[criterion.state]}</span>
             </div>
             {criterion.reason ? <p className="text-xs text-muted-foreground">{criterion.reason}</p> : null}
-            {assessment.permissions?.canReview && onDecision && criterion.workProductId && criterion.state !== "accepted" ? (
+            {assessment.permissions?.canReview && onDecision && criterion.workProductId && criterion.materialVersion && criterion.contentDigest ? (
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" disabled={pending} onClick={() => onDecision(criterion, "accepted", reason.trim() || "已检查当前条件与产物内容，验收通过。")}>验收通过</Button>
+                {criterion.state !== "accepted" ? <Button size="sm" variant="outline" disabled={pending} onClick={() => onDecision(criterion, "accepted", reason.trim() || "已检查当前条件与产物内容，验收通过。")}>验收通过</Button> : null}
                 <Button size="sm" variant="outline" disabled={pending || !reason.trim()} onClick={() => onDecision(criterion, "rejected", reason.trim())}>要求修改</Button>
               </div>
             ) : null}

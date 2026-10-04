@@ -226,6 +226,7 @@ import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { useTaskArtifactArrival } from "../hooks/useTaskArtifactArrival";
 import { IssueRunLedger } from "../components/IssueRunLedger";
+import { IssueDeliveryAssessment } from "../components/IssueDeliveryAssessment";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import {
@@ -2739,6 +2740,7 @@ function IssueDetailActivityTab({
         </div>
       )}
       <div className="mb-3">
+        <IssueDeliveryAssessment issueId={issueId} />
         <IssueRunLedger
           issueId={issueId}
           companyId={companyId}
@@ -7415,6 +7417,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
           {taskChatShellEnabled ? null : pluginOutletsBlock}
 
+          {taskChatShellEnabled ? null : <IssueDeliveryAssessment key={issue.id} issueId={issue.id} />}
+
           {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-2">
@@ -7684,7 +7688,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
-                  threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
+                  threadHeader={<>{taskChatThreadHeader}<IssueDeliveryAssessment key={issue.id} issueId={issue.id} />{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
                     // task: its description is agent instructions, not something the

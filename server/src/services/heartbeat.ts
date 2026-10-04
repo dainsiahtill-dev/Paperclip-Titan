@@ -201,6 +201,7 @@ import { documentService } from "./documents.js";
 import { getTaskPlanContext } from "./task-plan-context.js";
 import { projectTaskPlan } from "./task-plan-projection.js";
 import { compareMaterialProgress, readIssueMaterialProgress, type MaterialProgressSnapshot } from "./issue-material-progress.js";
+import { deliveryAuthorityService, resolveDeliveryDefinition } from "./delivery-authority.js";
 import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies } from "./issue-resource-limits.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
@@ -8548,6 +8549,7 @@ export function buildPaperclipTaskMarkdown(input: {
   includeDescription?: boolean;
   /** Keep the current assignment while projecting the separately versioned plan. */
   taskPlanCompact?: boolean;
+  deliveryAssessment?: import("@paperclipai/shared").DeliveryAssessment | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -8651,6 +8653,12 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
+    if (input.deliveryAssessment?.mode === "verified_delivery") {
+      lines.push("", "Independent delivery authority:",
+        "This task uses verified_delivery. Register the actual deliverable as an issue work product; mutable approved/reviewState fields, completion comments and successful runs do not grant delivery acceptance. Execution owners must preserve their implementation responsibility and use the normal typed review handoff to an independent configured reviewer. Do not create nested verification tasks solely to obtain another approval.",
+        `Before reviewing, GET /api/issues/${issue.id}/delivery-assessment and inspect each current criterion and its actual work product. Only the server can authorize the reviewer. After checking current material, POST /api/issues/${issue.id}/delivery-decisions with a stable requestId, criterionId, workProductId, expectedContractHash, expectedCriterionDigest, expectedMaterialVersion, expectedContentDigest, verdict (accepted/rejected), and a specific reason. Copy pins from that fresh assessment; never invent them. Then follow the normal typed review handoff and verdict to return work to the implementation owner or advance its stage. Rejection keeps repair on the existing task. Recheck only changed criteria and necessary adjacent checks against the current material.`,
+        `Current authority summary (refresh before any decision): ${JSON.stringify({ contractRevision: input.deliveryAssessment.contractRevision, canComplete: input.deliveryAssessment.canComplete, criteria: input.deliveryAssessment.criteria.map(({ id, state, workProductId }) => ({ id, state, workProductId })) })}`);
+    }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
       if (acceptedChatPlan) {
@@ -21048,7 +21056,10 @@ export function heartbeatService(
       if (issueRef && !isConversation(issueContext)) {
         context.materialProgressBaseline = await readIssueMaterialProgress(db, agent.companyId, issueRef.id);
       }
-      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
+      const deliveryAssessment = issueRef && !isConversation(issueContext)
+        && (await resolveDeliveryDefinition(db, agent.companyId, issueRef.id)).mode === "verified_delivery"
+        ? await deliveryAuthorityService(db).assessment(agent.companyId, issueRef.id) : null;
+      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan, deliveryAssessment });
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
@@ -21056,10 +21067,11 @@ export function heartbeatService(
       const taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
+        deliveryAssessment,
         includeDescription: false,
       });
       context.paperclipTaskMarkdownResumed = buildPaperclipTaskMarkdown({
-        ...taskMarkdownInput, taskPlan, taskPlanCompact: true,
+        ...taskMarkdownInput, taskPlan, deliveryAssessment, taskPlanCompact: true,
       });
       if (taskPlan && issueRef) {
         const projection = projectTaskPlan({ issueId: issueRef.id, title: issueRef.title,

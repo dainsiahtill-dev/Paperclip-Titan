@@ -90,3 +90,19 @@ The four fixture Agent profiles now retain the original ACP/model/effort and
 explicit configured binary path. No application code or production config was
 modified by those preflights. Executable/auth-file readiness alone was not
 treated as successful provider invocation.
+
+Verified delivery now connects to ordinary task execution and the task page.
+Fresh and resumed provider task briefs retain the current criterion states and
+the assessment/decision API references, so independent QA can inspect real
+material, submit current content pins, then use the existing typed review
+handoff. Ordinary tasks retain their current completion policy. The task page
+uses server permissions, refreshes on material/decision events, and reports a
+stale decision failure before requesting current authority again.
+
+The material observer includes the latest durable independent verdict for each
+criterion, including its criterion/content/material pins. Repeated acceptance
+of identical material and changed review narration do not reset no-progress
+limits. A new criterion or a changed authoritative verdict does count. These
+integration regressions passed107 tests across four files; UI/server typecheck
+and the token gates passed. Serial schema migration, final review and the real
+Agent application qualification remain pending.

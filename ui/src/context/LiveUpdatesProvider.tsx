@@ -1361,6 +1361,9 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
+        if (action?.startsWith("issue.delivery_") || action === "issue.updated" || action?.startsWith("issue.work_product_") || (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action))) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.deliveryAssessment(ref) });
+        }
         if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
         }

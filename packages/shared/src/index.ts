@@ -2779,4 +2779,6 @@ export type { IssueResourceLimits } from "./validators/issue-resources.js";
 export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
+export * from "./types/delivery.js";
+export * from "./validators/delivery.js";
 export * from "./announcements.js";

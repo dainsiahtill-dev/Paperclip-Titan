@@ -3,6 +3,12 @@ import { materialProgressSnapshot, compareMaterialProgress } from "./issue-mater
 
 const facts = { documents: [{ key: "design", body: "Decide on JSON storage." }], products: [], blockers: [], decisions: [] };
 describe("material progress", () => {
+  it("recognizes a newly validated criterion while ignoring duplicate decision narration", () => {
+    const decision = { stageId: "delivery:api", outcome: "accepted", criterionDigest: "criterion-1", contentDigest: "artifact-1", materialVersion: "1" };
+    const before = materialProgressSnapshot({ ...facts, decisions: [decision] });
+    expect(compareMaterialProgress(before, materialProgressSnapshot({ ...facts, decisions: [{ ...decision, reason: "same result", id: "duplicate" }] })).state).toBe("unchanged");
+    expect(compareMaterialProgress(before, materialProgressSnapshot({ ...facts, decisions: [{ ...decision, criterionDigest: "criterion-2" }] }))).toMatchObject({ state: "advanced", kind: "decision" });
+  });
   it("ignores timestamps, revision ids, narration and duplicate source rows", () => {
     const before = materialProgressSnapshot(facts);
     const after = materialProgressSnapshot({ ...facts, documents: [{ ...facts.documents[0], revisionId: "new", updatedAt: "later" }, facts.documents[0]] });

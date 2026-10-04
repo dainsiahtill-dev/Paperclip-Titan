@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { documentRevisions, documents, issueDocuments, issueExecutionDecisions,
-  issueRelations, issues, issueWorkProducts, type Db } from "@paperclipai/db";
+  issueDeliveryDecisions, issueRelations, issues, issueWorkProducts, type Db } from "@paperclipai/db";
 
 type RecordValue = Record<string, unknown>;
 export interface MaterialFacts {
   documents: Array<{ key: string; body: string; [key: string]: unknown }>;
   products: Array<{ type: string; provider: string; externalId?: string | null; url?: string | null; metadata?: RecordValue | null; [key: string]: unknown }>;
   blockers: Array<{ id: string; status: string }>;
-  decisions: Array<{ stageId: string; outcome: string }>;
+  decisions: Array<{ stageId: string; outcome: string; criterionDigest?: string; contentDigest?: string; materialVersion?: string; [key: string]: unknown }>;
   complete?: boolean;
 }
 export interface MaterialProgressSnapshot {
@@ -27,7 +27,8 @@ export function materialProgressSnapshot(facts: MaterialFacts): MaterialProgress
       ...["sha256", "contentDigest", "commitSha", "revision", "attachmentId", "resourceRef"].map((key) => metadata[key] ?? null)];
   })));
   const dependency = hash(normalizedSet(facts.blockers.map((row) => [row.id, ["done", "cancelled"].includes(row.status) ? "ready" : "waiting"])));
-  const decision = hash(normalizedSet(facts.decisions.map((row) => [row.stageId, row.outcome])));
+  const decision = hash(normalizedSet(facts.decisions.map((row) => [row.stageId, row.outcome,
+    row.criterionDigest ?? null, row.contentDigest ?? null, row.materialVersion ?? null])));
   return { version: 1, document, artifact, dependency, decision,
     fingerprint: hash([document, artifact, dependency, decision]), complete: facts.complete !== false };
 }
@@ -43,7 +44,7 @@ export function compareMaterialProgress(before: MaterialProgressSnapshot | null,
 /** Bounded, company-scoped observation; an incomplete sample never proves progress. */
 export async function readIssueMaterialProgress(db: Db, companyId: string, issueId: string) {
   const bound = 513;
-  const [documentRows, productRows, blockerRows, decisionRows] = await Promise.all([
+  const [documentRows, productRows, blockerRows, decisionRows, deliveryRows] = await Promise.all([
     db.select({ key: issueDocuments.key, body: documentRevisions.body }).from(issueDocuments)
       .innerJoin(documents, eq(documents.id, issueDocuments.documentId))
       .innerJoin(documentRevisions, eq(documentRevisions.id, documents.latestRevisionId))
@@ -55,8 +56,15 @@ export async function readIssueMaterialProgress(db: Db, companyId: string, issue
       .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, issueId), eq(issues.companyId, companyId))).limit(bound),
     db.select({ stageId: issueExecutionDecisions.stageId, outcome: issueExecutionDecisions.outcome })
       .from(issueExecutionDecisions).where(and(eq(issueExecutionDecisions.companyId, companyId), eq(issueExecutionDecisions.issueId, issueId))).limit(bound),
+    db.select().from(issueDeliveryDecisions).where(and(eq(issueDeliveryDecisions.companyId, companyId), eq(issueDeliveryDecisions.issueId, issueId)))
+      .orderBy(desc(issueDeliveryDecisions.createdAt), desc(issueDeliveryDecisions.id)).limit(bound),
   ]);
+  // Repeated reviews of unchanged content cannot reset the no-progress budget.
+  const latestDelivery = new Map<string, (typeof deliveryRows)[number]>();
+  for (const row of deliveryRows) if (!latestDelivery.has(row.criterionId)) latestDelivery.set(row.criterionId, row);
   return materialProgressSnapshot({ documents: documentRows, products: productRows,
-    blockers: blockerRows, decisions: decisionRows,
-    complete: [documentRows, productRows, blockerRows, decisionRows].every((rows) => rows.length < bound) });
+    blockers: blockerRows, decisions: [...decisionRows, ...[...latestDelivery.values()].map((row) => ({
+      stageId: `delivery:${row.criterionId}`, outcome: row.verdict, criterionDigest: row.criterionDigest,
+      contentDigest: row.contentDigest, materialVersion: row.materialVersion }))],
+    complete: [documentRows, productRows, blockerRows, decisionRows, deliveryRows].every((rows) => rows.length < bound) });
 }

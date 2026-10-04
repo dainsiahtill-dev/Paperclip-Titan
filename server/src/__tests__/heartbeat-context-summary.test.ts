@@ -7,6 +7,17 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("retains current independent delivery instructions in resumed task context", () => {
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "delivery-issue", identifier: "DEL-2", title: "Deliver API" },
+      deliveryAssessment: { version: 1, mode: "verified_delivery", contractId: "contract", contractRevision: 3, contractHash: "hash", canComplete: false, reviewerAgentIds: ["qa"], criteria: [{ id: "api", requirement: "Reject invalid status", state: "missing", criterionDigest: "criterion", workProductId: "product", contentDigest: "digest", materialVersion: "2", decisionId: null, reason: null }] },
+      taskPlanCompact: true, includeDescription: false });
+    expect(prompt).toContain("GET /api/issues/delivery-issue/delivery-assessment");
+    expect(prompt).toContain("POST /api/issues/delivery-issue/delivery-decisions");
+    expect(prompt).toContain("expectedContentDigest");
+    expect(prompt).toContain("normal typed review handoff");
+    expect(prompt).toContain('"id":"api","state":"missing"');
+    expect(buildPaperclipTaskMarkdown({ issue: { id: "ordinary", identifier: null, title: "Small fix" } })).not.toContain("Independent delivery authority");
+  });
   it("projects long plans on resume while retaining scope, acceptance, current work and full revision access", () => {
     const input = {
       issue: { id: "issue-1", identifier: "PAP-1", title: "Implement persistence", workMode: "standard" },

@@ -210,3 +210,4 @@ export { aiProviderDefaults } from "./ai_provider_defaults.js";
 export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
 export { issueCommentDeliveries } from "./issue_comment_deliveries.js";
+export { issueDeliveryDecisions } from "./issue_delivery_decisions.js";
