@@ -12,6 +12,8 @@ import {
   projects,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
+import { companyService } from "../services/companies.ts";
+import { agentService } from "../services/agents.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -478,6 +480,32 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await service.upsertPolicy(companyId, { ...base, amount: 200 }, "board");
     const [raised] = await db.select({ reason: table.pauseReason }).from(table).where(eq(table.id, scopeId));
     expect(raised.reason).toBe("manual");
+  });
+
+  it.each([100, 1])("never reverses an archived company's lifecycle while setting budget %i", async (amount) => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    const policy = { scopeType: "company" as const, scopeId: companyId, metric: "billed_cents" as const, windowKind: "lifetime" as const, notifyEnabled: false };
+    await insertCostEvent({ companyId, agentId, costCents: 2 });
+    await service.upsertPolicy(companyId, { ...policy, amount: 1 }, "board");
+    await companyService(db).archive(companyId);
+    await service.upsertPolicy(companyId, { ...policy, amount }, "board");
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(company.status).toBe("archived");
+  });
+
+  it("never resumes a PATCH-terminated agent when the former budget hold is raised", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+    const policy = { scopeType: "agent" as const, scopeId: agentId, metric: "billed_cents" as const, windowKind: "lifetime" as const, notifyEnabled: false };
+    await insertCostEvent({ companyId, agentId, costCents: 2 });
+    await service.upsertPolicy(companyId, { ...policy, amount: 1 }, "board");
+    await agentService(db).update(agentId, { status: "terminated" });
+    await service.upsertPolicy(companyId, { ...policy, amount: 100 }, "board");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent.status).toBe("terminated");
+    expect(agent.pauseReason).toBeNull();
+    expect(agent.pausedAt).toBeNull();
   });
 
   it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {

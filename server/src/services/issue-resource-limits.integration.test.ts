@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, costEvents, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, costEvents, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { getIssueResourceBlock } from "./issue-resource-limits.js";
 import { issueService } from "./issues.js";
@@ -13,7 +13,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => { fixture = await startEmbeddedPostgresTestDatabase("paperclip-resources-"); db = createDb(fixture.connectionString); }, 20000);
   afterEach(async () => {
     await db.delete(activityLog); await db.delete(issueComments); await db.delete(costEvents);
-    await db.delete(issues); await db.delete(heartbeatRuns); await db.delete(agents); await db.delete(companies);
+    await db.delete(issues); await db.delete(heartbeatRuns); await db.delete(agentWakeupRequests); await db.delete(agents); await db.delete(companies);
   });
   afterAll(async () => { await fixture?.cleanup(); });
   async function seed(resourceLimits: Record<string, number>) {
@@ -39,6 +39,49 @@ const support = await getEmbeddedPostgresTestSupport();
     const input = { companyId: s.companyId, issueId: s.childId };
     expect(await getIssueResourceBlock(db, input)).toMatchObject({ code: "issue_automatic_run_limit", resourceIssueId: s.rootId });
     expect(await getIssueResourceBlock(createDb(fixture.connectionString), input)).toMatchObject({ code: "issue_automatic_run_limit", resourceIssueId: s.rootId });
+  });
+
+  it.each(["user", "agent", "system"])("counts manual-labelled %s wakes using trusted actor provenance", async (actorType) => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10), wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: s.companyId, agentId: s.agentId,
+      source: "on_demand", triggerDetail: "manual", status: "completed", runId: id,
+      requestedByActorType: actorType, requestedByActorId: actorType === "user" ? "board" : s.agentId,
+    });
+    await db.update(heartbeatRuns).set({ invocationSource: "on_demand", triggerDetail: "manual", wakeupRequestId: wakeId }).where(eq(heartbeatRuns.id, id));
+    const block = await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId });
+    if (actorType === "user") expect(block).toBeNull();
+    else expect(block).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
+  it("counts an automatic retry of a manual user wake against the automatic limit", async () => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10), wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: s.companyId, agentId: s.agentId,
+      source: "on_demand", triggerDetail: "manual", status: "completed", runId: id,
+      requestedByActorType: "user", requestedByActorId: "board",
+    });
+    await db.update(heartbeatRuns).set({ invocationSource: "on_demand", triggerDetail: "manual", wakeupRequestId: wakeId,
+      contextSnapshot: { issueId: s.childId, retryOfRunId: randomUUID() } }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
+  it("does not treat an unproven manual label as an operator exemption", async () => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10);
+    await db.update(heartbeatRuns).set({ invocationSource: "on_demand", triggerDetail: "manual" }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
+  it("counts an inconsistent user receipt whose run lacks its manual trigger", async () => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10), wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: s.companyId, agentId: s.agentId,
+      source: "on_demand", triggerDetail: "manual", status: "completed", runId: id,
+      requestedByActorType: "user", requestedByActorId: "board",
+    });
+    await db.update(heartbeatRuns).set({ invocationSource: "on_demand", triggerDetail: null, wakeupRequestId: wakeId }).where(eq(heartbeatRuns.id, id));
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_automatic_run_limit" });
   });
 
   it("persists resource-only limits through ordinary issue creation and update", async () => {

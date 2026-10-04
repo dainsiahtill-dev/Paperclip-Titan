@@ -251,7 +251,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+        .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId),
+          inArray(agents.status, ["active", "idle", "running", "error"])));
       return;
     }
 
@@ -263,7 +264,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(projects.id, policy.scopeId), or(eq(projects.pauseReason, "budget"),
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId), or(eq(projects.pauseReason, "budget"),
           and(isNull(projects.pauseReason), isNull(projects.pausedAt)))));
       return;
     }
@@ -276,7 +277,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         pausedAt: now,
         updatedAt: now,
       })
-      .where(and(eq(companies.id, policy.scopeId), or(eq(companies.pauseReason, "budget"),
+      .where(and(eq(companies.id, policy.scopeId), eq(companies.id, policy.companyId),
+        inArray(companies.status, ["active", "paused"]), or(eq(companies.pauseReason, "budget"),
         and(eq(companies.status, "active"), isNull(companies.pauseReason), isNull(companies.pausedAt)))));
   }
 
@@ -315,7 +317,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")));
+        .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId),
+          eq(agents.status, "paused"), eq(agents.pauseReason, "budget")));
       return;
     }
 
@@ -327,7 +330,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           pausedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(projects.id, policy.scopeId), eq(projects.pauseReason, "budget")));
+        .where(and(eq(projects.id, policy.scopeId), eq(projects.companyId, policy.companyId), eq(projects.pauseReason, "budget")));
       return;
     }
 
@@ -339,7 +342,8 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         pausedAt: null,
         updatedAt: now,
       })
-      .where(and(eq(companies.id, policy.scopeId), eq(companies.pauseReason, "budget")));
+      .where(and(eq(companies.id, policy.scopeId), eq(companies.id, policy.companyId),
+        eq(companies.status, "paused"), eq(companies.pauseReason, "budget")));
   }
 
   async function getPolicyRow(policyId: string) {

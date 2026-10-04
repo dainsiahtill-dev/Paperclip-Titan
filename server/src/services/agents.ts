@@ -757,6 +757,11 @@ export function agentService(db: Db) {
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    if (normalizedPatch.status === "terminated") {
+      normalizedPatch.pauseReason = null;
+      normalizedPatch.pausedAt = null;
+      normalizedPatch.errorReason = null;
+    }
     assertQuotaFallbackRuntime(normalizedPatch.adapterType ?? existing.adapterType, normalizedPatch.runtimeConfig ?? existing.runtimeConfig);
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);

@@ -84,7 +84,26 @@ export async function getIssueResourceBlock(db: Db, input: {
     )) : [{ totalTokens: 0, unknownUsageCount: 0 }];
     const [runs] = policy.limits.maxAutomaticRuns ? await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.startedAt),
-        ne(heartbeatRuns.invocationSource, "manual"), input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : undefined)) : [{ count: 0 }];
+        // A caller-supplied manual label is not authority. Only an original
+        // operator wake receipt bound to this company/Agent/run is exempt;
+        // automatic retries and continuations still spend automatic attempts.
+        sql`not coalesce((
+          ${heartbeatRuns.invocationSource} = 'on_demand'
+          and ${heartbeatRuns.triggerDetail} = 'manual'
+          and coalesce(${heartbeatRuns.contextSnapshot}->>'retryOfRunId', '') = ''
+          and coalesce(${heartbeatRuns.contextSnapshot}->>'scheduledRetryAttempt', '0') = '0'
+          and coalesce(${heartbeatRuns.contextSnapshot}->>'continuationAttempt', '0') = '0'
+          and exists (select 1 from agent_wakeup_requests manual_wake
+            where manual_wake.id = ${heartbeatRuns.wakeupRequestId}
+              and manual_wake.company_id = ${heartbeatRuns.companyId}
+              and manual_wake.agent_id = ${heartbeatRuns.agentId}
+              and manual_wake.run_id = ${heartbeatRuns.id}
+              and manual_wake.requested_by_actor_type = 'user'
+              and manual_wake.requested_by_actor_id is not null
+              and btrim(manual_wake.requested_by_actor_id) <> ''
+              and manual_wake.source = 'on_demand'
+              and manual_wake.trigger_detail = 'manual')
+        ), false)`, input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : undefined)) : [{ count: 0 }];
     const recent = policy.limits.maxNoProgressRuns ? await db.select({ status: heartbeatRuns.status,
       livenessState: heartbeatRuns.livenessState, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.finishedAt)))
