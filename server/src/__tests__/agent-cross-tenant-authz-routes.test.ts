@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.unmock("http");
 vi.unmock("node:http");
@@ -344,6 +344,10 @@ function resetMockDefaults() {
 }
 
 describe.sequential("agent cross-tenant route authorization", () => {
+  beforeAll(async () => {
+    await loadRouteModules();
+  });
+
   beforeEach(() => {
     resetMockDefaults();
   });
