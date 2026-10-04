@@ -18,7 +18,7 @@ patchedDependencies:
     hash: riqgguivxjxydoydnzpedjy5au
     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2':
-    hash: juyg45ifkipb4jskg7lpym2lj4
+    hash: u5rx5g7sxrc27ujs3slflfvqpe
     path: patches/@agentclientprotocol__codex-acp@1.6.2.patch
   '@chat-adapter/discord@4.39.0':
     hash: nywlhls7dd4npegrgax7jqdbxa
@@ -39,7 +39,7 @@ patchedDependencies:
     hash: vbylpnnxt5av2zdnuqmf6hjyjy
     path: patches/@discordjs__ws@1.2.3.patch
   acpx@0.12.0:
-    hash: d44jmucvnedmwplggycllg4dlq
+    hash: yduijxulnckuzynhno2gs2trda
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
     hash: muprasnpbioag7nmzx76fxvhvy
@@ -154,7 +154,7 @@ importers:
         version: link:../shared
       acpx:
         specifier: 0.12.0
-        version: 0.12.0(patch_hash=d44jmucvnedmwplggycllg4dlq)
+        version: 0.12.0(patch_hash=yduijxulnckuzynhno2gs2trda)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -195,7 +195,7 @@ importers:
     dependencies:
       '@agentclientprotocol/codex-acp':
         specifier: ^1.6.2
-        version: 1.6.2(patch_hash=juyg45ifkipb4jskg7lpym2lj4)
+        version: 1.6.2(patch_hash=u5rx5g7sxrc27ujs3slflfvqpe)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -498,7 +498,7 @@ importers:
         version: 0.73.0(patch_hash=riqgguivxjxydoydnzpedjy5au)(@anthropic-ai/sdk@0.121.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
-        version: 1.6.2(patch_hash=juyg45ifkipb4jskg7lpym2lj4)
+        version: 1.6.2(patch_hash=u5rx5g7sxrc27ujs3slflfvqpe)
       '@openai/codex':
         specifier: 0.153.4
         version: 0.153.4
@@ -9008,7 +9008,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=juyg45ifkipb4jskg7lpym2lj4)':
+  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=u5rx5g7sxrc27ujs3slflfvqpe)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@openai/codex': 0.153.4
@@ -13310,7 +13310,7 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  acpx@0.12.0(patch_hash=d44jmucvnedmwplggycllg4dlq):
+  acpx@0.12.0(patch_hash=yduijxulnckuzynhno2gs2trda):
     dependencies:
       '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
       commander: 15.0.0
