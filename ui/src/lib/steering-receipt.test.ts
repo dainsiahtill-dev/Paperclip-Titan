@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { matchesSteeringReceipt } from "./steering-receipt";
-const comment = { id: "comment", updatedAt: "2026-10-04T00:00:00.000Z", deliveryContentDigest: "digest-a" };
+const comment = { id: "comment", createdAt: "2026-10-04T00:00:00.000Z", updatedAt: "2026-10-04T00:00:00.000Z", deliveryContentDigest: "digest-a" };
 describe("steering receipt placement", () => {
   it("requires exact current content even when a comment edit shares the same timestamp", () => {
     const receipt = { deliveryId: "delivery", payloadSha256: "digest-a", commentVersion: comment.updatedAt };
@@ -13,5 +13,11 @@ describe("steering receipt placement", () => {
   it("preserves legacy historical placement only before a subsequent edit", () => {
     expect(matchesSteeringReceipt(comment, {}, "2026-10-04T00:00:01.000Z")).toBe(true);
     expect(matchesSteeringReceipt({ ...comment, updatedAt: "2026-10-04T00:00:02.000Z" }, {}, "2026-10-04T00:00:01.000Z")).toBe(false);
+  });
+  it("does not apply a late legacy ACK to content edited before it arrived", () => {
+    expect(matchesSteeringReceipt({ ...comment, updatedAt: "2026-10-04T00:00:01.000Z" }, {}, "2026-10-04T00:00:02.000Z")).toBe(false);
+  });
+  it("keeps legacy placement unproven when original creation evidence is missing", () => {
+    expect(matchesSteeringReceipt({ id: comment.id, updatedAt: comment.updatedAt }, {}, "2026-10-04T00:00:02.000Z")).toBe(false);
   });
 });
