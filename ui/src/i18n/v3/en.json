@@ -2,6 +2,8 @@
   "reliability": {
     "runTimeLimitReached": "Run time limit reached",
     "runTokenLimitReached": "Run token limit reached",
+    "taskTokenLimitReached": "Task token limit reached",
+    "tokenUsageUnconfirmed": "Token usage needs confirmation",
     "materialProgress": "Material progress",
     "progressAdvanced": "Material change recorded",
     "progressUnchanged": "No material change",

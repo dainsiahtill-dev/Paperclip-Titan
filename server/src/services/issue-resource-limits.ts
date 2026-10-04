@@ -75,12 +75,22 @@ export async function getIssueResourceBlock(db: Db, input: {
       unknownUsageCount: sql<number>`count(*) filter (where ${costEvents.totalTokens} is null)::int`,
     }).from(costEvents).where(and(eq(costEvents.companyId, input.companyId), inArray(costEvents.issueId, ids))) : [{ totalTokens: 0, unknownUsageCount: 0 }];
     const [unreported] = policy.limits.maxTokensPerIssue ? await db.select({
-      totalTokens: sql<number>`coalesce(sum(case when jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') = 'number' then (${heartbeatRuns.usageJson}->>'totalTokens')::numeric else 0 end), 0)::double precision`,
-      unknownUsageCount: sql<number>`count(*) filter (where jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') is distinct from 'number')::int`,
+      totalTokens: sql<number>`coalesce(sum(case when jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') = 'number'
+        then greatest(0, (${heartbeatRuns.usageJson}->>'totalTokens')::numeric - coalesce((
+          select sum(recorded.total_tokens) from cost_events recorded
+          where recorded.company_id = ${heartbeatRuns.companyId} and recorded.heartbeat_run_id = ${heartbeatRuns.id}
+            and recorded.issue_id in ${ids}
+        ), 0)) else 0 end), 0)::double precision`,
+      unknownUsageCount: sql<number>`count(*) filter (where jsonb_typeof(${heartbeatRuns.usageJson}->'totalTokens') is distinct from 'number'
+        and ((${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1'
+          or not exists (select 1 from cost_events recorded where recorded.company_id = ${heartbeatRuns.companyId}
+            and recorded.heartbeat_run_id = ${heartbeatRuns.id} and recorded.issue_id in ${ids}
+            and recorded.total_tokens is not null)))::int`,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds),
-      isNotNull(heartbeatRuns.startedAt), isNotNull(heartbeatRuns.finishedAt),
-      sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted') is distinct from 'false'`,
-      sql`not exists (select 1 from cost_events recorded where recorded.company_id = ${heartbeatRuns.companyId} and recorded.heartbeat_run_id = ${heartbeatRuns.id})`,
+      isNotNull(heartbeatRuns.startedAt),
+      sql`(${heartbeatRuns.finishedAt} is not null or (${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1')`,
+      sql`((${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted') is distinct from 'false'
+        or (${heartbeatRuns.resultJson}->'nativeUsageCheckpoint'->>'version') = '1')`,
     )) : [{ totalTokens: 0, unknownUsageCount: 0 }];
     const [runs] = policy.limits.maxAutomaticRuns ? await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.startedAt),

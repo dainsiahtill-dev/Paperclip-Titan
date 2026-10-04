@@ -201,7 +201,7 @@ import { documentService } from "./documents.js";
 import { getTaskPlanContext } from "./task-plan-context.js";
 import { projectTaskPlan } from "./task-plan-projection.js";
 import { compareMaterialProgress, readIssueMaterialProgress, type MaterialProgressSnapshot } from "./issue-material-progress.js";
-import { armIssueRunDeadline, readIssueResourcePolicies } from "./issue-resource-limits.js";
+import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies } from "./issue-resource-limits.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -24338,9 +24338,14 @@ export function heartbeatService(
                       onLog,
                       onEvent: onAdapterEvent,
                       onUsage: async usage => {
-                        if (!maxRunTokens) return;
-                        if (usage.usageUnknown || usage.totalTokens === undefined) resourceStopCode = "resource_run_token_usage_unknown";
-                        else if (usage.totalTokens >= maxRunTokens) resourceStopCode = "resource_run_token_limit";
+                        if (maxRunTokens) {
+                          if (usage.usageUnknown || usage.totalTokens === undefined) resourceStopCode ??= "resource_run_token_usage_unknown";
+                          else if (usage.totalTokens >= maxRunTokens) resourceStopCode ??= "resource_run_token_limit";
+                        }
+                        if (issueId && resourcePolicies.some(policy => policy.limits.maxTokensPerIssue)) {
+                          const block = await getIssueResourceBlock(db, { companyId: run.companyId, issueId, excludeRunId: run.id });
+                          if (block?.code === "issue_token_limit" || block?.code === "issue_token_usage_unknown") resourceStopCode ??= block.code;
+                        }
                         if (resourceStopCode) {
                           executionControl.controller.abort();
                           return { stopReason: resourceStopCode };

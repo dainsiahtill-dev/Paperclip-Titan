@@ -311,6 +311,8 @@ function stopReasonLabel(run: RunForIssue) {
   const resourceCode = readString(asRecord(result?.resourceLimitStop)?.code);
   if (resourceCode === "resource_run_deadline") return v3t("reliability.runTimeLimitReached");
   if (resourceCode === "resource_run_token_limit") return v3t("reliability.runTokenLimitReached");
+  if (resourceCode === "issue_token_limit") return v3t("reliability.taskTokenLimitReached");
+  if (resourceCode === "issue_token_usage_unknown" || resourceCode === "resource_run_token_usage_unknown") return v3t("reliability.tokenUsageUnconfirmed");
   const stopReason = readString(result?.stopReason);
   const timeoutFired = result?.timeoutFired === true;
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);

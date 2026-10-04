@@ -2,6 +2,8 @@
   "reliability": {
     "runTimeLimitReached": "本轮运行时限已到",
     "runTokenLimitReached": "本轮 token 上限已到",
+    "taskTokenLimitReached": "任务 token 上限已到",
+    "tokenUsageUnconfirmed": "token 用量待确认",
     "materialProgress": "实质进度",
     "progressAdvanced": "已记录实质变化",
     "progressUnchanged": "无实质变化",

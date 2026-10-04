@@ -109,6 +109,38 @@ const support = await getEmbeddedPostgresTestSupport();
     await run(s, s.childId, 10);
     expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
   });
+
+  it("counts trustworthy active usage above a partial ledger publication", async () => {
+    const s = await seed({ maxTokensPerIssue: 1000 });
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId: s.companyId, agentId: s.agentId,
+      invocationSource: "automation", status: "running", startedAt: new Date(), contextSnapshot: { issueId: s.childId },
+      usageJson: { totalTokens: 1000 }, resultJson: { nativeUsageCheckpoint: { version: 1, totalTokens: 1000, usageUnknown: false } },
+    });
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 100, outputTokens: 0, cachedInputTokens: 0, totalTokens: 100, occurredAt: new Date() });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
+
+  it("keeps an active canonical checkpoint's incomplete usage unknown", async () => {
+    const s = await seed({ maxTokensPerIssue: 1000 });
+    await db.insert(heartbeatRuns).values({ companyId: s.companyId, agentId: s.agentId,
+      invocationSource: "automation", status: "running", startedAt: new Date(), contextSnapshot: { issueId: s.childId },
+      usageJson: { totalTokens: null }, resultJson: { nativeUsageCheckpoint: { version: 1, totalTokens: null, usageUnknown: true } },
+    });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_usage_unknown" });
+  });
+
+  it("reconciles known finished run usage even if its ledger publication lacks issue attribution", async () => {
+    const s = await seed({ maxTokensPerIssue: 1000 });
+    const id = await run(s, s.childId, 10);
+    await db.update(heartbeatRuns).set({ usageJson: { totalTokens: 1000 } }).where(eq(heartbeatRuns.id, id));
+    await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: null, heartbeatRunId: id,
+      provider: "openai", model: "fixture", billingType: "subscription", costCents: 0,
+      inputTokens: 1000, outputTokens: 0, cachedInputTokens: 0, totalTokens: 1000, occurredAt: new Date() });
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_token_limit" });
+  });
   it("accepts real new human input for no-progress recovery without resetting lifetime attempts", async () => {
     const s = await seed({ maxNoProgressRuns: 2 });
     await run(s, s.rootId, 20); await run(s, s.childId, 10);
