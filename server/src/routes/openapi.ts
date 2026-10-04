@@ -49,6 +49,11 @@ import {
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  recoveryBatchSchema,
+  watchdogDispositionSchema,
+  deliveryPolicySchema,
+  deliveryDecisionSchema,
+  quotaFallbackBackupSchema,
   runnerGoalActionRequestSchema,
   // Project
   createProjectSchema,
@@ -447,10 +452,17 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   }
 
   if (typeName === "array") {
-    return {
+    const jsonSchema: JsonSchema = {
       type: "array",
       items: zodToOpenApiSchema(def.element as z.ZodTypeAny),
     };
+    for (const check of (def.checks as unknown[]) ?? []) {
+      const constraint = checkDef(check);
+      if (constraint?.check === "min_length") jsonSchema.minItems = constraint.minimum;
+      else if (constraint?.check === "max_length") jsonSchema.maxItems = constraint.maximum;
+      else if (constraint?.check === "length_equals") jsonSchema.minItems = jsonSchema.maxItems = constraint.length;
+    }
+    return jsonSchema;
   }
 
   if (typeName === "record") {
@@ -1223,6 +1235,7 @@ function registerCurrentRoute(input: {
 type OpenApiAuthLevel =
   | "public"
   | "agent_run"
+  | "watchdog_run"
   | "runtime_tools"
   | "authenticated"
   | "board"
@@ -1260,6 +1273,11 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /runtime-tools/connections/request",
 ]);
 
+const WATCHDOG_RUN_OPERATIONS = new Set([
+  "POST /api/issues/{id}/watchdog/recovery-batches",
+  "POST /api/issues/{id}/watchdog/disposition",
+]);
+
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/openapi.json",
@@ -1291,6 +1309,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PUT /api/projects/{id}/delivery-policy",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
@@ -1591,6 +1610,7 @@ function resolveOperationAuthLevel(
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/mcp/project-tools") return "agent_run";
+  if (WATCHDOG_RUN_OPERATIONS.has(key)) return "watchdog_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -1661,6 +1681,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [];
       } else if (authLevel === "agent_run") {
         operation.security = [securityRequirement(AGENT_RUN_AUTH_SCHEME)];
+      } else if (authLevel === "watchdog_run") {
+        operation.security = [securityRequirement(AGENT_BEARER_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
       } else if (authLevel === "authenticated") {
@@ -1676,6 +1698,8 @@ function applyDocumentFixups(document: any): any {
             ? { actor: "board" }
             : authLevel === "agent_run"
               ? { actor: "agent", heartbeatBound: true, taskBound: true }
+            : authLevel === "watchdog_run"
+              ? { actor: "agent", heartbeatBound: true, watchdogBound: true }
             : authLevel === "runtime_tools"
               ? { actor: "runtime_tools", heartbeatBound: true }
               : authLevel === "authenticated"
@@ -3871,6 +3895,108 @@ registry.registerPath({
   summary: "List issue document revisions",
   request: { params: z.object({ id: z.string(), key: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/documents/{key}/revisions/{revisionId}",
+  tags: ["issues"],
+  summary: "Read a pinned issue document revision page",
+  description: "Reads the exact immutable revision under the issue's company access policy. Offset and limit count characters; the full revision remains available through bounded pages. Defaults: offset 0 and limit 16000.",
+  request: {
+    params: z.object({ id: z.string(), key: z.string(), revisionId: z.string().uuid() }),
+    query: z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(32000).default(16000) }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/quota-fallback",
+  tags: ["agents"],
+  summary: "Get an agent's scoped quota fallback status",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/quota-fallback/check-primary",
+  tags: ["agents"],
+  summary: "Check the saved primary provider in its execution scope",
+  description: "Requires permission to update this agent. Preserves the saved model, account, credentials and execution context; an unrelated historical probe cannot authorize recovery.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(z.object({}).strict()) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/quota-fallback/test-backup",
+  tags: ["agents"],
+  summary: "Test an authorized backup provider configuration",
+  description: "Requires permission to update this agent and validates the backup account binding. The test does not replace the saved primary configuration.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(z.object({ backup: quotaFallbackBackupSchema }).strict()) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/delivery-assessment",
+  tags: ["issues"],
+  summary: "Read current delivery criteria and reviewer permissions",
+  description: "Returns server-derived readiness and material pins. Ordinary agent-claim tasks retain their existing contract; assessment does not grant reviewer authority.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/delivery-policy",
+  tags: ["issues"],
+  summary: "Set a task's delivery criteria under manager authority",
+  description: "Board or a configured manager may update criteria. Managers cannot grant themselves reviewer authority. Affected accepted criteria are invalidated when their contract changes.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(deliveryPolicySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/delivery-policy",
+  tags: ["projects"],
+  summary: "Set a project's inherited delivery policy",
+  description: "Board-only. Reviewer and manager identities must belong to the project company; descendants inherit the policy unless they have an explicit task policy.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(deliveryPolicySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/delivery-decisions",
+  tags: ["issues"],
+  summary: "Record an independent review of the current material",
+  description: "Requires board authority or an available configured independent reviewer. Contract, criterion and material pins must match the current server assessment; stale or self-produced material cannot establish agent acceptance. Decisions retain actor/run provenance and rejection feedback.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(deliveryDecisionSchema) },
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable, 429: r.tooManyRequests },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/watchdog/recovery-batches",
+  tags: ["issues"],
+  summary: "Apply an atomic watchdog recovery batch",
+  description: "Requires an authenticated agent heartbeat identity matching watchdogRunId; board actors are rejected. Applies one to three mutations under the configured watchdog run's scope and expected stop fingerprint. All mutations and their audit/outbox effects commit together; stale scope rejects the entire batch.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(recoveryBatchSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/watchdog/disposition",
+  tags: ["issues"],
+  summary: "Record watchdog restoration or a legitimate stop",
+  description: "Requires an authenticated agent heartbeat identity matching watchdogRunId; board actors are rejected. Binds evidence to the configured watchdog run and current stop fingerprint. A restoration claim arms later verification; it does not prove the source task resumed.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(watchdogDispositionSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({

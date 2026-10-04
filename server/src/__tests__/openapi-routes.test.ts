@@ -224,6 +224,33 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents bounded revision pages and delivery authority inputs", () => {
+    const spec = buildOpenApiSpec();
+    const revision = spec.paths["/api/issues/{id}/documents/{key}/revisions/{revisionId}"].get;
+    expect(revision.parameters.find((parameter: any) => parameter.name === "limit")).toMatchObject({ required: false, schema: { minimum: 1, maximum: 32000 } });
+    expect(revision.parameters.find((parameter: any) => parameter.name === "offset")).toMatchObject({ required: false, schema: { minimum: 0 } });
+    expect(revision.description).toContain("Defaults: offset 0 and limit 16000.");
+    const decision = spec.paths["/api/issues/{id}/delivery-decisions"].post;
+    expect(decision.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining([
+      "requestId", "criterionId", "workProductId", "expectedContractHash", "expectedCriterionDigest", "expectedMaterialVersion", "expectedContentDigest", "verdict", "reason",
+    ]));
+    expect(decision.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    const policy = spec.paths["/api/projects/{id}/delivery-policy"].put;
+    expect(policy.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(policy["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(spec.paths["/api/issues/{id}/watchdog/recovery-batches"].post.requestBody.content["application/json"].schema.properties.mutations).toMatchObject({ minItems: 1, maxItems: 3 });
+  });
+  it("documents new verdicts and watchdog agent authority without board access", () => {
+    const spec = buildOpenApiSpec();
+    const verdict = spec.paths["/api/issues/{id}/delivery-decisions"].post;
+    expect(verdict.responses["201"]).toBeDefined();
+    expect(verdict.responses["200"]).toBeDefined();
+    for (const name of ["recovery-batches", "disposition"]) {
+      const operation = spec.paths[`/api/issues/{id}/watchdog/${name}`].post;
+      expect(operation.security).toEqual([{ AgentBearerAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, watchdogBound: true });
+    }
+  });
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;
