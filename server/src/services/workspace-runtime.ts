@@ -1,3 +1,4 @@
+import { prepareEngineeringJob, engineeringSource, type EngineeringJobAuthorization } from "./engineering-evidence.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -3058,6 +3059,7 @@ async function recordWorkspaceCommandOperation(
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    afterExecution?: () => Promise<Record<string, unknown>>;
   },
 ) {
   if (!recorder) {
@@ -3103,9 +3105,7 @@ async function recordWorkspaceCommandOperation(
         stdout: result.stdout,
         stderr,
         system: code === 0 ? input.successMessage ?? null : null,
-        metadata: seedEvidence
-          ? { ...seedEvidence.metadata, ...(truncationMetadata ?? {}) }
-          : truncationMetadata,
+        metadata: { ...(seedEvidence?.metadata ?? {}), ...(truncationMetadata ?? {}), ...(await input.afterExecution?.() ?? {}) },
       };
     },
   });
@@ -5038,6 +5038,7 @@ function resolveWorkspaceCommandExecution(input: {
 
 export async function runWorkspaceJobForControl(input: {
   db: Db;
+  authorization?: EngineeringJobAuthorization;
   actor: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   workspace: RealizedExecutionWorkspace;
@@ -5057,22 +5058,42 @@ export async function runWorkspaceJobForControl(input: {
     throw new Error(`Workspace job "${resolved.name}" is missing command`);
   }
 
+  const engineering = input.authorization && input.issue?.id && typeof input.metadata?.executionWorkspaceId === "string" && typeof input.metadata?.workspaceCommandId === "string"
+    ? await prepareEngineeringJob(input.db, { companyId: input.actor.companyId, issueId: input.issue.id, workspaceId: input.metadata.executionWorkspaceId, jobId: input.metadata.workspaceCommandId, command: input.command, cwd: resolved.cwd, authorization: input.authorization }) : null;
+  if (engineering && (!input.recorder || Object.keys(input.adapterEnv ?? {}).length)) throw new Error("Engineering evidence requires the host recorder and no adapter environment overlay");
   const ownership = workspaceWriteOwnershipService(input.db);
-  const claim = await ownership.claim({ cwd: input.workspace.cwd, companyId: input.actor.companyId, issueId: input.issue?.id, runId: randomUUID() });
+  const claim = await ownership.claim({ cwd: input.workspace.cwd, companyId: input.actor.companyId, issueId: input.issue?.id, runId: engineering?.authorization.runId ?? randomUUID() });
   if (claim.outcome === "busy") throw conflict("Workspace has an undrained physical writer", { code: "workspace_write_owner_busy" });
-  try { return await withWorkspaceProcessGuard(ownership.guard(claim.owner), async () => {
-    await ensureServerWorkspaceLinksCurrent(resolved.cwd);
+  const guard = ownership.guard(claim.owner);
+  if (engineering) guard.sourceAccess = "ro";
+  let drainedLaunch: Parameters<typeof guard.recordDrain>[0] | null = null;
+  const recordDrain = guard.recordDrain;
+  guard.recordDrain = async identity => { await recordDrain(identity); drainedLaunch = identity; };
+  try { return await withWorkspaceProcessGuard(guard, async () => {
+    if (!engineering) await ensureServerWorkspaceLinksCurrent(resolved.cwd);
+    const source = engineering ? await engineeringSource(input.db, input.actor.companyId, input.issue!.id, engineering.policy) : null;
+    if (source && (source.root !== claim.owner.canonicalRoot || source.device !== claim.owner.device || source.inode !== claim.owner.inode)) throw new Error("Engineering source root changed before verification");
     return await recordWorkspaceCommandOperation(input.recorder, {
     phase: "workspace_provision",
     command: resolved.command,
     cwd: resolved.cwd,
-    env: resolved.env,
+    env: engineering ? { ...resolved.env, TMPDIR: "/tmp", TMP: "/tmp", TEMP: "/tmp", PAPERCLIP_TEST_OUTPUT_DIR: "/tmp" } : resolved.env,
     label: `Workspace job "${resolved.name}"`,
     metadata: {
       workspaceCommandKind: "job",
       workspaceCommandName: resolved.name,
       ...(input.metadata ?? {}),
     },
+    afterExecution: engineering && source ? async () => {
+      const after = await engineeringSource(input.db, input.actor.companyId, input.issue!.id, engineering.policy);
+      if (!drainedLaunch || after.digest !== source.digest || after.root !== source.root || after.device !== source.device || after.inode !== source.inode) throw new Error("Engineering source interval or drain changed");
+      return { engineeringReceipt: { version: 1, kind: "host_readonly_job", policyDigest: engineering.policyDigest,
+        definitionDigest: engineering.definitionDigest, jobId: engineering.requirement.id, role: engineering.requirement.role,
+        authorization: engineering.authorization, executionWorkspaceId: engineering.policy.sourceScope.executionWorkspaceId,
+        sourceDigest: source.digest, sourceAfterDigest: after.digest, scope: engineering.policy.sourceScope,
+        ownerId: claim.owner.id, ownerGeneration: claim.owner.generation, launchId: drainedLaunch.launchId,
+        guarantee: "managed_single_instance_linux_readonly_source", workingTreeIdentity: "approved_scope_bytes_including_uncommitted_changes" } };
+    } : undefined,
     successMessage: `Completed workspace job "${resolved.name}"\n`,
   });
   }); } finally { await ownership.releaseIfStopped(claim.owner); }

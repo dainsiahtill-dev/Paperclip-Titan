@@ -7,10 +7,16 @@ export interface DeliveryCriterion {
   artifactType?: IssueWorkProductType;
   scope?: "issue" | "subtree";
 }
+export interface EngineeringEvidencePolicy {
+  version: 1;
+  sourceScope: { projectId: string; executionWorkspaceId: string; files: Array<{ path: string; role: "implementation" | "test" | "harness" | "manifest" }> };
+  requiredJobs: Array<{ id: string; role: "test" | "build" | "verifier" }>;
+}
 export interface DeliveryPolicy {
   version: 1;
   mode: DeliveryMode;
   criteria?: DeliveryCriterion[];
+  engineeringEvidence?: EngineeringEvidencePolicy;
   reviewerAgentIds?: string[];
   managerAgentIds?: string[];
 }
@@ -35,6 +41,7 @@ export interface DeliveryCriterionAssessment extends DeliveryCriterion {
   contentDigest: string | null;
   decisionId: string | null;
   reason: string | null;
+  engineeringEvidence?: { verified: boolean; reason: string };
   provenance?: { decisionId: string; actorType: string; actorId: string; agentId: string | null; runId: string | null; createdAt: string; reviewerName?: string | null } | null;
 }
 export interface DeliveryAssessment {

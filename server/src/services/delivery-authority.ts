@@ -1,3 +1,4 @@
+import { mergeEngineeringPolicies, resolveEngineeringEvidence } from "./engineering-evidence.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, completionContracts, heartbeatRuns, issues, issueThreadInteractions, issueWorkProducts, projects, type Db } from "@paperclipai/db";
 import { issueDeliveryDecisions } from "@paperclipai/db/schema/issue_delivery_decisions";
@@ -53,9 +54,10 @@ export async function resolveDeliveryDefinition(db: Db, companyId: string, issue
   const configured = own?.reviewerAgentIds?.length ? own.reviewerAgentIds : inherited.find((policy) => policy.reviewerAgentIds?.length)?.reviewerAgentIds;
   const reviewers = [...new Set(configured?.length ? configured : typedReviewers(issue))].sort();
   const managers = [...new Set(inherited.flatMap((policy) => policy.managerAgentIds ?? []))].sort();
-  const authority = { issueId, companyId, projectId: issue.projectId, mode, reviewPolicy: issue.reviewPolicy ?? "anyone", reviewerAgentIds: reviewers };
+  const engineeringEvidence = mergeEngineeringPolicies(inherited.map(policy => policy.engineeringEvidence));
+  const authority = { engineeringEvidence, issueId, companyId, projectId: issue.projectId, mode, reviewPolicy: issue.reviewPolicy ?? "anyone", reviewerAgentIds: reviewers };
   const authorityHash = deliveryDigest(authority);
-  return { issue, mode, own, projectPolicy, projectIds, reviewerAgentIds: reviewers, managerAgentIds: managers, authorityHash,
+  return { issue, mode, own, projectPolicy, engineeringEvidence, projectIds, reviewerAgentIds: reviewers, managerAgentIds: managers, authorityHash,
     hasExplicitCriteria: Boolean(own?.criteria?.length || projectPolicy?.criteria?.length),
     criteria: own?.criteria?.length ? own.criteria : projectPolicy?.criteria?.length ? projectPolicy.criteria : [{ id: "objective", requirement: issue.description?.trim() || `Complete: ${issue.title}`, scope: "issue" as const }] };
 }
@@ -65,6 +67,7 @@ export async function assertDeliveryPolicyCreation(db: Db, issue: Issue) {
   if (policy) {
     await assertManagersAndReviewers(db, issue.companyId, policy);
     if (issue.createdByAgentId) {
+      if (policy.engineeringEvidence) throw forbidden("Engineering source and job policy is Board-managed");
       const withoutOwn = { ...issue, executionPolicy: { ...record(issue.executionPolicy), deliveryPolicy: null } } as Issue;
       const inherited = await resolveDeliveryDefinition(db, issue.companyId, issue.id, withoutOwn);
       if (!inherited.managerAgentIds.includes(issue.createdByAgentId) || policy.managerAgentIds?.length || (inherited.mode === "verified_delivery" && policy.mode !== "verified_delivery")) throw forbidden("An agent cannot create its own delivery authority or manager grants");
@@ -104,6 +107,7 @@ export async function assertDeliveryPolicyMutation(db: Db, before: Issue, after:
   if (deliveryCanonicalJson(previous) === deliveryCanonicalJson(next)) return;
   if (next) await assertManagersAndReviewers(db, before.companyId, next);
   if (!actor.agentId) return;
+  if (deliveryCanonicalJson(previous?.engineeringEvidence) !== deliveryCanonicalJson(next?.engineeringEvidence)) throw forbidden("Engineering source and job policy is Board-managed");
   const definition = await resolveDeliveryDefinition(db, before.companyId, before.id, before);
   if (!definition.managerAgentIds.includes(actor.agentId)) throw forbidden("Delivery criteria and policy are managed by the board or configured managers");
   if (definition.mode === "verified_delivery" && (!next || next.mode !== "verified_delivery")) throw forbidden("An agent cannot erase a verified-delivery policy");
@@ -162,6 +166,15 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
     return { definition, row, criteria: fingerprints };
   }
 
+  async function currentMaterial(product: typeof issueWorkProducts.$inferSelect, definition: Awaited<ReturnType<typeof resolveDeliveryDefinition>>) {
+    const material = await workProductMaterialSnapshot(db, product);
+    if (!material) return null;
+    if (!definition.engineeringEvidence) return { ...material, engineeringEvidence: undefined };
+    const evidence = await resolveEngineeringEvidence(db, { companyId: definition.issue.companyId, issueId: definition.issue.id, policy: definition.engineeringEvidence, contentText: product.issueId === definition.issue.id ? material.contentText : null, isPrimary: product.isPrimary });
+    return { ...material, contentDigest: evidence.verified ? deliveryDigest({ material: material.contentDigest, engineeringEvidence: evidence.digest }) : material.contentDigest,
+      producerAgentIds: [...new Set([...material.producerAgentIds, ...evidence.producerAgentIds])], engineeringEvidence: evidence };
+  }
+
   async function productScope(companyId: string, issueId: string, scope: "issue" | "subtree") {
     if (scope !== "subtree") return [issueId];
     const rows = await db.execute(sql`with recursive tree as (select id,0 depth from issues where company_id=${companyId} and id=${issueId} union all select child.id,tree.depth+1 from issues child join tree on child.parent_id=tree.id where child.company_id=${companyId} and child.origin_kind<>'task_watchdog' and tree.depth<99) select id from tree`);
@@ -177,21 +190,29 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
     if (!inTransaction) return db.transaction((tx) => deliveryAuthorityService(tx as unknown as Db, true).assessment(companyId, issueId, candidate, forMutation));
     await lockInputs(companyId, issueId, candidate, forMutation);
     const current = await materializeContract(companyId, issueId, candidate);
-    const criteria = await Promise.all(current.criteria.map(async (criterion) => {
+    const materialCache = new Map<string, ReturnType<typeof currentMaterial>>();
+    const assessCriterion = async (criterion: typeof current.criteria[number]) => {
       const ids = await productScope(companyId, issueId, criterion.scope ?? "issue");
       const [product] = await db.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), isNull(issueWorkProducts.deletedAt), inArray(issueWorkProducts.issueId, ids), ...(criterion.artifactType ? [eq(issueWorkProducts.type, criterion.artifactType)] : [])))
         .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.createdAt), desc(issueWorkProducts.id)).limit(1);
-      const material = product ? await workProductMaterialSnapshot(db, product) : null;
+      if (product && !materialCache.has(product.id)) materialCache.set(product.id, currentMaterial(product, current.definition));
+      const material = product ? await materialCache.get(product.id)! : null;
+      const engineeringEvidence = material && "engineeringEvidence" in material ? material.engineeringEvidence : null;
       const [decision] = await db.select().from(issueDeliveryDecisions).where(and(eq(issueDeliveryDecisions.companyId, companyId), eq(issueDeliveryDecisions.issueId, issueId), eq(issueDeliveryDecisions.criterionId, criterion.id)))
         .orderBy(desc(issueDeliveryDecisions.createdAt), desc(issueDeliveryDecisions.id)).limit(1);
-      const valid = Boolean(material && decision && decision.workProductId === material.workProductId && decision.criterionDigest === criterion.criterionDigest && decision.materialVersion === material.materialVersion && decision.contentDigest === material.contentDigest);
+      const valid = Boolean((!current.definition.engineeringEvidence || engineeringEvidence?.verified) && material && decision && decision.workProductId === material.workProductId && decision.criterionDigest === criterion.criterionDigest && decision.materialVersion === material.materialVersion && decision.contentDigest === material.contentDigest);
       const [reviewer] = valid && decision?.agentId ? await db.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, decision.agentId))) : [];
       return { ...criterion, state: valid ? decision!.verdict as "accepted" | "rejected" : decision ? "stale" as const : "missing" as const,
         workProductId: material?.workProductId ?? null, materialVersion: material?.materialVersion ?? null, contentDigest: material?.contentDigest ?? null,
         workProductIssueId: material ? product?.issueId ?? null : null,
-        decisionId: valid ? decision!.id : null, reason: valid ? decision!.reason : null,
+        decisionId: valid ? decision!.id : null, reason: valid ? decision!.reason : engineeringEvidence?.reason ?? null,
+        ...(current.definition.engineeringEvidence ? { engineeringEvidence: { verified: engineeringEvidence?.verified ?? false, reason: engineeringEvidence?.reason ?? "Engineering evidence requires one primary managed JSON document bundle." } } : {}),
         provenance: valid ? { decisionId: decision!.id, actorType: decision!.actorType, actorId: decision!.actorId, agentId: decision!.agentId, runId: decision!.runId, createdAt: decision!.createdAt.toISOString(), reviewerName: reviewer?.name ?? (decision!.actorType === "user" ? "Board" : null) } : null };
-    }));
+    };
+    // Engineering source fences use nested transactions; do not overlap their
+    // savepoints or admit competing read intervals for the same primary bundle.
+    const criteria = [];
+    for (const criterion of current.criteria) criteria.push(await assessCriterion(criterion));
     return { version: 1, mode: current.definition.mode, contractId: current.row.id, contractRevision: current.row.revision, contractHash: current.row.canonicalSha256, criteria, canComplete: current.definition.mode === "agent_claim_policy" || (criteria.length > 0 && criteria.every((criterion) => criterion.state === "accepted")), reviewerAgentIds: current.definition.reviewerAgentIds };
   }
 
@@ -220,7 +241,7 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
       const definition = await resolveDeliveryDefinition(typed, companyId, issueId);
       const [product] = await tx.select().from(issueWorkProducts).where(and(eq(issueWorkProducts.companyId, companyId), isNull(issueWorkProducts.deletedAt), eq(issueWorkProducts.id, input.workProductId))).for("update");
       if (!product) throw notFound("Work product not found");
-      const material = await workProductMaterialSnapshot(typed, product);
+      const material = await deliveryAuthorityService(typed, true).currentMaterial(product, definition);
       if (!material) throw conflict("Work product has no verifiable current material");
       await assertReviewer(typed, definition, actor, material);
       if (input.reviewInteractionId) {
@@ -231,6 +252,7 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
       if (!current.contractId || !current.contractHash) throw conflict("Current verified delivery contract is required");
       const criterion = current.criteria.find((entry) => entry.id === input.criterionId);
       if (!criterion) throw unprocessable("Unknown delivery criterion");
+      if (input.verdict === "accepted" && definition.engineeringEvidence && !criterion.engineeringEvidence?.verified) throw conflict(criterion.engineeringEvidence?.reason ?? "Engineering evidence is unverified");
       if (current.contractHash !== input.expectedContractHash || criterion.criterionDigest !== input.expectedCriterionDigest || criterion.workProductId !== product.id || material.materialVersion !== input.expectedMaterialVersion || material.contentDigest !== input.expectedContentDigest) throw conflict("Delivery decision is stale; inspect the current criterion and material again");
       await options.beforeCommit?.(typed);
       const [decision] = await tx.insert(issueDeliveryDecisions).values({ companyId, issueId, requestId: input.requestId, requestDigest,
@@ -317,5 +339,5 @@ export function deliveryAuthorityService(db: Db, inTransaction = false) {
     catch (error) { rethrowDeliveryInputLock(error); }
     for (const id of ids) await invalidateMaterialScopes(companyId, id, publications);
   }
-  return { assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes, invalidateProjectScopes, invalidateIssueScopes };
+  return { currentMaterial, assessment, recordDecision, materializeContract, assertCanComplete, permissions, updatePolicy, invalidateMaterialScopes, invalidateProjectScopes, invalidateIssueScopes };
 }

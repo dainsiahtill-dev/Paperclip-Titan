@@ -85,3 +85,18 @@ it("strips loader hooks before the outer sandbox or ACK shell can execute them",
   }))).rejects.toThrow("reject identity");
   expect(await fs.readFile(path.join(f.root, "pre-ack-loader"), "utf8").catch(() => null)).toBeNull();
 });
+
+
+it("host read-only source interval refuses write-and-restore while allowing temporary test output", async () => {
+  const f = await fixture();
+  await fs.writeFile(path.join(f.root, "source"), "original");
+  (f.guard as WorkspaceProcessGuard & { sourceAccess: string }).sourceAccess = "ro";
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("readonly", "/bin/sh", ["-c", "if printf altered > source; then printf original > source; exit 42; fi; printf output > /tmp/test-output; cat source; cat /tmp/test-output"], {
+    cwd: f.root, env: {}, timeoutSec: 2, graceSec: 1, onLog: async () => {},
+  }));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toBe("originaloutput");
+  expect(result.stderr).toMatch(/Read-only file system/);
+  expect(f.drains).toHaveLength(1);
+  expect(await fs.readFile(path.join(f.root, "source"), "utf8")).toBe("original");
+});

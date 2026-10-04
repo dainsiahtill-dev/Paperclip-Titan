@@ -1600,6 +1600,7 @@ export function workspaceFileResourceService(db: Db) {
 
   async function readContent(issueId: string, input: {
     path: string;
+    executionWorkspaceId?: string;
     workspace?: WorkspaceFileSelector | null;
     projectId?: string | null;
     workspaceId?: string | null;
@@ -1608,7 +1609,13 @@ export function workspaceFileResourceService(db: Db) {
     const selector = input.workspace ?? "auto";
     const explicitTarget = Boolean(input.projectId || input.workspaceId);
     const normalized = normalizeWorkspaceRelativePath(input.path);
-    const candidates = await listCandidates(issue, selector, input);
+    let candidates: WorkspaceCandidate[];
+    if (input.executionWorkspaceId) {
+      if (selector !== "execution" || input.executionWorkspaceId !== issue.executionWorkspaceId) throw unprocessable("Engineering source must use the issue's explicit execution workspace");
+      const [workspace] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.executionWorkspaceId), eq(executionWorkspaces.companyId, issue.companyId)));
+      if (!workspace || workspace.projectId !== issue.projectId) throw unprocessable("Execution workspace project mismatch");
+      candidates = [candidateFromExecutionWorkspace(workspace)];
+    } else candidates = await listCandidates(issue, selector, input);
     if (candidates.length === 0) {
       throw unprocessable("No workspace is available for this issue", { code: "no_workspace" });
     }

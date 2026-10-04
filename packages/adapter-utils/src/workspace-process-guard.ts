@@ -11,7 +11,7 @@ import { ensurePathInEnv, resolveCommandForLogs, sanitizeInheritedPaperclipEnv, 
 export type WorkspaceLaunchIdentity = {
   launchId: string; pid: number; processGroupId: number; startedAt: string;
   namespacePid: number; namespace: string; namespaceStart: string; bootId: string;
-  observerNamespace: string; observerMountNamespace: string;
+  observerNamespace: string; observerMountNamespace: string; sourceAccess?: "ro";
 };
 
 /** Host closures only. Never serialize this capability into agent config/env. */
@@ -19,6 +19,8 @@ export interface WorkspaceProcessGuard {
   root: string; device: string; inode: string; signal?: AbortSignal;
   /** Exact server-derived credential/runtime roots, never adapter extraPaths. */
   privateRoots?: string[];
+  /** Host-owned verification capability; never read from adapter or API JSON. */
+  sourceAccess?: "ro";
   beforeLaunch(): Promise<string>;
   bindLaunch(identity: WorkspaceLaunchIdentity): Promise<void>;
   recordDrain(identity: WorkspaceLaunchIdentity): Promise<void>;
@@ -107,12 +109,12 @@ export async function runGuardedWorkspaceProcess(
     }
     target = await buildLocalProcessSandboxSpawnTarget({ executable, args, cwd, options: {
       ...sandbox, command: "/usr/bin/bwrap", filesystemScope: "workspace", workspaceDir: root,
-      workspaceAccess: "rw", managedPaths: [...(sandbox?.managedPaths?.filter(p => p.access === "ro") ?? []), ...privateAnchors.map(entry => ({ path: entry.root, access: "rw" as const }))],
+      workspaceAccess: guard.sourceAccess ?? "rw", managedPaths: [...(sandbox?.managedPaths?.filter(p => p.access === "ro") ?? []), ...privateAnchors.map(entry => ({ path: entry.root, access: "rw" as const }))],
       extraPaths: sandbox?.extraPaths?.filter(p => p.access === "ro"),
     } });
     const mount = target.args.findIndex((value, index) => ["--bind", "--ro-bind"].includes(value) && target!.args[index + 1] === root && target!.args[index + 2] === root);
     if (mount < 0) throw new Error("Protected workspace writable mount missing");
-    target.args.splice(mount, 3, "--bind-fd", "4", root);
+    target.args.splice(mount, 3, guard.sourceAccess === "ro" ? "--ro-bind-fd" : "--bind-fd", "4", root);
     for (const [index, entry] of privateAnchors.entries()) {
       const position = target.args.findIndex((value, offset) => value === "--bind" && target!.args[offset + 1] === entry.root && target!.args[offset + 2] === entry.root);
       if (position < 0) throw new Error("Protected runtime mount missing");
@@ -183,7 +185,7 @@ export async function runGuardedWorkspaceProcess(
         try { const stat = readFileSync(`/proc/${namespacePid}/stat`, "utf8"); namespaceStart = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]; }
         catch (error) { launchError = error; stop(); continue; }
         committing = (async () => {
-          identity = { launchId: launchId!, pid: child.pid!, processGroupId: child.pid!, startedAt,
+          identity = { ...(guard.sourceAccess === "ro" ? { sourceAccess: "ro" as const } : {}), launchId: launchId!, pid: child.pid!, processGroupId: child.pid!, startedAt,
             namespacePid: namespacePid!, namespace: await fs.readlink(`/proc/${namespacePid}/ns/pid`),
             namespaceStart: await processStart(namespacePid!), bootId: (await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
             observerNamespace: await fs.readlink("/proc/self/ns/pid"), observerMountNamespace: await fs.readlink("/proc/self/ns/mnt") };

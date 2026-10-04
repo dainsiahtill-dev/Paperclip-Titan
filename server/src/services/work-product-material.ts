@@ -88,6 +88,7 @@ export async function workProductMaterialSnapshot(db: Db, row: typeof issueWorkP
   if (writer?.agentId && !row.materialWriterActorType) contentWriterId ??= writer.agentId;
   if (contentWriterId) producers.add(contentWriterId);
   return {
+    contentText: typeof managedContent?.body === "string" ? managedContent.body : null,
     workProductId: row.id,
     materialVersion: String(row.materialVersion),
     contentDigest: deliveryDigest({ version: 1, material: workProductMaterialIdentity(row), managedContent }),

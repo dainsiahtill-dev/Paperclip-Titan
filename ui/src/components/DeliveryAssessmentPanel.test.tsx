@@ -16,6 +16,12 @@ describe("DeliveryAssessmentPanel", () => {
   it("uses server permission metadata before offering verdict actions", async () => {
     const { host }=await render({ ...assessment, permissions: { canReview:false, canManagePolicy:false } }); expect(host.querySelector("button")).toBeNull();
   });
+  it("disables acceptance for unverified engineering evidence and shows the remedy", async () => {
+    const { host } = await render({ ...assessment, criteria: [{ ...assessment.criteria[0]!, engineeringEvidence: { verified: false, reason: "Source has an undrained managed writer; retry after it stops." } }] });
+    const accept = [...host.querySelectorAll("button")].find(button => button.textContent === "验收通过");
+    expect(accept?.disabled).toBe(true);
+    expect(host.textContent).toContain("retry after it stops");
+  });
   it("keeps a server denial visible as an actionable inline error", async () => {
     const { host }=await render(assessment,vi.fn(),"当前执行者不能验收自己的产物，请交给指定 QA。"); expect(host.querySelector('[role="alert"]')?.textContent).toContain("指定 QA");
   });

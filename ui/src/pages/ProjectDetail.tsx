@@ -1,3 +1,4 @@
+import { ProjectEngineeringPreset } from "../components/ProjectEngineeringPreset";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -888,6 +889,7 @@ export function ProjectDetail() {
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
           />
+          <ProjectEngineeringPreset key={project.id} projectId={project.id} policy={project.deliveryPolicy ?? null} onSave={(deliveryPolicy) => updateProject.mutateAsync({ deliveryPolicy })} />
         </div>
       )}
 

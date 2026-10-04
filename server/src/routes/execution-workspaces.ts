@@ -454,6 +454,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const recorder = workspaceOperationsSvc.createRecorder({
       companyId: existing.companyId,
       executionWorkspaceId: existing.id,
+      issueId: authorization.issueId ?? existing.sourceIssueId,
+      heartbeatRunId: authorization.runId,
     });
     let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
     let stdout = "";
@@ -581,6 +583,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           }
           return await runWorkspaceJobForControl({
             db,
+            authorization: { ...authorization, actorId: actor.actorId, issueId: authorization.issueId ?? existing.sourceIssueId },
             actor: {
               id: actor.agentId ?? null,
               name: actor.actorType === "user" ? "Board" : "Agent",
@@ -1022,6 +1025,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       entityType: "execution_workspace",
       entityId: existing.id,
       details: {
+        operationId: operation.id,
+        nestedOperationId: operation.metadata?.nestedOperationId ?? null,
         runtimeServiceCount,
         workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
         workspaceCommandKind: workspaceCommand?.kind ?? null,
