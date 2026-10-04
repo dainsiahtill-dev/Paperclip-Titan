@@ -19,6 +19,7 @@ describe("codex_local parser", () => {
       inputTokens: 10,
       cachedInputTokens: 2,
       outputTokens: 4,
+      totalTokens: 14,
     });
     expect(parsed.errorMessage).toBe("model access denied");
   });

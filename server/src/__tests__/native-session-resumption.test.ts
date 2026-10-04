@@ -75,6 +75,8 @@ vi.mock("../sentry.js", async () => {
 
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 
 describe("P6-25 pre-result native session recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -563,10 +565,9 @@ describe("P6-25 pre-result native session recovery", () => {
     const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
 
     await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
-    // The Sentry report fires without an await inside the reconciler, so a
-    // follow-up round trip to the real database gives that fire-and-forget
-    // call room to complete before this test reads the spy.
-    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
+    // The public report drain waits for the owned asynchronous agent lookup
+    // and capture; an unrelated SQL round trip cannot establish that boundary.
+    await waitForPendingRunFailureReports();
 
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
     expect(newCaptures).toHaveLength(1);
@@ -753,6 +754,38 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         },
         startTurn,
         async result() {
+          if (!newerRequest) {
+            const [declaredProduct] = await db.select().from(issueWorkProducts)
+              .where(eq(issueWorkProducts.id, workProductId));
+            expect(declaredProduct).toMatchObject({ companyId, issueId, id: workProductId });
+            const interactions = issueThreadInteractionService(db);
+            const review = await interactions.create({ id: issueId, companyId }, {
+              kind: "request_confirmation",
+              idempotencyKey: `recovered-output-review:${runId}`,
+              sourceRunId: runId,
+              continuationPolicy: "none",
+              resolverPolicy: "human_only",
+              title: "Review the recovered provider output",
+              payload: {
+                version: 1,
+                prompt: `Verify ${contract.criteria[0]!.id}: ${contract.criteria[0]!.requirement}`,
+                supersedeOnUserComment: false,
+                detailsMarkdown: JSON.stringify({ contractId, contractRevision: contract.revision,
+                  contractSha256: contractSha, criterionId: contract.criteria[0]!.id, workProductId }),
+                target: { type: "custom", key: `work-product:${workProductId}`,
+                  revisionId: contractSha, label: declaredProduct.title },
+              },
+            }, { agentId, runId });
+            const accepted = await interactions.acceptInteraction({
+              id: issueId, companyId, projectId, goalId: null, status: "in_progress",
+            }, review.id, {}, { userId: "responsible-user" });
+            expect(accepted.interaction).toMatchObject({ companyId, issueId,
+              status: "accepted", resolvedByUserId: "responsible-user", sourceRunId: runId });
+            const acceptedRef = `interaction:${accepted.interaction.id}`;
+            result.completionClaim.criteria[0]!.evidenceRefs = [acceptedRef];
+            result.verification[0]!.artifactRef = acceptedRef;
+            result.evidence = [{ kind: "interaction", ref: acceptedRef }];
+          }
           return { result, terminal, turnId };
         },
         async snapshot() {

@@ -13884,7 +13884,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
     const deferred: Array<() => void> = [];
-    const wakeup = vi.fn(async () => ({ accepted: true }));
+    let resolveBurst!: () => void;
+    const burstWoken = new Promise<void>((resolve) => { resolveBurst = resolve; });
+    let burstWakeCount = 0;
+    const wakeup = vi.fn(async (agentId: string) => {
+      if (agentId === fixture.assignedAgentId && ++burstWakeCount === 8) resolveBurst();
+      return { accepted: true };
+    });
     const service = chatChannelService(db, {
       deferWebhookProcessing: true,
       fetch: fakeSlackFetch() as typeof globalThis.fetch,
@@ -14013,6 +14019,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // Simulate another server process reconciling the same durable rows at
     // the same time as the webhook process's deferred drain.
     await competingService.processPendingDeliveries();
+    // Await the owned burst's real processing boundary. Eight durable comments
+    // and wake receipts require independent transactions; polling their middle
+    // with waitFor's implicit 1s default confuses a partial burst with loss.
+    // The test's existing timeout still bounds a stalled or missing delivery.
+    await burstWoken;
     await vi.waitFor(async () => {
       const rows = await db
         .select()

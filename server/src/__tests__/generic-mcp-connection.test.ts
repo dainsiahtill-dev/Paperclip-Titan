@@ -538,11 +538,15 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
   });
 
-  it("emits DNS guidance for a real NXDOMAIN failure", async () => {
+  it("emits DNS guidance for a typed NXDOMAIN failure", async () => {
     const company = await createCompany(db);
+    const lookup = vi.fn(async () => { throw Object.assign(new Error("Hostname not found"), { code: "ENOTFOUND" }); });
     const app = createRouteApp(db, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
+      // Host resolvers/proxies may synthesize addresses even for .invalid.
+      // Exercise the real route/guard with a deterministic DNS result.
+      remoteHttpEndpointLookup: lookup,
     });
 
     const response = await request(app)
@@ -557,6 +561,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       details: { code: "remote_http_dns_failed" },
     });
     expect(response.body.error).not.toBe("fetch failed");
+    expect(lookup).toHaveBeenCalledWith("qa-nonexistent.invalid");
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
   });
 

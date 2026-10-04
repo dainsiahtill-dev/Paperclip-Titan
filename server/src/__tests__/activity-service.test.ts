@@ -218,7 +218,7 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
   });
 
-  it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
+  it("backfills completed liveness without treating completion narration as useful activity", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -296,7 +296,7 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "completed",
       livenessReason: "Issue is done",
       continuationAttempt: 0,
-      lastUsefulActionAt: completedAt,
+      lastUsefulActionAt: null,
     });
 
     const [persisted] = await db.select().from(heartbeatRuns);
@@ -305,7 +305,7 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "completed",
       livenessReason: "Issue is done",
       continuationAttempt: 0,
-      lastUsefulActionAt: completedAt,
+      lastUsefulActionAt: null,
     });
   });
 

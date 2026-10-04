@@ -37,6 +37,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -562,6 +563,10 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       const latest = await heartbeat.getRun(sourceRun!.id);
       expect(latest?.status).toBe("succeeded");
     }, { timeout: 10_000 });
+    // Decomposition is independent work after planning. Wait for the original
+    // execution's checkout/finalizer drain before taking its parent read fence;
+    // the succeeded row alone can precede that owner's last write.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
 
     const sourceWorkspace = await db
       .select()
@@ -796,13 +801,22 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
+    const reviewService = issueThreadInteractionService(db);
+    const review = await reviewService.create({ id: issueId, companyId }, {
+      kind: "request_confirmation", continuationPolicy: "none", resolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Continue the accepted plan for this issue", supersedeOnUserComment: false },
+    }, { userId: "responsible-user" });
+    const resolved = await reviewService.acceptInteraction({
+      id: issueId, companyId, projectId, goalId: null, status: "in_progress",
+    }, review.id, {}, { userId: "responsible-user" });
+    expect(resolved.interaction.status).toBe("accepted");
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_blockers_resolved",
+      reason: "issue_commented",
       payload: {
         issueId,
-        interactionId: "interaction-cross-issue",
+        interactionId: resolved.interaction.id,
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
         mutation: "interaction",
@@ -810,7 +824,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       contextSnapshot: {
         issueId,
         taskId: issueId,
-        wakeReason: "issue_blockers_resolved",
+        wakeReason: "issue_commented",
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
       },
@@ -1098,13 +1112,22 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
+    const reviewService = issueThreadInteractionService(db);
+    const review = await reviewService.create({ id: issueId, companyId }, {
+      kind: "request_confirmation", continuationPolicy: "none", resolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Continue the accepted plan for this issue", supersedeOnUserComment: false },
+    }, { userId: "responsible-user" });
+    const resolved = await reviewService.acceptInteraction({
+      id: issueId, companyId, projectId, goalId: null, status: "in_progress",
+    }, review.id, {}, { userId: "responsible-user" });
+    expect(resolved.interaction.status).toBe("accepted");
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_blockers_resolved",
+      reason: "issue_commented",
       payload: {
         issueId,
-        interactionId: "interaction-same-issue",
+        interactionId: resolved.interaction.id,
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
         mutation: "interaction",
@@ -1112,7 +1135,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       contextSnapshot: {
         issueId,
         taskId: issueId,
-        wakeReason: "issue_blockers_resolved",
+        wakeReason: "issue_commented",
         interactionKind: "request_confirmation",
         interactionStatus: "accepted",
       },

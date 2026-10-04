@@ -20,6 +20,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { issueService } from "../services/issues.js";
+import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -286,7 +288,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   });
 
   it("uses the issue responsible user for automated dependency wakes without a message context", async () => {
-    const { companyId, agentId } = await seedCompany();
+    const { companyId, agentId, ownerUserId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
     const issueId = randomUUID();
@@ -299,13 +301,27 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       responsibleUserId: issueResponsibleUserId,
     });
 
+    const issueSvc = issueService(db);
+    const blocker = await issueSvc.create(companyId, {
+      title: "Dependency for the ownership fixture", assigneeAgentId: agentId,
+      status: "todo", createdByUserId: ownerUserId, actorUserId: ownerUserId,
+    });
     const sourceRunIds: string[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      await issueSvc.update(blocker.id, { status: "in_progress", actorUserId: ownerUserId });
+      await issueSvc.update(issueId, { status: "blocked", blockedByIssueIds: [blocker.id], actorUserId: ownerUserId });
+      await issueSvc.update(blocker.id, { status: "done", actorUserId: ownerUserId });
+      const dependent = await issueSvc.getById(issueId);
+      const readyStateKey = buildIssueBlockersResolvedWakeStateKey({
+        dependentIssueId: issueId, blockerIssueIds: [blocker.id],
+        blockedTransitionAt: dependent!.blockedTransitionAt,
+      });
       const wakeReason = "issue_blockers_resolved";
       const run = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
+        idempotencyKey: readyStateKey,
         payload: { issueId },
         requestedByActorType: "user",
         requestedByActorId: commenterUserId,
