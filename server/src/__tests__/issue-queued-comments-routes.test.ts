@@ -5,6 +5,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   activityLog,
@@ -15,6 +16,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
+  issueTreeHolds,
   issues,
   runIdentityContexts,
 } from "@paperclipai/db";
@@ -24,6 +26,8 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { deliverLegacySteering, scheduleLegacySteering, scheduleLegacySteeringForAgent } from '../services/live-adapter-steering.js';
 import { NativeRunCoordinatorStore } from '../services/native-runtime/native-run-coordinator-store.js';
+import { issueService } from '../services/issues.js';
+import { legacyControllerBootId } from '../services/legacy-controller-lease.js';
 import { preserveQueuedSteeringAcknowledgements } from '../services/queued-steering-result.js';
 import { claimCommentDelivery } from '../services/comment-delivery.js';
 import { adoptDeferredCommentsForLegacyRetry } from '../services/retry-comment-queue.js';
@@ -196,6 +200,181 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     adapterExecutionControls.set(seeded.runId, owner);
     return { ...seeded, owner };
   }
+
+  it('recovers an ordinary comment committed immediately before its route wake notification is lost', async () => {
+    const seeded = await legacyQueue();
+    await db.update(agents).set({ adapterType: 'process', adapterConfig: { command: '/bin/sh', args: ['-c', 'printf fixture-only'] } }).where(eq(agents.id, seeded.agentId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(heartbeatRuns).set({ controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + 60_000), executionStage: 'dispatching', startedAt: new Date(), lastUsefulActionAt: new Date() }).where(eq(heartbeatRuns.id, seeded.runId));
+    // Exact route killpoint: addComment's transaction has committed, but the
+    // route's later void heartbeat.wakeup block has never run. No model starts.
+    const comment = await issueService(db).addComment(seeded.issueId, 'Committed input must survive a lost wake notification', { userId: 'queue-owner' }, { wakeAssignee: {} });
+    const heartbeat = heartbeatService(db);
+    try {
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
+    expect(wakes.some((wake) => (wake.payload?._paperclipWakeContext as any)?.wakeCommentIds?.includes(comment.id) || wake.payload?.commentId === comment.id)).toBe(true);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ status: 'deferred_issue_execution', requestedByActorType: 'user', requestedByActorId: 'queue-owner', payload: { _ordinaryCommentWake: { pending: false } } });
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId))).toHaveLength(1);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0]).toMatchObject({ authorUserId: 'queue-owner', body: 'Committed input must survive a lost wake notification' });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe('running');
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  });
+
+  async function pendingOrdinaryComment() {
+    const seeded = await legacyQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agents).set({ adapterType: 'process', adapterConfig: { command: '/bin/sh', args: ['-c', 'printf fixture-only'] } }).where(eq(agents.id, seeded.agentId));
+    const comment = await issueService(db).addComment(seeded.issueId, 'Saved ordinary input', { userId: 'queue-owner' }, { wakeAssignee: {} });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
+    return { ...seeded, comment, wake };
+  }
+
+  it.each(['paused', 'budget', 'tree hold'] as const)('keeps an atomic ordinary input behind %s and admits the same receipt after resume', async (gate) => {
+    const seeded = await pendingOrdinaryComment();
+    if (gate !== 'tree hold') await db.update(agents).set({ status: 'paused', pauseReason: gate === 'budget' ? 'budget' : 'manual' }).where(eq(agents.id, seeded.agentId));
+    else await db.insert(issueTreeHolds).values({ companyId: seeded.companyId, rootIssueId: seeded.issueId, mode: 'pause', reason: 'Fixture pause' });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeOrdinaryCommentWakeRequests({ queueId: seeded.wake.id });
+      const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wake.id));
+      expect(waiting).toMatchObject({ status: 'deferred_issue_execution', payload: { _ordinaryCommentWake: { pending: true } } });
+      expect((waiting.payload?.executionWait as any).reason).toBe(gate === 'budget' ? 'budget.blocked' : gate === 'tree hold' ? 'issue_tree_hold_active' : 'agent.not_invokable');
+      await db.update(agents).set({ status: 'idle', pauseReason: null }).where(eq(agents.id, seeded.agentId));
+      await db.update(issueTreeHolds).set({ status: 'released', releasedAt: new Date() }).where(eq(issueTreeHolds.rootIssueId, seeded.issueId));
+      await heartbeat.resumeOrdinaryCommentWakeRequests({ queueId: seeded.wake.id });
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]).toMatchObject({ id: seeded.wake.id, payload: { _ordinaryCommentWake: { pending: false } } });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  });
+
+  it.each(['delete', 'reassign', 'cancel'] as const)('fences ordinary wake admission after %s without discarding its source history', async (change) => {
+    const seeded = await pendingOrdinaryComment();
+    if (change === 'delete') await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, seeded.comment.id));
+    if (change === 'reassign') await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, seeded.issueId));
+    if (change === 'cancel') await db.update(issues).set({ status: 'cancelled' }).where(eq(issues.id, seeded.issueId));
+    await heartbeatService(db).resumeOrdinaryCommentWakeRequests({ queueId: seeded.wake.id });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wake.id)))[0].status).toBe('cancelled');
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, seeded.comment.id)))[0].body).toBe('Saved ordinary input');
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+  });
+
+  it('does not revive a saved input from before an explicit Stop', async () => {
+    const seeded = await pendingOrdinaryComment();
+    await db.update(heartbeatRuns).set({ status: 'cancelled', errorCode: 'operator_interrupted', finishedAt: new Date(Date.now() + 1) }).where(eq(heartbeatRuns.id, seeded.runId));
+    seeded.owner.controller.abort();
+    await heartbeatService(db).resumeOrdinaryCommentWakeRequests({ queueId: seeded.wake.id });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wake.id)))[0]).toMatchObject({ status: 'deferred_issue_execution', payload: { executionWait: { reason: 'operator_stopped' }, _ordinaryCommentWake: { pending: true } } });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+  });
+
+  it('rolls back the source comment and its wake intent together', async () => {
+    const seeded = await legacyQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await expect(db.transaction(async (tx) => {
+      await issueService(db).addComment(seeded.issueId, 'Rollback source', { userId: 'queue-owner' }, { wakeAssignee: {} }, tx);
+      throw new Error('Fixture rollback');
+    })).rejects.toThrow('Fixture rollback');
+    expect((await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).map(comment => comment.body)).not.toContain('Rollback source');
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId))).toEqual([]);
+  });
+
+  it('uses the actual comment route to commit one input and one admitted wake on an idempotent retry', async () => {
+    const seeded = await legacyQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agents).set({ adapterType: 'process', adapterConfig: { command: '/bin/sh', args: ['-c', 'printf fixture-only'] } }).where(eq(agents.id, seeded.agentId));
+    const client = app(seeded.companyId);
+    const body = { body: 'Actual route atomic input', clientRequestId: randomUUID() };
+    const saved = await request(client).post(`/api/issues/${seeded.issueId}/comments`).send(body).expect(201);
+    await request(client).post(`/api/issues/${seeded.issueId}/comments`).send(body).expect(201);
+    await vi.waitFor(async () => {
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId));
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]).toMatchObject({ idempotencyKey: `ordinary-comment:${saved.body.id}`, payload: { _ordinaryCommentWake: { pending: false } } });
+    });
+    expect((await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).filter(comment => comment.body === body.body)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+  });
+
+  it('keeps an unadmitted ordinary input visible without sending through a capable live owner', async () => {
+    const seeded = await pendingOrdinaryComment();
+    const send = vi.fn(async () => ({ outcome: 'injected' as const }));
+    seeded.owner.steering = { state: async () => ({ supported: true, active: true, busy: false }), send };
+    expect(await deliverLegacySteering(db, { runId: seeded.runId })).toBe(0);
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body).toMatchObject({ steeringDisposition: 'temporarily_unavailable', executionWait: { reason: 'comment_admission_pending' } });
+    expect(queue.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.comment.id]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('preserves canonical user order when another atomic ordinary input joins the queue', async () => {
+    const seeded = await pendingOrdinaryComment();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeOrdinaryCommentWakeRequests({ queueId: seeded.wake.id });
+    const second = await issueService(db).addComment(seeded.issueId, 'Second reordered input', { userId: 'queue-owner' }, { wakeAssignee: {} });
+    await heartbeat.resumeOrdinaryCommentWakeRequests({ issueId: seeded.issueId });
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).put(`/api/issues/${seeded.issueId}/queued-comments/order`).send({ queueId: queue.body.queueId, revision: queue.body.revision, orderedCommentIds: [second.id, seeded.comment.id] }).expect(200);
+    const third = await issueService(db).addComment(seeded.issueId, 'Third input keeps existing order', { userId: 'queue-owner' }, { wakeAssignee: {} });
+    await heartbeat.resumeOrdinaryCommentWakeRequests({ issueId: seeded.issueId });
+    const joined = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(joined.body.entries.map((entry: any) => entry.comment.id)).toEqual([second.id, seeded.comment.id, third.id]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, seeded.agentId))).toHaveLength(1);
+  });
+
+  it('respects a goal pause before handing off saved context', async () => {
+    const seeded = await nativeContextQueue('system');
+    await db.insert(agentTaskSessions).values({ companyId: seeded.companyId, agentId: seeded.agentId, adapterType: 'paperclip_runner', taskKey: seeded.issueId, goalStatus: 'active', goalDesiredState: 'paused', goalJson: { workingNow: true, status: 'active', objective: 'Paused fixture' } });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`)).body.executionWait).toMatchObject({ reason: 'goal_paused' }));
+    expect(steerNativeSessionMock).not.toHaveBeenCalled();
+    expect(await db.select().from(issueCommentDeliveries)).toEqual([]);
+  });
+
+  it('uses one durable context input for an active goal instead of a separate PRP command', async () => {
+    const seeded = await nativeContextQueue();
+    await db.update(issueComments).set({ authorType: 'user', authorUserId: 'queue-owner', authorAgentId: null }).where(eq(issueComments.id, seeded.commentIds[0]!));
+    await db.insert(agentTaskSessions).values({ companyId: seeded.companyId, agentId: seeded.agentId, adapterType: 'paperclip_runner', taskKey: seeded.issueId, goalStatus: 'active', goalDesiredState: 'active', goalJson: { workingNow: true, status: 'active', objective: 'Fixture goal' } });
+    steerNativeSessionMock.mockImplementationOnce(async (input) => { await input.authorizeBeforeDispatch(); return { turnId: 'context-turn' }; });
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status).toBe('cancelled'));
+    await scheduleLegacySteeringForAgent(db, seeded.agentId);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(steerNativeSessionMock).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]).toMatchObject({ responsibleUserId: 'queue-owner', activeIdentityContextId: seeded.identity.id });
+    expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, seeded.runId))).toHaveLength(1);
+  });
+
+  it('uses the actual active-goal comment route without double input or user identity activation', async () => {
+    const seeded = await nativeContextQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    adapterExecutionControls.set(seeded.runId, createAdapterExecutionControl());
+    await db.insert(agentTaskSessions).values({ companyId: seeded.companyId, agentId: seeded.agentId, adapterType: 'paperclip_runner', taskKey: seeded.issueId, goalStatus: 'active', goalDesiredState: 'active', goalJson: { workingNow: true, status: 'active', objective: 'Route fixture goal' } });
+    steerNativeSessionMock.mockImplementation(async (input) => { await input.authorizeBeforeDispatch(); return { turnId: 'context-turn' }; });
+    const client = app(seeded.companyId), body = { body: 'Route goal context must arrive once', clientRequestId: randomUUID() };
+    const saved = await request(client).post(`/api/issues/${seeded.issueId}/comments`).send(body).expect(201);
+    await request(client).post(`/api/issues/${seeded.issueId}/comments`).send(body).expect(201);
+    await vi.waitFor(async () => expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, `ordinary-comment:${saved.body.id}`)))[0]?.status).toBe('cancelled'));
+    expect(steerNativeSessionMock).toHaveBeenCalledTimes(1);
+    expect(steerNativeSessionMock.mock.calls[0]?.[0].message).toContain('original author: Board queue-owner');
+    expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, seeded.runId))).toHaveLength(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]).toMatchObject({ responsibleUserId: 'queue-owner', activeIdentityContextId: seeded.identity.id });
+  });
+
+  it('keeps self and terminal ordinary comments out of wake intent creation', async () => {
+    const seeded = await legacyQueue();
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await issueService(db).addComment(seeded.issueId, 'Own run progress', { agentId: seeded.agentId, runId: seeded.runId }, { wakeAssignee: {} });
+    await db.update(issues).set({ status: 'done' }).where(eq(issues.id, seeded.issueId));
+    await issueService(db).addComment(seeded.issueId, 'Archived note', { userId: 'queue-owner' }, { wakeAssignee: {} });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, seeded.agentId))).toEqual([]);
+  });
 
   async function nativeContextQueue(authorType: 'agent' | 'system' = 'agent') {
     const seeded = await seedQueue();

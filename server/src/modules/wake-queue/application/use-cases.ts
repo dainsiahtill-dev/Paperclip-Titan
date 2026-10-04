@@ -901,7 +901,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         mergedPayload,
         nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
         ...(manualUserWakeActorId ? { manualUserWakeActorId } : {}),
-        ...(input.durableReceipt
+        ...(input.durableReceipt && input.durableReceipt.id !== existingDeferred.id
           ? {
               coalescedReceipt: {
                 ...input.durableReceipt,

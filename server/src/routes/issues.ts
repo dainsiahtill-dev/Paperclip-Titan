@@ -17576,7 +17576,6 @@ export function issueRoutes(
       // Without a single transaction, a 422 (or any error) thrown by the status update after the
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
-      let goalCommentSteered = false;
       if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
@@ -17737,6 +17736,13 @@ export function issueRoutes(
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          wakeAssignee: {
+            resumeRequested: resumeRequested === true,
+            reopened,
+            reopenedFrom: reopenFromStatus,
+            interruptedRunId,
+            issueAtCommentStart: { checkoutRunId: issue.checkoutRunId, executionRunId: issue.executionRunId },
+          },
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
@@ -17758,48 +17764,10 @@ export function issueRoutes(
 
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
-      if (
-        currentIssue.assigneeAgentId &&
-        !(
-          actor.actorType === "agent" &&
-          actor.actorId === currentIssue.assigneeAgentId
-        )
-      ) {
-        const goalProjection = await runnerGoals.projection(
-          currentIssue.companyId,
-          currentIssue.id,
-          currentIssue.assigneeAgentId,
-        );
-        if (
-          goalProjection?.goal?.status === "active" &&
-          goalProjection.workingNow
-        ) {
-          const steer = queueLiveRunnerPrpCommand({
-            companyId: currentIssue.companyId,
-            issueId: currentIssue.id,
-            agentId: currentIssue.assigneeAgentId,
-            type: "turn.steer",
-            payload: { text: comment.body },
-            commandId: `goal_comment_${comment.id}`,
-          });
-          if (steer) {
-            try {
-              await steer.completion;
-              goalCommentSteered = true;
-            } catch (err) {
-              logger.warn(
-                {
-                  err,
-                  issueId: currentIssue.id,
-                  commentId: comment.id,
-                  runId: steer.runId,
-                },
-                "failed to steer an active session goal; falling back to a boundary wake",
-              );
-            }
-          }
-        }
-      }
+      const savedCommentWake = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, currentIssue.companyId), eq(agentWakeupRequests.idempotencyKey, `ordinary-comment:${comment.id}`))).limit(1).then(rows => rows[0] ?? null);
+      if (savedCommentWake) void heartbeat.resumeOrdinaryCommentWakeRequests({ queueId: savedCommentWake.id }).catch(() => undefined);
+      // Active goals use the same admitted wake and content-bound native
+      // context receipt. A second PRP command here could duplicate the input.
       const commentReferenceSummaryAfter =
         await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -18042,7 +18010,7 @@ export function issueRoutes(
           reopened,
           currentStatus: wakeIssueSnapshot.status,
         });
-        if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
+        if (assigneeId && !savedCommentWake && shouldWakeAssigneeForComment) {
           if (reopened) {
             addWakeup(assigneeId, {
               source: "automation",

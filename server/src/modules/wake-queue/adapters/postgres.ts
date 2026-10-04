@@ -209,6 +209,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             and(
               eq(agentWakeupRequests.companyId, companyId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+              sql`coalesce(${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending', 'false') <> 'true'`,
               excludedWakeIds?.length ? notInArray(agentWakeupRequests.id, excludedWakeIds) : undefined,
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
               interruptQueueId ? eq(agentWakeupRequests.id, interruptQueueId) : undefined,
@@ -872,6 +873,7 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+            sql`coalesce(${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending', 'false') <> 'true'`,
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
             ...(durableActor
               ? [
@@ -908,6 +910,14 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
 }
 
 export function createWakeAdmissionWriter(): WakeAdmissionWriter {
+  async function writeReceipt(tx: Db, values: typeof agentWakeupRequests.$inferInsert, existing?: boolean) {
+    if (!existing) return tx.insert(agentWakeupRequests).values(values);
+    const [updated] = await tx.update(agentWakeupRequests).set(values).where(and(
+      eq(agentWakeupRequests.id, values.id!), eq(agentWakeupRequests.companyId, values.companyId),
+      eq(agentWakeupRequests.agentId, values.agentId), eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+    )).returning({ id: agentWakeupRequests.id });
+    if (!updated) throw new Error('wake-queue: ordinary comment receipt changed before admission');
+  }
   return {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
@@ -931,8 +941,8 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
           "wake-queue: the coalesce target run was not found for this company",
         );
       }
-      await tx.insert(agentWakeupRequests).values({
-        ...input.durableReceipt,
+      await writeReceipt(tx, {
+        ...(input.durableReceipt ? { id: input.durableReceipt.id, requestedAt: input.durableReceipt.requestedAt } : {}),
         companyId: input.companyId,
         agentId: input.agentId,
         source: input.source,
@@ -946,7 +956,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         idempotencyKey: input.idempotencyKey,
         runId: mergedRun.id,
         finishedAt: now,
-      });
+      }, input.durableReceipt?.existing);
       return mergedRun as unknown as Record<string, unknown>;
     },
 
@@ -980,20 +990,21 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         );
       }
       if (input.coalescedReceipt) {
-        await tx.insert(agentWakeupRequests).values({
-          ...input.coalescedReceipt,
+        const { existing, ...receipt } = input.coalescedReceipt;
+        await writeReceipt(tx, {
+          ...receipt,
           companyId: input.companyId,
           status: "coalesced",
           coalescedCount: 1,
           finishedAt: new Date(),
-        });
+        }, existing);
       }
     },
 
     async insertNewDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
-      await tx.insert(agentWakeupRequests).values({
-        ...input.durableReceipt,
+      await writeReceipt(tx, {
+        ...(input.durableReceipt ? { id: input.durableReceipt.id, requestedAt: input.durableReceipt.requestedAt } : {}),
         companyId: input.companyId,
         agentId: input.agentId,
         source: input.source,
@@ -1004,7 +1015,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
         idempotencyKey: input.idempotencyKey,
-      });
+      }, input.durableReceipt?.existing);
     },
   };
 }

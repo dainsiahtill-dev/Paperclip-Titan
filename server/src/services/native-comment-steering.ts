@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import { agentWakeupRequests, heartbeatRuns, issueComments, type Db } from '@paperclipai/db';
+import { agentSessionGoalActions, agentTaskSessions, agentWakeupRequests, heartbeatRuns, issueComments, type Db } from '@paperclipai/db';
+import { desc } from 'drizzle-orm';
 import { claimCommentDelivery, commentDeliveryDigest, deliveryRecord as record, settleCommentDelivery } from './comment-delivery.js';
 import { issueCommentDeliveries } from '@paperclipai/db/schema/issue_comment_deliveries';
 import type { LogActivityInput } from './activity-log.js';
@@ -12,8 +13,10 @@ async function waitAtBoundary(db: Db, run: typeof heartbeatRuns.$inferSelect, wa
     ? 'Message saved. Waiting for the current tool to finish before handoff.'
     : reason === 'steering_unsupported'
       ? 'Message saved. This runner receives handoffs at the next turn boundary.'
-      : reason === 'native_user_instruction_boundary'
+    : reason === 'native_user_instruction_boundary'
         ? 'Message saved. Waiting for the next turn to preserve instruction order.'
+        : reason === 'goal_paused'
+          ? 'The goal is paused. Message saved until it can continue.'
         : 'The active turn boundary is not confirmed. Message saved for the next safe boundary.';
   await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify({ reason, message })}::jsonb)`, updatedAt: new Date() }).where(and(
     eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.status, 'deferred_issue_execution'),
@@ -50,6 +53,7 @@ export async function deliverNativeContextSteering(db: Db, runId: string, input:
   let delivered = 0;
   for (const wake of wakes) {
     const payload = record(wake.payload), context = record(payload._paperclipWakeContext);
+    if (record(payload._ordinaryCommentWake).pending === true) continue;
     if (wake.idempotencyKey?.startsWith('chat-inbound:') || payload.mutation === 'interaction' || context.interactionId) continue;
     const ids = queuedCommentIdsFromWakePayload(payload);
     if (!ids.length) continue;
@@ -58,9 +62,18 @@ export async function deliverNativeContextSteering(db: Db, runId: string, input:
       if (input.commentId && input.commentId !== id) continue;
       const comment = comments.find((row) => row.id === id);
       if (!comment || comment.deletedAt) continue;
-      if (comment.authorType === 'user' || comment.authorUserId) {
-        await waitAtBoundary(db, run, wake.id, 'native_user_instruction_boundary');
+      const [goal] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, run.companyId), eq(agentTaskSessions.agentId, run.agentId), eq(agentTaskSessions.taskKey, issueId))).orderBy(desc(agentTaskSessions.updatedAt)).limit(1);
+      const goalChanges = goal ? await db.select({ action: agentSessionGoalActions.action }).from(agentSessionGoalActions).where(and(eq(agentSessionGoalActions.companyId, run.companyId), eq(agentSessionGoalActions.sessionId, goal.id), inArray(agentSessionGoalActions.status, ['pending', 'accepted', 'dispatching']))) : [];
+      const activeGoalContext = goal?.goalStatus === 'active' && record(goal.goalJson).workingNow === true && goal.goalDesiredState !== 'paused' && !goalChanges.some(change => ['pause', 'clear', 'replace'].includes(change.action));
+      if (goal && (goal.goalStatus === 'paused' || goal.goalDesiredState === 'paused' || goalChanges.some(change => ['pause', 'clear', 'replace'].includes(change.action)))) {
+        await waitAtBoundary(db, run, wake.id, 'goal_paused');
         return delivered;
+      }
+      if (comment.authorType === 'user' || comment.authorUserId) {
+        if (!activeGoalContext) {
+          await waitAtBoundary(db, run, wake.id, 'native_user_instruction_boundary');
+          return delivered;
+        }
       }
       const ownerValid = captureNativeSteeringOwner(run.id);
       const snapshot = await getNativeSteeringBoundarySnapshot(run.id);
@@ -74,17 +87,21 @@ export async function deliverNativeContextSteering(db: Db, runId: string, input:
       if (!claimed) return delivered;
       if (claimed.duplicate) { delivered += 1; continue; }
       const { receipt } = claimed;
-      if (claimed.comment.authorType === 'user' || claimed.comment.authorUserId) {
+      if ((claimed.comment.authorType === 'user' || claimed.comment.authorUserId) && !activeGoalContext) {
         await settleCommentDelivery(db, { receipt, ownerValid, deferredReason: 'native_user_instruction_boundary' });
         return delivered;
       }
-      const author = claimed.comment.authorType === 'agent' ? `Agent ${claimed.comment.authorAgentId ?? 'unknown'}` : 'System';
+      const author = claimed.comment.authorUserId ? `Board ${claimed.comment.authorUserId}` : claimed.comment.authorType === 'agent' ? `Agent ${claimed.comment.authorAgentId ?? 'unknown'}` : 'System';
       const acknowledge = (ack: { turnId: string }) => settleCommentDelivery(db, { receipt, ownerValid, acknowledgement: ack });
       try {
         const ack = await steerNativeSession({
           runId: run.id, message: `[Paperclip task context; original author: ${author}; comment: ${comment.id}]\n${claimed.comment.body}`,
           correlationId: receipt.correlationId, expectedTurnId: receipt.targetTurnId,
           authorizeBeforeDispatch: async () => {
+            if (goal) {
+              const [currentGoal] = await db.select({ goalStatus: agentTaskSessions.goalStatus, desired: agentTaskSessions.goalDesiredState }).from(agentTaskSessions).where(eq(agentTaskSessions.id, goal.id));
+              if (!currentGoal || currentGoal.goalStatus !== 'active' || currentGoal.desired === 'paused') throw new NativeSessionSteeringError('steering_temporarily_unavailable', 'The goal changed before context handoff.');
+            }
             const current = await getNativeSteeringBoundarySnapshot(run.id);
             boundary = current.supported && current.activeTurnId === receipt.targetTurnId
               ? await readNativeSteeringBoundary(db, run, { turnId: current.activeTurnId, sourceCursor: current.sourceCursor, pendingRuntimeRequests: current.pendingRuntimeRequests })

@@ -317,6 +317,8 @@ export type WakeAdmissionActiveExecutionRun = {
 export type DurableWakeAdmissionReceipt = {
   id: string;
   requestedAt: Date;
+  /** An atomic ordinary-comment receipt already exists, awaiting admission. */
+  existing?: boolean;
 };
 
 export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {

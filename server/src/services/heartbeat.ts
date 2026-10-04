@@ -3635,6 +3635,8 @@ interface WakeupOptions {
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /** Server-derived ordinary comment receipt committed with its source comment. */
+  ordinaryCommentWakeRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
@@ -9455,7 +9457,9 @@ export function heartbeatService(
   const workspaceOperationsSvc = workspaceOperationService(db);
   const liveRunExecutions = {
     has(id: string) {
-      return runningProcesses.has(id) || activeRunExecutions.has(id);
+      // A registered execution owner may be preparing or draining before/after
+      // its PID appears. Abort intent is not proof that its execution stopped.
+      return runningProcesses.has(id) || activeRunExecutions.has(id) || adapterExecutionControls.has(id);
     },
   };
   const budgetHooks = {
@@ -10455,6 +10459,65 @@ export function heartbeatService(
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
+  }
+
+  async function resumeOrdinaryCommentWakeRequests(input: { queueId?: string; issueId?: string } = {}) {
+    if ((await getSchedulingSuppression()).suppressed) return 0;
+    const pending = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.status, 'deferred_issue_execution'),
+      sql`${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending' = 'true'`,
+      input.queueId ? eq(agentWakeupRequests.id, input.queueId) : undefined,
+      input.issueId ? sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}` : undefined,
+    )).orderBy(asc(agentWakeupRequests.updatedAt), asc(agentWakeupRequests.id)).limit(50);
+    let admitted = 0;
+    for (const wake of pending) {
+      // Advance observation even for held/damaged receipts so one paused task
+      // cannot permanently starve unrelated saved inputs in this bounded scan.
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId), eq(agentWakeupRequests.status, 'deferred_issue_execution')));
+      const issueId = readNonEmptyString(wake.payload?.issueId);
+      if (!issueId) continue;
+      const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, wake.companyId)));
+      const ids = queuedCommentIdsFromWakePayload(wake.payload);
+      const live = ids.length ? await db.select().from(issueComments).where(and(eq(issueComments.companyId, wake.companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, ids), isNull(issueComments.deletedAt))) : [];
+      if (!issue || issue.assigneeAgentId !== wake.agentId || issue.hiddenAt || !live.length || issue.status === 'cancelled') {
+        await db.update(agentWakeupRequests).set({ status: 'cancelled', finishedAt: new Date(), error: 'Ordinary comment target changed before admission', updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, 'deferred_issue_execution')));
+        continue;
+      }
+      const actorType = wake.requestedByActorType;
+      const actorId = wake.requestedByActorId;
+      if (!['user', 'agent', 'system'].includes(actorType ?? '') || !actorId) continue;
+      const primary = live.find(comment => comment.id === parseObject(parseObject(wake.payload)._ordinaryCommentWake).commentId);
+      if (!primary || (actorType === 'user' ? primary.authorUserId !== actorId : actorType === 'agent' ? primary.authorAgentId !== actorId : Boolean(primary.authorAgentId || primary.authorUserId))) continue;
+      const hold = await treeControlSvc.getActivePauseHoldGate(wake.companyId, issueId);
+      const holdCreatedAt = hold ? await db.select({ createdAt: issueTreeHolds.createdAt }).from(issueTreeHolds).where(and(eq(issueTreeHolds.id, hold.holdId), eq(issueTreeHolds.companyId, wake.companyId))).then(rows => rows[0]?.createdAt) : null;
+      if (holdCreatedAt && wake.requestedAt <= holdCreatedAt) {
+        // Replay of a message saved before Pause is not a fresh, verified
+        // interaction with the paused task. Do not turn it into that exemption.
+        await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify({ reason: 'issue_tree_hold_active', message: 'This task is paused. Your message is saved until it resumes.' })}::jsonb)`, updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, 'deferred_issue_execution')));
+        continue;
+      }
+      const sourceRunId = readNonEmptyString(parseObject(parseObject(wake.payload)._ordinaryCommentWake).sourceExecutionRunId);
+      const sourceRun = sourceRunId ? await getRun(sourceRunId) : null;
+      if (sourceRun?.status === 'cancelled' && sourceRun.finishedAt && wake.requestedAt <= sourceRun.finishedAt && sourceRun.error !== 'Cancelled due to budget pause' && parseObject(wake.payload?._paperclipWakeContext).resumeIntent !== true) {
+        await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify({ reason: 'operator_stopped', message: 'The response was stopped. Your message is saved for explicit continuation.' })}::jsonb)`, updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, 'deferred_issue_execution')));
+        continue;
+      }
+      try {
+        await enqueueWakeup(wake.agentId, {
+          source: 'automation', triggerDetail: 'system', reason: wake.reason,
+          payload: wake.payload, contextSnapshot: parseObject(wake.payload?._paperclipWakeContext),
+          requestedByActorType: actorType as 'user' | 'agent' | 'system', requestedByActorId: actorId,
+          idempotencyKey: wake.idempotencyKey, ordinaryCommentWakeRequestId: wake.id,
+        }, wake.id);
+        const [current] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId)));
+        if (current && current.status !== 'cancelled' && !ordinaryCommentWakeIsPending(current.payload)) admitted += 1;
+      } catch (error) {
+        // Existing admission records the exact pause/budget/ownership wait.
+        // Keep the canonical input and retry via the existing scheduler only.
+        if (!(error instanceof HttpError && [403, 409, 422].includes(error.status))) logger.warn({ errorKind: 'ordinary_comment_admission_failed', companyId: wake.companyId, issueId, queueId: wake.id }, 'ordinary comment admission failed; saved input retained');
+      }
+    }
+    return admitted;
   }
 
   async function resumeExecutionWaitComments() {
@@ -19509,6 +19572,7 @@ export function heartbeatService(
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await reconcileTerminalCapacityReleases();
+    await resumeOrdinaryCommentWakeRequests();
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -19770,6 +19834,7 @@ export function heartbeatService(
   }
 
   async function reconcileStrandedAssignedIssues() {
+    await resumeOrdinaryCommentWakeRequests();
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -26266,6 +26331,7 @@ export function heartbeatService(
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
+    executionWaitRequestId ??= opts.ordinaryCommentWakeRequestId;
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -26387,9 +26453,16 @@ export function heartbeatService(
     if (durableRequest?.failedRunRetry) {
       opts = { ...opts, allowRunCoalescing: false };
     }
+    const ordinaryReceipt = opts.ordinaryCommentWakeRequestId
+      ? await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, opts.ordinaryCommentWakeRequestId), eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId))).then(rows => rows[0] ?? null)
+      : null;
+    if (opts.ordinaryCommentWakeRequestId) {
+      if (!ordinaryReceipt || ordinaryReceipt.status !== 'deferred_issue_execution' || !ordinaryCommentWakeIsPending(ordinaryReceipt.payload)) return ordinaryReceipt?.runId ? getRun(ordinaryReceipt.runId) : null;
+      if (ordinaryReceipt.requestedByActorType !== opts.requestedByActorType || ordinaryReceipt.requestedByActorId !== opts.requestedByActorId || ordinaryReceipt.payload?.issueId !== issueId) throw conflict('Ordinary comment admission identity changed');
+    }
     const durableReceiptFields = durableRequest
       ? { id: durableRequest.id, requestedAt: durableRequest.requestedAt }
-      : {};
+      : ordinaryReceipt ? { id: ordinaryReceipt.id, requestedAt: ordinaryReceipt.requestedAt } : {};
     const existingDurableReceipt = async (queryDb: Db) => {
       if (!durableRequest) return null;
       const receipt = await queryDb
@@ -26818,11 +26891,11 @@ export function heartbeatService(
               eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
               // A user message can join a queue originally created by a
               // system wake. Admission validates the saved user comment or board click.
-              (opts.queuedCommentInterruptId ?? opts.queuedCommentRequestId) === executionWaitRequestId
+              (opts.queuedCommentInterruptId ?? opts.queuedCommentRequestId ?? opts.ordinaryCommentWakeRequestId) === executionWaitRequestId
                 ? undefined : eq(agentWakeupRequests.requestedByActorType, "user"),
               opts.queuedCommentInterruptId === executionWaitRequestId
                 ? sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${opts.requestedByActorId ?? ""}`
-                : opts.queuedCommentRequestId === executionWaitRequestId ? undefined
+                : (opts.queuedCommentRequestId ?? opts.ordinaryCommentWakeRequestId) === executionWaitRequestId ? undefined
                   : eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId ?? ""),
               sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
             ));
@@ -26830,6 +26903,19 @@ export function heartbeatService(
             // An adopted, discarded, or edited receipt is no longer authority.
             if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
               return { kind: "deferred" as const };
+            }
+            if (opts.ordinaryCommentWakeRequestId) {
+              if (!ordinaryCommentWakeIsPending(pending.payload) || pending.requestedByActorType !== opts.requestedByActorType || pending.requestedByActorId !== opts.requestedByActorId) return { kind: 'deferred' as const };
+              const ids = queuedCommentIdsFromWakePayload(pending.payload);
+              const live = await tx.select({ id: issueComments.id }).from(issueComments).where(and(eq(issueComments.companyId, agent.companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, ids), isNull(issueComments.deletedAt)));
+              const liveIds = ids.filter(id => live.some(comment => comment.id === id));
+              if (!liveIds.includes(wakeCommentId)) return { kind: 'deferred' as const };
+              const adopted = withQueuedCommentIdsInWakePayload(pending.payload, liveIds);
+              adopted._ordinaryCommentWake = { ...parseObject(adopted._ordinaryCommentWake), pending: false };
+              delete adopted.executionWait;
+              payload = adopted;
+              Object.assign(enrichedContextSnapshot, withQueuedCommentIdsInRunContext(enrichedContextSnapshot, liveIds));
+              enrichedContextSnapshot.queuedCommentDeliveryUncertainty = await commentDeliveryUncertaintyForComments(tx as unknown as Db, { companyId: agent.companyId, issueId, commentIds: liveIds });
             }
             if (opts.queuedCommentRequestId) {
               const ids = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
@@ -27798,7 +27884,7 @@ export function heartbeatService(
                       id: durableRequest.id,
                       requestedAt: durableRequest.requestedAt,
                     }
-                  : undefined,
+                  : ordinaryReceipt ? { id: ordinaryReceipt.id, requestedAt: ordinaryReceipt.requestedAt, existing: true } : undefined,
                 reason,
                 liveRunExecutions,
                 wakeCommentId,
@@ -27963,6 +28049,10 @@ export function heartbeatService(
             tx,
           );
           if (dailyCapBlock) {
+            if (ordinaryReceipt) {
+              await tx.update(agentWakeupRequests).set({ payload: { ...parseObject(ordinaryReceipt.payload), executionWait: { reason: dailyCapBlock.reason, message: 'Daily limit reached. Message saved until work can resume.' } }, updatedAt: new Date() }).where(and(eq(agentWakeupRequests.id, ordinaryReceipt.id), eq(agentWakeupRequests.status, 'deferred_issue_execution')));
+              return { kind: 'deferred' as const };
+            }
             if (executionWaitRequestId && executionBlocker) {
               continuationWait = { reason: dailyCapBlock.reason,
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
@@ -28017,9 +28107,7 @@ export function heartbeatService(
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
           }
 
-          const wakeupRequest = await tx
-            .insert(agentWakeupRequests)
-            .values({
+          const requestValues = {
               ...durableReceiptFields,
               companyId: agent.companyId,
               agentId,
@@ -28031,9 +28119,14 @@ export function heartbeatService(
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
-            })
-            .returning()
-            .then((rows) => rows[0]);
+            };
+          const wakeupRequest = await (ordinaryReceipt
+            ? tx.update(agentWakeupRequests).set({ ...requestValues, updatedAt: new Date() })
+                .where(and(eq(agentWakeupRequests.id, ordinaryReceipt.id), eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, 'deferred_issue_execution')))
+                .returning()
+            : tx.insert(agentWakeupRequests).values(requestValues).returning())
+            .then(rows => rows[0]);
+          if (!wakeupRequest) throw conflict('Ordinary comment receipt changed during admission');
 
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;
@@ -28066,6 +28159,7 @@ export function heartbeatService(
                   .orderBy(asc(agentWakeupRequests.requestedAt))
               : [];
           const adoptedComments = pendingComments.filter((wake) => {
+            if (ordinaryCommentWakeIsPending(wake.payload)) return false;
             if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
             const deferredPayload = parseObject(wake.payload);
             const deferredContext = parseObject(
@@ -28095,6 +28189,7 @@ export function heartbeatService(
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
+          if (adoptedCommentIds.length) enrichedContextSnapshot.queuedCommentDeliveryUncertainty = await commentDeliveryUncertaintyForComments(tx as unknown as Db, { companyId: agent.companyId, issueId, commentIds: adoptedCommentIds });
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
@@ -28809,6 +28904,12 @@ export function heartbeatService(
 
     if (wakeupIds.length === 0) return 0;
 
+    // Saved ordinary input is unadmitted work, not a provider run to cancel.
+    // Keep its receipt so an authorized budget resume can admit it normally.
+    await db.update(agentWakeupRequests).set({
+      payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify({ reason: 'budget.blocked', message: 'Budget paused. Your message is saved until work can resume.' })}::jsonb)`, updatedAt: now,
+    }).where(and(inArray(agentWakeupRequests.id, wakeupIds), sql`${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending' = 'true'`));
+
     await db
       .update(agentWakeupRequests)
       .set({
@@ -28817,7 +28918,7 @@ export function heartbeatService(
         error: "Cancelled due to budget pause",
         updatedAt: now,
       })
-      .where(inArray(agentWakeupRequests.id, wakeupIds));
+      .where(and(inArray(agentWakeupRequests.id, wakeupIds), sql`coalesce(${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending', 'false') <> 'true'`));
 
     return wakeupIds.length;
   }
@@ -29667,6 +29768,7 @@ export function heartbeatService(
     resumeRemoteStopComments,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
+    resumeOrdinaryCommentWakeRequests,
 
     sweepStaleIssueLocks,
 
@@ -29834,3 +29936,6 @@ export function heartbeatService(
     },
   };
 }
+import { ordinaryCommentWakeIsPending } from './ordinary-comment-wake.js';
+import { issueTreeHolds } from '@paperclipai/db';
+import { commentDeliveryUncertaintyForComments } from './comment-delivery.js';

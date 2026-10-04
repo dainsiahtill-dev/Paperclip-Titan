@@ -70,6 +70,7 @@ export async function claimCommentDelivery(db: Db, input: CommentDeliveryInput):
     const [wake] = await tx.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, input.queueId), eq(agentWakeupRequests.companyId, input.companyId))).for('update');
     const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, input.commentId), eq(issueComments.issueId, input.issueId), eq(issueComments.companyId, input.companyId))).for('update');
     if (!issue || !run || !wake || !comment || comment.deletedAt) return null;
+    if (deliveryRecord(deliveryRecord(wake.payload)._ordinaryCommentWake).pending === true) return null;
     if (!await controllerLeaseLive(tx as unknown as Db, run)) return null;
     if (await issueTreeControlService(tx as unknown as Db).getActivePauseHoldGate(input.companyId, input.issueId)) return null;
     const digest = commentDeliveryDigest(comment);

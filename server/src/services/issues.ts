@@ -12103,10 +12103,11 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
+        wakeAssignee?: OrdinaryCommentWakeIntent;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
-      if (dbOrTx === db && (actor.runId || actor.userId)) {
+      if (dbOrTx === db && (actor.runId || actor.userId || options?.wakeAssignee)) {
         const append = () =>
           db.transaction(async (tx) => {
             // Serialize run-authored comments on the issue so a provider retry
@@ -12381,6 +12382,7 @@ export function issueService(db: Db) {
           .returning();
       }
       if (!comment) throw new Error("Failed to create issue comment");
+      if (options?.wakeAssignee) await persistOrdinaryCommentWake(dbOrTx, comment, options.wakeAssignee);
 
       const boundAttachments: Array<{
         id: string;
@@ -13325,3 +13327,4 @@ export function issueService(db: Db) {
 
   return serviceApi;
 }
+import { persistOrdinaryCommentWake, type OrdinaryCommentWakeIntent } from './ordinary-comment-wake.js';

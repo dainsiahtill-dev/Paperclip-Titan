@@ -17,9 +17,11 @@ export async function getLiveAdapterSteeringState(runId: string, db?: Db, commen
   const owner = adapterExecutionControls.get(runId);
   if (!owner?.steering || owner.controller.signal.aborted) return 'unsupported';
   if (db && commentIds.length) {
-    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const acknowledgements = record(record(run?.resultJson).queuedSteeringAcknowledgements);
     if (commentIds.some((id) => record(acknowledgements[id]).status === 'uncertain')) return 'temporarily_unavailable';
+    const unadmitted = run ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.status, 'deferred_issue_execution'), sql`${agentWakeupRequests.payload}->'_ordinaryCommentWake'->>'pending' = 'true'`, sql`${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}' ?| ARRAY[${sql.join(commentIds.map(id => sql`${id}`), sql`, `)}]::text[]`)).limit(1) : [];
+    if (unadmitted.length) return 'temporarily_unavailable';
     const pending = await db.select({ id: issueCommentDeliveries.id }).from(issueCommentDeliveries).where(and(eq(issueCommentDeliveries.targetRunId, runId), inArray(issueCommentDeliveries.commentId, [...commentIds]), inArray(issueCommentDeliveries.status, ['dispatching', 'uncertain']))).limit(1);
     if (pending.length) return 'temporarily_unavailable';
   }
@@ -59,6 +61,7 @@ export async function deliverLegacySteering(db: Db, input: {
   let delivered = 0;
   for (const wake of wakes) {
     const payload = record(wake.payload), context = record(payload._paperclipWakeContext);
+    if (record(payload._ordinaryCommentWake).pending === true) continue;
     if (wake.idempotencyKey?.startsWith('chat-inbound:') || payload.mutation === 'interaction' || context.interactionId) continue;
     for (const commentId of queuedCommentIdsFromWakePayload(payload)) {
       if (input.commentId && input.commentId !== commentId) continue;
