@@ -1486,3 +1486,39 @@ from stored configuration problems. Verify connection transport and endpoint
 fields before disabling a connection. Verify workspace ownership, active runs,
 Git state, and runtime-service readiness before closing a workspace. A missing
 URL or old workspace timestamp alone does not prove that a row is disposable.
+
+## Agent source-file safety presets
+
+New agents default to one concurrent run. New Codex-local agents default to
+sandbox bypass disabled. Explicit existing/imported concurrency and bypass
+settings remain intact; no employee configuration migration occurs.
+
+`runtimeConfig.safetyPreset` accepts `audit`, `manager`, `implementation`, and
+`testing`. Creation UI and the direct service use the same preset helper. These
+source-file presets do not grant API permissions, alter review/status authority,
+or replace low-trust containment (`doc/LOW-TRUST-PRESETS.md`).
+
+Audit supports only the explicit Codex CLI engine and its default executable. It
+launches the built-in `:read-only` permission profile with read-only sandbox mode.
+Both bypass aliases, custom commands, executable-routing environment overrides,
+and arbitrary extra/profile/config arguments are rejected. Native, ACP, automatic
+engine fallback, and other adapters are unsupported and fail closed. A CLI lacking
+this built-in profile rejects launch; it is not silently downgraded. The saved
+server preset is checked after workspace/task overrides, after final environment
+configuration, before fingerprinting, and at dispatch. Preset changes require
+Board configuration authority, including revision rollback; an operator must
+explicitly leave audit before enabling writable settings.
+
+Implementation/testing request sandboxed Codex workspace writing and one run at
+creation. Their saved preset narrows shared-workspace admission to `serialize`,
+using the existing holder/deferral gate even if task/project policy says `allow`.
+Project isolation is retained. This scheduler gate does not establish an OS-level
+exclusive filesystem lease. Manager has one run at creation and otherwise retains
+project workspace policy and existing control-plane authorization. Explicit
+non-audit operator configuration remains supported.
+
+The audit profile constrains filesystem operations executed inside Codex's
+sandbox. Independently hosted MCP tools, control-plane mutations, host preparation,
+and other external services retain their own existing enforcement boundaries.
+The model-free CLI sandbox write probe proves a local filesystem capability; it
+does not qualify provider inference or externally hosted tool behavior.

@@ -198,6 +198,19 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("saves audit with one slot and enforced read-only CLI profile", async () => {
+    await render("codex_local");
+    await connect("OpenAI");
+    const select = container.querySelector('select[aria-label="Safety preset"]') as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    await act(async () => { select.value = "audit"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(container.textContent).toContain("Read-only source files");
+    await click("Run test");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ runtimeConfig: { safetyPreset: "audit", heartbeat: { maxConcurrentRuns: 1 } }, adapterConfig: { engine: "cli", sandboxMode: "read-only", dangerouslyBypassApprovalsAndSandbox: false } });
+  });
+
   it("blocks direct runner setup links when the experiment is disabled", async () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     await render("paperclip_runner");

@@ -1,3 +1,4 @@
+import { enforceAgentSafetyPreset } from "@paperclipai/shared";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -568,6 +569,7 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  ctx = { ...ctx, config: enforceAgentSafetyPreset("codex_local", ctx.config.sandboxMode === "read-only" ? { safetyPreset: "audit" } : {}, ctx.config) };
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
     return {

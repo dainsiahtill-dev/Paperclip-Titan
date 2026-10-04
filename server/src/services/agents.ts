@@ -19,6 +19,8 @@ import {
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  applyAgentSafetyPreset,
+  enforceAgentSafetyPreset,
   agentRuntimeConfigSchema,
   agentQuotaFallbackConfigSchema,
   getAgentWorkEligibility,
@@ -788,6 +790,9 @@ export function agentService(db: Db) {
         existing.adapterConfig,
       );
     }
+    try {
+      enforceAgentSafetyPreset(normalizedPatch.adapterType ?? existing.adapterType, normalizedPatch.runtimeConfig ?? existing.runtimeConfig, normalizedPatch.adapterConfig ?? existing.adapterConfig);
+    } catch (error) { throw unprocessable(error instanceof Error ? error.message : String(error)); }
     // Run the server-enforced binding invariant when the patch touches the
     // adapter config. The update, approval, and rollback paths keep an existing
     // fixed binding but reject a newly introduced binding, because they carry no
@@ -915,13 +920,18 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
-      const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      let runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
       assertQuotaFallbackRuntime(adapterType, runtimeConfig);
       const rawAdapterConfig = isPlainRecord(data.adapterConfig)
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
-      const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      let adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      if (adapterType === "codex_local" && typeof adapterConfig.dangerouslyBypassApprovalsAndSandbox !== "boolean" && typeof adapterConfig.dangerouslyBypassSandbox !== "boolean") {
+        adapterConfig.dangerouslyBypassApprovalsAndSandbox = false;
+      }
+      try { ({ adapterConfig, runtimeConfig } = applyAgentSafetyPreset(adapterType, adapterConfig, runtimeConfig)); }
+      catch (error) { throw unprocessable(error instanceof Error ? error.message : String(error)); }
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({

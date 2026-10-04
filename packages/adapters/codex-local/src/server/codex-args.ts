@@ -1,3 +1,4 @@
+import { enforceAgentSafetyPreset } from "@paperclipai/shared";
 import { asBoolean, asString, asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
@@ -54,6 +55,8 @@ export function buildCodexExecArgs(
     asBoolean(record.dangerouslyBypassSandbox, false),
   );
   const extraArgs = readExtraArgs(record);
+  const readOnly = record.sandboxMode === "read-only";
+  if (readOnly) enforceAgentSafetyPreset("codex_local", { safetyPreset: "audit" }, { engine: "cli", ...record });
 
   const args = ["exec", "--json"];
   // `codex exec` otherwise defaults to read-only/never, which cannot perform
@@ -63,7 +66,10 @@ export function buildCodexExecArgs(
     /^(--sandbox(?:=|$)|-s|--profile(?:=|$)|-p|--full-auto$|--yolo$|--dangerously-bypass-approvals-and-sandbox$)/.test(arg)
     || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
   );
-  if (!bypass && !explicitSandbox) {
+  if (readOnly) {
+    args.push("--permission-profile", ":read-only", "-c", 'sandbox_mode="read-only"');
+  }
+  if (!readOnly && !bypass && !explicitSandbox) {
     args.push("-c", 'sandbox_mode="workspace-write"');
     args.push("-c", `sandbox_workspace_write.network_access=${options.networkAccess !== false}`);
   }
@@ -85,7 +91,7 @@ export function buildCodexExecArgs(
     args.push("-c", 'service_tier="fast"', "-c", "features.fast_mode=true");
   }
   if (extraArgs.length > 0) args.push(...extraArgs);
-  if (!bypass && options.networkAccess === false) {
+  if (!readOnly && !bypass && options.networkAccess === false) {
     args.push("-c", "sandbox_workspace_write.network_access=false");
   }
   if (options.resumeSessionId) args.push("resume", options.resumeSessionId, "-");

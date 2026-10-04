@@ -11,7 +11,7 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
 export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
-export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = false;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-6.1-sol",
   "gpt-6-astra",
@@ -182,6 +182,7 @@ Notes:
 - Fast mode is supported on GPT-6 Astra, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The ACP engine keeps its workspace sandbox and enables network access on each turn. Explicit sandbox_workspace_write.network_access overrides in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") disable it; execution-target network denial wins. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
+- The audit safety preset pins CLI and the built-in :read-only permission profile, rejects permission/command overrides, and does not support native/ACP/automatic engines. New Codex agents default to sandbox bypass disabled. Existing explicit settings are preserved.
 - The CLI engine defaults to a writable workspace sandbox with network access for unattended work and Paperclip API calls. It does not enable the dangerous bypass flag. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.
 - Auto engine selection follows the saved model profile: Models gpt-6.1-sol, gpt-6-sol and gpt-6-luna use CLI in auto mode. Explicit engine="acp" remains ACP and requires Node >=24.11.0 plus the Codex ACP server; missing selected ACP prerequisites fail with an actionable setup error. Environment auth/scaffold checks do not prove exact ACP hello readiness. ACP uses isolated managed Agent homes, selected skills, model/reasoning/fast-mode config and quota-window reporting. Runtime failures never silently switch an explicitly selected engine.
 `;

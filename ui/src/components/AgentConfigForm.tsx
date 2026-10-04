@@ -1,3 +1,4 @@
+import { AGENT_SAFETY_PRESETS, type AgentSafetyPreset } from "@paperclipai/shared";
 import { v3t } from "@/i18n";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema, agentQuotaFallbackConfigSchema } from "@paperclipai/shared";
@@ -1631,6 +1632,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          {!isCreate && <Field label="Safety preset" hint="Operator-managed source-file constraints. Review and task-status permissions are unchanged.">
+            <select aria-label="Safety preset" className={inputClass} value={Object.prototype.hasOwnProperty.call(asObject(overlay.runtime.runtimeConfig), "safetyPreset") ? String(asObject(overlay.runtime.runtimeConfig).safetyPreset ?? "") : String(runtimeConfig.safetyPreset ?? "")} onChange={(event) => {
+              const preset = event.target.value as AgentSafetyPreset | "";
+              markRuntimeConfig("safetyPreset", preset || undefined);
+              if (preset === "audit") {
+                mark("adapterConfig", "engine", "cli"); mark("adapterConfig", "sandboxMode", "read-only");
+                mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", false); mark("adapterConfig", "dangerouslyBypassSandbox", false);
+              } else if ((preset === "implementation" || preset === "testing") && adapterType === "codex_local") {
+                mark("adapterConfig", "sandboxMode", "workspace-write"); mark("adapterConfig", "dangerouslyBypassApprovalsAndSandbox", false); mark("adapterConfig", "dangerouslyBypassSandbox", false);
+              }
+            }}>
+              <option value="">Custom</option>
+              {AGENT_SAFETY_PRESETS.map((preset) => <option key={preset} value={preset} disabled={preset === "audit" && adapterType !== "codex_local"}>{preset === "audit" ? "Audit (Codex CLI only)" : preset.charAt(0).toUpperCase() + preset.slice(1)}</option>)}
+            </select>
+            <p className="text-xs text-muted-foreground">Audit: read-only source files. Implementation/testing: serialize shared workspace runs. Current concurrency: {Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS)}.</p>
+          </Field>}
           {showAdapterTypeField && (
             <Field label={v3t("agentConfig.adapterType")} hint={help.adapterType}>
               <AdapterTypeDropdown

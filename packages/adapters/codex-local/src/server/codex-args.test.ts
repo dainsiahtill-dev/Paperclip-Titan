@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it.each([
+    { dangerouslyBypassApprovalsAndSandbox: false, dangerouslyBypassSandbox: true },
+    { extraArgs: ["--skip-git-repo-check"], args: ["--yolo"] },
+    { command: "/tmp/fake-codex" },
+  ])("refuses read-only escalation %j", (overrides) => {
+    expect(() => buildCodexExecArgs({ sandboxMode: "read-only", ...overrides })).toThrow(/Audit/);
+  });
+  it.each([null, "prior-session"])("launches explicit read-only on fresh/resumed session %s", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({ sandboxMode: "read-only" }, { resumeSessionId });
+    expect(args).toContain('sandbox_mode="read-only"');
+    expect(args).not.toContain('sandbox_mode="workspace-write"');
+  });
   it("keeps GPT-6 Luna at xhigh or above even when effort is omitted or stale", () => {
     for (const effort of [undefined, "", "medium", "high", "xhigh"]) {
       const result = buildCodexExecArgs({ model: "gpt-6-luna", modelReasoningEffort: effort });

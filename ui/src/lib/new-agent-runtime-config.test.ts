@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 describe("buildNewAgentRuntimeConfig", () => {
+  it("persists the selected creation preset", () => {
+    expect(buildNewAgentRuntimeConfig({ safetyPreset: "testing" })).toMatchObject({ safetyPreset: "testing", heartbeat: { maxConcurrentRuns: 1 } });
+  });
   it("defaults new agents to no timer heartbeat", () => {
     expect(buildNewAgentRuntimeConfig()).toEqual({
       heartbeat: {
@@ -12,7 +14,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         wakeOnDemand: true,
         skipTimerWhenNoActionableWork: true,
         cooldownSec: 10,
-        maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+        maxConcurrentRuns: 1,
       },
     });
   });
@@ -30,7 +32,7 @@ describe("buildNewAgentRuntimeConfig", () => {
         wakeOnDemand: true,
         skipTimerWhenNoActionableWork: true,
         cooldownSec: 10,
-        maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+        maxConcurrentRuns: 1,
       },
     });
   });

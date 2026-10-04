@@ -1307,7 +1307,7 @@ Per-agent schedule fields in `adapter_config`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
-- `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
+- `maxConcurrentRuns` integer; new agents default to `1`; scheduler clamps configured values to `1..50`
 
 Instance General settings may set `agentConcurrency.maxActiveRuns` to an integer
 `1..100` or `null` for no instance ceiling. They may also define up to 32

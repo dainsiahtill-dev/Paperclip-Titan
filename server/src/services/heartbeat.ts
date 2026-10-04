@@ -1,3 +1,4 @@
+import { enforceAgentSafetyPreset, resolveAgentPresetWorkspaceConcurrency } from "@paperclipai/shared";
 import { compareQueuedCandidates } from "./queued-run-fairness.js";
 import { deriveQuotaProbeIdentity } from "./quota-probe-identity.js";
 import { reconcileQuotaContinuations } from "./quota-recovery-continuations.js";
@@ -21433,10 +21434,10 @@ export function heartbeatService(
           },
         );
       }
-      const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
+      const sharedWorkspaceConcurrency = resolveAgentPresetWorkspaceConcurrency(agent.runtimeConfig, resolveSharedWorkspaceConcurrency({
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
-      });
+      }));
       // A live holder is always consulted for shared workspaces. Depending on policy and the final
       // execution target it either remains the existing deferral gate or becomes dispatch context.
       // Holder staleness and the workspace_busy retry ladder are intentionally unchanged for every
@@ -21525,10 +21526,10 @@ export function heartbeatService(
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
-      const mergedConfig = {
+      const mergedConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, {
         ...workspaceManagedConfig,
         ...(quotaFallbackPin?.usingBackup ? quotaBackupSharedOverrides(issueAssigneeOverrides?.adapterConfig) : issueAssigneeOverrides?.adapterConfig ?? {}),
-      };
+      });
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
         selectedEnvironmentId,
@@ -21677,6 +21678,7 @@ export function heartbeatService(
         const configured = asNumber(runtimeConfig.timeoutSec, 0);
         runtimeConfig = { ...runtimeConfig, timeoutSec: configured > 0 ? Math.min(configured, maxRunSeconds) : maxRunSeconds };
       }
+      runtimeConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, runtimeConfig);
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,
@@ -24680,6 +24682,7 @@ export function heartbeatService(
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
+                  runtimeConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, runtimeConfig);
                   legacyAdapterEntered = true;
                   return adapter.execute({
                     runId: run.id,

@@ -1,5 +1,6 @@
 import { v3t } from "@/i18n";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
+import { applyAgentSafetyPreset, AGENT_SAFETY_PRESETS, type AgentSafetyPreset } from "@paperclipai/shared";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
@@ -137,6 +138,7 @@ function Setup({
   const [model, setModel] = useState("");
   const efforts = isRunner ? [] : setupEfforts(adapterType, model);
   const [effort, setEffort] = useState("");
+  const [safetyPreset, setSafetyPreset] = useState<AgentSafetyPreset | "">("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
   const [provider, setProvider] = useState("openrouter");
@@ -334,7 +336,7 @@ function Setup({
       model:
         model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
-      dangerouslyBypassSandbox: adapterType === "codex_local",
+      dangerouslyBypassSandbox: false,
       envBindings: nextConnection?.env ?? {},
       ...(isRunner
         ? {
@@ -345,7 +347,7 @@ function Setup({
           }
         : {}),
     };
-    const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    const config = applyAgentSafetyPreset(adapterType, getUIAdapter(adapterType).buildAdapterConfig(values), safetyPreset ? { safetyPreset } : {}).adapterConfig;
     if (isRunner)
       Object.assign(config, {
         provider: runnerProvider === "claude" ? "acpx" : runnerProvider,
@@ -505,7 +507,7 @@ function Setup({
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
+        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false, safetyPreset: safetyPreset || undefined }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
         budgetMonthlyCents: 0,
         ...(connection?.storedSessionId
           ? { storedSessionId: connection.storedSessionId }
@@ -808,6 +810,15 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">{v3t("local.runtime_109311")}</h3>
+                        <Field label="Safety preset">
+                          <select aria-label="Safety preset" aria-describedby="agent-safety-policy" className={controlClass} value={safetyPreset} onChange={(event) => { setSafetyPreset(event.target.value as AgentSafetyPreset | ""); resetTest(); }}>
+                            <option value="">Custom (safe defaults)</option>
+                            {AGENT_SAFETY_PRESETS.map((preset) => <option key={preset} value={preset} disabled={preset === "audit" && adapterType !== "codex_local"}>{preset === "audit" ? "Audit (Codex CLI only)" : preset.charAt(0).toUpperCase() + preset.slice(1)}</option>)}
+                          </select>
+                          <p id="agent-safety-policy" className="text-sm text-muted-foreground">
+                            {safetyPreset === "audit" ? "Read-only source files; Codex CLI permission profile. Native and ACP are unsupported." : safetyPreset === "implementation" || safetyPreset === "testing" ? "Writable workspace; shared workspace runs serialize. Project isolation stays in effect." : "Workspace policy follows the project. Control-plane permissions stay unchanged."} Concurrent runs: 1.
+                          </p>
+                        </Field>
                         {aiProviderForAdapter(brandType) && (
                           connection && !aiBinding ? (
                             <div className="space-y-3">

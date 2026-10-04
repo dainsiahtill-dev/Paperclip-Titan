@@ -36,6 +36,11 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("creates a sandboxed agent when bypass was not supplied", () => {
+    const values = makeValues();
+    delete (values as Partial<CreateConfigValues>).dangerouslyBypassSandbox;
+    expect(buildCodexLocalConfig(values).dangerouslyBypassApprovalsAndSandbox).toBe(false);
+  });
   it("omits engine for the auto default so runtime fallback remains available", () => {
     const config = buildCodexLocalConfig(makeValues({ codexEngine: "auto" }));
 

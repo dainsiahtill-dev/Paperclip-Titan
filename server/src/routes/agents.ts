@@ -1,3 +1,4 @@
+import { applyAgentSafetyPreset, agentSafetyPreset, assertAgentSafetyPresetTransition, enforceAgentSafetyPreset } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { withCompanyClaudeModelSuggestions } from "../services/claude-model-suggestions.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
@@ -2228,6 +2229,27 @@ export function agentRoutes(
     return normalizeLegacyRunnerProvider(next);
   }
 
+  function enforceSafetyPreset(adapterType: string, runtimeConfig: unknown, config: Record<string, unknown>): Record<string, unknown> {
+    try { return enforceAgentSafetyPreset(adapterType, runtimeConfig, config); }
+    catch (error) { throw unprocessable(error instanceof Error ? error.message : String(error)); }
+  }
+
+  function applySafetyPresetDefaults(adapterType: string, config: Record<string, unknown>, runtimeConfig: Record<string, unknown>): Record<string, unknown> {
+    try { return applyAgentSafetyPreset(adapterType, config, runtimeConfig).adapterConfig; }
+    catch (error) { throw unprocessable(error instanceof Error ? error.message : String(error)); }
+  }
+
+  async function assertSafetyPresetTransition(req: Request, companyId: string, previous: unknown, next: unknown): Promise<void> {
+    if (agentSafetyPreset(previous) === agentSafetyPreset(next)) return;
+    if (req.actor.type !== "board") {
+      try { assertAgentSafetyPresetTransition(previous, next, false); } catch (error) { throw forbidden(error instanceof Error ? error.message : String(error)); }
+    }
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const decision = await access.decide({ actor: req.actor, action: "agent_config:update", resource: { type: "company", companyId } });
+    if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function assertProviderTraceSettingTransition(
     req: Request,
     nextRuntimeConfig: unknown,
@@ -3415,6 +3437,7 @@ export function agentRoutes(
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
       // the probe treats "***REDACTED***" as a value to persist.
+      let savedSafetyRuntime: unknown = req.body.runtimeConfig;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
       let adapterConfigForTest = inputAdapterConfig;
       if (savedAgentId) {
@@ -3432,8 +3455,10 @@ export function agentRoutes(
           throw unprocessable("Saved agent is not compatible with the adapter being tested");
         }
         await assertCanUpdateAgent(req, savedAgent);
+        savedSafetyRuntime = savedAgent.runtimeConfig;
         adapterConfigForTest = restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig);
       }
+      adapterConfigForTest = enforceSafetyPreset(type, savedSafetyRuntime, adapterConfigForTest);
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         adapterConfigForTest,
@@ -3554,6 +3579,7 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
+        effectiveAdapterConfig = enforceSafetyPreset(type, savedSafetyRuntime, effectiveAdapterConfig);
         const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }) : null;
         let result;
         try {
@@ -4315,6 +4341,7 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    await assertSafetyPresetTransition(req, existing.companyId, existing.runtimeConfig, rollbackConfig.runtimeConfig);
     assertProviderTraceSettingTransition(
       req,
       rollbackConfig.runtimeConfig,
@@ -4471,10 +4498,7 @@ export function agentRoutes(
       req,
       companyId,
       hireInput.adapterType,
-      applyCreateDefaultsByAdapterType(
-        hireInput.adapterType,
-        rawHireAdapterConfig,
-      ),
+      applySafetyPresetDefaults(hireInput.adapterType, applyCreateDefaultsByAdapterType(hireInput.adapterType, rawHireAdapterConfig), hireInput.runtimeConfig),
       hireInput.runtimeConfig,
     );
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
@@ -4775,10 +4799,7 @@ export function agentRoutes(
       companyId,
       agentId,
       createInput.adapterType,
-      applyCreateDefaultsByAdapterType(
-        createInput.adapterType,
-        rawCreateAdapterConfig,
-      ),
+      applySafetyPresetDefaults(createInput.adapterType, applyCreateDefaultsByAdapterType(createInput.adapterType, rawCreateAdapterConfig), createInput.runtimeConfig),
     );
     assertExternalInstructionsAdmin(req, {
       id: agentId,
@@ -5244,6 +5265,7 @@ export function agentRoutes(
         runtimeConfig,
         existing.runtimeConfig,
       );
+      await assertSafetyPresetTransition(req, existing.companyId, existing.runtimeConfig, runtimeConfig);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
