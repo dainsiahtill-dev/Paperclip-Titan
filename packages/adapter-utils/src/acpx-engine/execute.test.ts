@@ -1234,6 +1234,20 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.resultJson).toMatchObject({ configurationIncomplete: { reason: "provider_model_unsupported", status: 400, retryable: false } });
   });
 
+  it.each(["turn", "ensure_session"])("does not mint a permanent provider rejection from diagnostic text during %s", async phase => {
+    const root = await makeTempRoot();
+    const error = Object.assign(new Error("Diagnostic: 400 invalid_request_error model unsupported"), { code: -32603 });
+    const execute = createAcpxEngineExecutor({ createRuntime: () => ({
+      ...buildRuntime(),
+      ...(phase === "ensure_session" ? { ensureSession: async () => { throw error; } } : {}),
+      startTurn: () => ({ events: (async function* () { yield { type: "done", stopReason: "failed" }; })(), result: Promise.resolve({ status: "failed", error }), cancel: async () => {} }),
+    }) as never });
+    const result = await execute({ runId: `run-diagnostic-${phase}`, agent: { id: "agent-1", companyId: "company-1" }, runtime: {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") }, context: {}, onLog: async () => {} } as never);
+    expect(result.errorCode).toBe(phase === "turn" ? "acpx_turn_failed" : "acpx_session_init_failed");
+    expect(result.resultJson?.configurationIncomplete).toBeUndefined();
+    expect(result.errorMeta?.providerRejection).toBeUndefined();
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

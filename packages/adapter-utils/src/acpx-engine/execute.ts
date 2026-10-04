@@ -3329,10 +3329,12 @@ function permanentProviderRejection(error: unknown, secretValues: string[] = [])
     const data = current && typeof current === "object" ? current as Record<string, unknown> : {};
     let message = current instanceof Error ? current.message : typeof data.message === "string" ? data.message : typeof current === "string" ? current : "";
     let parsed: Record<string, unknown> = {};
-    if (message.length <= 16000 && message.trimStart().startsWith("{")) { try { parsed = parseObject(JSON.parse(message)); } catch {} }
+    // This marker is emitted only after the SDK validates versioned RPC
+    // sessionFailure metadata. Ordinary diagnostic text has no status authority.
+    if (data.typedSessionFailure === true && message.length <= 16000 && message.trimStart().startsWith("{")) { try { parsed = parseObject(JSON.parse(message)); } catch {} }
     const providerError = parseObject(parsed.error);
-    const status = typeof data.status === "number" ? data.status : typeof data.statusCode === "number" ? data.statusCode : typeof parsed.status === "number" ? parsed.status : /\b400\b/.test(message) ? 400 : null;
-    const code = typeof providerError.type === "string" ? providerError.type : typeof data.code === "string" ? data.code : typeof data.type === "string" ? data.type : message.includes("invalid_request_error") ? "invalid_request_error" : "";
+    const status = typeof data.status === "number" ? data.status : typeof data.statusCode === "number" ? data.statusCode : typeof parsed.status === "number" ? parsed.status : null;
+    const code = typeof providerError.type === "string" ? providerError.type : typeof data.code === "string" ? data.code : typeof data.type === "string" ? data.type : "";
     if (typeof providerError.message === "string") message = providerError.message;
     if (status === 400 && code === "invalid_request_error" && /model.*(?:not supported|unsupported|does not support|unknown)/i.test(message)) {
       for (const secret of secretValues) if (secret.length >= 4) message = message.replaceAll(secret, "[REDACTED]");
