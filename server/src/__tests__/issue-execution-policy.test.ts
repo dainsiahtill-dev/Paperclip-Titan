@@ -43,6 +43,18 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(normalizeIssueExecutionPolicy({ stages: [] })).toBeNull();
   });
 
+  it("retains resource-only policies through the same normalization used by API create and update", () => {
+    const resourceLimits = { maxAutomaticRuns: 2, maxRunSeconds: 120, maxTokensPerIssue: 1000 };
+    expect(normalizeIssueExecutionPolicy({ stages: [], resourceLimits })).toMatchObject({ stages: [], resourceLimits });
+  });
+
+  it("preserves resource limits alongside review stages", () => {
+    const resourceLimits = { maxNoProgressRuns: 2 };
+    expect(normalizeIssueExecutionPolicy({ resourceLimits,
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+    })).toMatchObject({ resourceLimits });
+  });
+
   it("throws when all participants are invalid (missing agentId)", () => {
     expect(() =>
       normalizeIssueExecutionPolicy({

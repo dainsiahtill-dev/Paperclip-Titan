@@ -40,6 +40,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await getIssueResourceBlock(db, input)).toMatchObject({ code: "issue_automatic_run_limit", resourceIssueId: s.rootId });
     expect(await getIssueResourceBlock(createDb(fixture.connectionString), input)).toMatchObject({ code: "issue_automatic_run_limit", resourceIssueId: s.rootId });
   });
+
+  it("persists resource-only limits through ordinary issue creation and update", async () => {
+    const s = await seed({ maxAutomaticRuns: 2 });
+    const created = await issueService(db).create(s.companyId, { title: "Ordinary API policy", status: "backlog", createdByUserId: "board",
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], resourceLimits: { maxAutomaticRuns: 1, maxRunSeconds: 120 } },
+    });
+    expect(created.executionPolicy?.resourceLimits).toEqual({ maxAutomaticRuns: 1, maxRunSeconds: 120 });
+    const updated = await issueService(db).update(created.id, { companyGuard: s.companyId, actorUserId: "board",
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], resourceLimits: { maxAutomaticRuns: 2 } },
+    });
+    expect(updated?.executionPolicy?.resourceLimits).toEqual({ maxAutomaticRuns: 2 });
+  });
   it("counts known subscription tokens, and refuses to turn missing totals into zero", async () => {
     const s = await seed({ maxTokensPerIssue: 1000 });
     await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId, issueId: s.childId,

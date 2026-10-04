@@ -1114,6 +1114,19 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("preserves a resource-only policy when the board creates a child through HTTP", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "in_progress",
+      assigneeAgentId: "11111111-1111-4111-8111-111111111111", assigneeUserId: null,
+      createdByUserId: "local-board", identifier: "PAP-1001", title: "Parent", executionPolicy: null, executionState: null,
+    });
+    const resourceLimits = { maxAutomaticRuns: 1, maxRunSeconds: 120 };
+    const res = await request(await createApp()).post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({ title: "Bounded child", status: "todo", executionPolicy: { stages: [], resourceLimits } });
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createChild.mock.calls[0]?.[1]).toMatchObject({ executionPolicy: { resourceLimits } });
+  });
+
   it("rejects child monitor scheduling by a non-assignee agent even with task assignment permission", async () => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockIssueService.getById.mockResolvedValue({

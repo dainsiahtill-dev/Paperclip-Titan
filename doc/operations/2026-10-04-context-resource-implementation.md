@@ -72,3 +72,21 @@ were not rewritten.
 These are scoped implementation results. Whole-source review, full repository
 checks, integrated browser/provider qualification, the real-Agent application,
 controlled default deployment and rollback remain separate required gates.
+
+The first actual isolated ACP preflight exposed an additional API boundary:
+`normalizeIssueExecutionPolicy` discarded a resource-only policy and omitted
+resources from a reviewed policy. The ordinary HTTP child-create regression
+reproduced `executionPolicy: null` despite submitted limits. Both normalizer
+regressions and the HTTP regression were RED before retaining resource limits
+in normalization and the empty-policy guard. All three policy/service/routes
+files then passed99 tests; direct server typecheck passed. Fixture admission
+will be rechecked on a refreshed isolated server before application execution.
+
+That preflight also omitted the existing nonsecret CODEX_PATH binding, invoking
+the bundled0.153.4 instead of configured0.160.0. The owned provider rollout
+reported the exact unsupported-model400 and actualmodel/effort. Three failed
+preflight runs were retained; the isolated Engineer was paused for diagnosis.
+The four fixture Agent profiles now retain the original ACP/model/effort and
+explicit configured binary path. No application code or production config was
+modified by those preflights. Executable/auth-file readiness alone was not
+treated as successful provider invocation.
