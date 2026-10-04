@@ -202,7 +202,7 @@ import { getTaskPlanContext } from "./task-plan-context.js";
 import { projectTaskPlan } from "./task-plan-projection.js";
 import { compareMaterialProgress, readIssueMaterialProgress, type MaterialProgressSnapshot } from "./issue-material-progress.js";
 import { deliveryAuthorityService, resolveDeliveryDefinition } from "./delivery-authority.js";
-import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies } from "./issue-resource-limits.js";
+import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies, readTrustedLegacyUsageCheckpoint } from "./issue-resource-limits.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -316,7 +316,7 @@ import {
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { companySkillService } from "./company-skills.js";
-import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { budgetService, type BudgetEnforcementScope, type BudgetServiceHooks } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -3663,6 +3663,11 @@ type UsageTotals = {
   outputTokens: number;
   totalTokens?: number;
 };
+
+function legacyUsageScopeMatches(scope: Record<string, unknown>, accounting: Record<string, unknown>) {
+  return scope.version === 1 && scope.source === accounting.source &&
+    scope.sessionId === accounting.sessionId && scope.scopeHash === accounting.scopeHash;
+}
 
 type SessionCompactionDecision = {
   rotate: boolean;
@@ -11099,8 +11104,8 @@ export function heartbeatService(
     });
   }
 
-  async function getRuntimeState(agentId: string) {
-    return db
+  async function getRuntimeState(agentId: string, dbOrTx: Db = db) {
+    return dbOrTx
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
@@ -12745,11 +12750,11 @@ export function heartbeatService(
     });
   }
 
-  async function ensureRuntimeState(agent: typeof agents.$inferSelect) {
-    const existing = await getRuntimeState(agent.id);
+  async function ensureRuntimeState(agent: typeof agents.$inferSelect, dbOrTx: Db = db) {
+    const existing = await getRuntimeState(agent.id, dbOrTx);
     if (existing) return existing;
 
-    const inserted = await db
+    const inserted = await dbOrTx
       .insert(agentRuntimeState)
       .values({
         agentId: agent.id,
@@ -12764,7 +12769,7 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
     if (inserted) return inserted;
 
-    const ensured = await getRuntimeState(agent.id);
+    const ensured = await getRuntimeState(agent.id, dbOrTx);
     if (!ensured) {
       throw new Error(`Failed to ensure runtime state for agent ${agent.id}`);
     }
@@ -19924,8 +19929,10 @@ export function heartbeatService(
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
     normalizedUsage?: UsageTotals | null,
+    options: { dbOrTx?: Db; budgetHooks?: BudgetServiceHooks; preserveSession?: boolean } = {},
   ) {
-    await ensureRuntimeState(agent);
+    const dbOrTx = options.dbOrTx ?? db;
+    await ensureRuntimeState(agent, dbOrTx);
     const usage = normalizedUsage ?? normalizeUsageTotals(result.usage);
     const inputTokens = usage?.inputTokens ?? 0;
     const outputTokens = usage?.outputTokens ?? 0;
@@ -19947,19 +19954,21 @@ export function heartbeatService(
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(
-      db,
+      dbOrTx,
       agent.companyId,
       run,
     );
 
-    await db
+    await dbOrTx
       .update(agentRuntimeState)
       .set({
-        adapterType: agent.adapterType,
-        sessionId: session.legacySessionId,
-        lastRunId: run.id,
-        lastRunStatus: run.status,
-        lastError: run.error ?? null,
+        ...(!options.preserveSession ? {
+          adapterType: agent.adapterType,
+          sessionId: session.legacySessionId,
+          lastRunId: run.id,
+          lastRunStatus: run.status,
+          lastError: run.error ?? null,
+        } : {}),
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -19969,8 +19978,8 @@ export function heartbeatService(
       .where(eq(agentRuntimeState.agentId, agent.id));
 
     if (additionalCostCents > 0 || hasTokenUsage) {
-      const costs = costService(db, budgetHooks);
-      await costs.createEvent(agent.companyId, {
+      const costs = costService(dbOrTx, options.budgetHooks ?? budgetHooks);
+      return costs.createEvent(agent.companyId, {
         heartbeatRunId: run.id,
         agentId: agent.id,
         issueId: ledgerScope.issueId,
@@ -19989,6 +19998,66 @@ export function heartbeatService(
         occurredAt: new Date(),
       });
     }
+    return null;
+  }
+
+  async function settleGracefulShutdownAdapterMetadata(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    adapterResult: AdapterExecutionResult;
+    patch: Partial<typeof heartbeatRuns.$inferInsert>;
+    normalizedUsage: UsageTotals | null;
+    session: { params: Record<string, unknown> | null; displayId: string | null; legacySessionId: string | null };
+    resourceStopCode: string | null;
+  }) {
+    const { run, agent, adapterResult, patch } = input;
+    if (run.runtimeMode !== "legacy" || run.controllerBootId !== legacyControllerBootId) return null;
+    const deferredBudgetScopes: BudgetEnforcementScope[] = [];
+    const settled = await db.transaction(async tx => {
+      const [current] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+        eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "interrupted"),
+        eq(heartbeatRuns.errorCode, "server_shutdown_interrupted"),
+      )).for("update");
+      if (!current || parseObject(current.resultJson).lateAdapterSettlement != null) return null;
+      const marker = {
+        version: 1, kind: "graceful_shutdown", controllerBootId: legacyControllerBootId,
+        settledAt: new Date().toISOString(), adapterType: agent.adapterType,
+        adapterExitCode: adapterResult.exitCode, adapterSignal: adapterResult.signal,
+        sessionParams: input.session.params,
+        ...(input.resourceStopCode ? { observedResourceStopCode: input.resourceStopCode } : {}),
+      };
+      const [updated] = await tx.update(heartbeatRuns).set({
+        // Shutdown owns status, cause, finish time, history and queue disposition.
+        // This exact executor may retain forensic metadata and account its usage.
+        usageJson: patch.usageJson ?? current.usageJson,
+        sessionIdAfter: patch.sessionIdAfter ?? current.sessionIdAfter,
+        stdoutExcerpt: patch.stdoutExcerpt ?? current.stdoutExcerpt,
+        stderrExcerpt: patch.stderrExcerpt ?? current.stderrExcerpt,
+        logBytes: patch.logBytes ?? current.logBytes,
+        logSha256: patch.logSha256 ?? current.logSha256,
+        logCompressed: patch.logCompressed ?? current.logCompressed,
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ lateAdapterSettlement: marker })}::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.id, current.id), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.controllerBootId, legacyControllerBootId), eq(heartbeatRuns.status, "interrupted"),
+        eq(heartbeatRuns.errorCode, "server_shutdown_interrupted"))).returning();
+      if (!updated) return null;
+      await updateRuntimeState(agent, updated, adapterResult,
+        { legacySessionId: input.session.legacySessionId }, input.normalizedUsage, {
+          dbOrTx: tx as unknown as Db,
+          // A late result must not replace a newer agent/task session. Its
+          // normalized session remains inspectable on this original run.
+          preserveSession: true,
+          budgetHooks: { cancelWorkForScope: async scope => { deferredBudgetScopes.push(scope); } },
+        });
+      return updated;
+    });
+    // Cancellation observes committed accounting and never waits on a run-row
+    // lock held by the accounting transaction itself.
+    for (const scope of deferredBudgetScopes) await cancelBudgetScopeWork(scope);
+    return settled;
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
@@ -23204,6 +23273,64 @@ export function heartbeatService(
           });
         };
 
+        let legacyUsageStopScheduled = false;
+        const onAdapterUsage = async (observation: {
+          observedTotalTokens?: number; observedUsage?: UsageSummary; usageUnknown: boolean;
+          usageAccounting: Record<string, unknown>;
+        }) => {
+          const accounting = parseObject(observation.usageAccounting);
+          const observed = observation.observedTotalTokens;
+          if (run.runtimeMode !== "legacy" || !["codex_local", "claude_local"].includes(agent.adapterType) ||
+              adapterExecutionControls.get(run.id) !== executionControl ||
+              accounting.version !== 1 || accounting.runId !== run.id ||
+              accounting.bindingVerified !== true || accounting.baselineVerified !== true ||
+              !["codex_session_cumulative_delta", "claude_prompt_usage"].includes(String(accounting.source)) ||
+              typeof accounting.sessionId !== "string" || !accounting.sessionId || accounting.sessionId.length > 256 ||
+              typeof accounting.scopeHash !== "string" || !/^[0-9a-f]{64}$/.test(accounting.scopeHash) ||
+              typeof observed !== "number" || !Number.isSafeInteger(observed) || observed < 0) return;
+          const accepted = await db.transaction(async tx => {
+            const [current] = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+              eq(heartbeatRuns.runtimeMode, "legacy"),
+              or(eq(heartbeatRuns.status, "running"), and(eq(heartbeatRuns.status, "interrupted"), eq(heartbeatRuns.errorCode, "server_shutdown_interrupted"))),
+            )).for("update");
+            if (!current || parseObject(current.resultJson).lateAdapterSettlement != null) return false;
+            const profile = parseObject(current.runnerProfileJson);
+            const existingScope = parseObject(profile.legacyUsageScope);
+            if (profile.legacyUsageScope != null && !legacyUsageScopeMatches(existingScope, accounting)) return false;
+            const previous = readTrustedLegacyUsageCheckpoint(current);
+            if (previous && Number(previous.observedTotalTokens) >= observed) return false;
+            const scope = { version: 1, source: accounting.source, sessionId: accounting.sessionId, scopeHash: accounting.scopeHash };
+            const checkpoint = { ...scope, companyId: run.companyId, agentId: run.agentId, runId: run.id,
+              controllerBootId: legacyControllerBootId, adapterType: agent.adapterType,
+              bindingVerified: true, baselineVerified: true, observedTotalTokens: observed,
+              // A stream lowerbound is not a settled per-run total.
+              usageUnknown: true, observedAt: new Date().toISOString() };
+            if (!readTrustedLegacyUsageCheckpoint({ ...current, runnerProfileJson: { ...profile, legacyUsageScope: scope },
+              resultJson: { ...parseObject(current.resultJson), legacyUsageCheckpoint: checkpoint } })) return false;
+            const streamedUsage: Record<string, unknown> = { ...parseObject(current.usageJson), observedTotalTokens: observed, usageUnknown: true };
+            delete streamedUsage.totalTokens;
+            await tx.update(heartbeatRuns).set({
+              runnerProfileJson: { ...profile, legacyUsageScope: scope },
+              resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ legacyUsageCheckpoint: checkpoint })}::jsonb`,
+              usageJson: streamedUsage, updatedAt: new Date(),
+            }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.controllerBootId, legacyControllerBootId)));
+            return true;
+          });
+          if (accepted && maxRunTokens && observed >= maxRunTokens && !legacyUsageStopScheduled) {
+            legacyUsageStopScheduled = true;
+            resourceStopCode ??= "resource_run_token_limit";
+            // The awaited callback has committed its checkpoint. Request Stop
+            // on the next turn; never await cancellation/drain inside usage ACK.
+            setImmediate(() => {
+              if (adapterExecutionControls.get(run.id) === executionControl && !executionControl.controller.signal.aborted) {
+                executionControl.controller.abort(new Error("Qualified provider token lowerbound reached the run limit"));
+              }
+            });
+          }
+        };
+
         const adapter = getServerAdapter(agent.adapterType);
         const durableGoalControlRun =
           readNonEmptyString(context.goalControlRequestId) !== null ||
@@ -24544,6 +24671,7 @@ export function heartbeatService(
                     onLog,
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
+                    ...{ onUsage: onAdapterUsage },
                     startupTraceContext: getStartupTraceContext(),
                     onRuntimeProgress: async (progress) => {
                       await recordCurrentHeartbeatRunRuntimeProgress(
@@ -24935,12 +25063,32 @@ export function heartbeatService(
           previousLegacySessionId: runtimeForAdapter.sessionId,
         });
         const rawUsage = normalizeUsageTotals(adapterResult.usage);
+        const usageAccounting = parseObject(adapterResult.resultJson?.usageAccounting);
+        const observedLegacyUsage = latestRun ? readTrustedLegacyUsageCheckpoint(latestRun) : null;
+        const streamScope = parseObject(latestRun?.runnerProfileJson?.legacyUsageScope);
+        const requiresAcpUsageProof = run.runtimeMode === "legacy" && ["codex_local", "claude_local"].includes(agent.adapterType) &&
+          (runtimeConfig.engine === "acp" || parseObject(adapterResult.sessionParams).engine === "acp");
+        const usageUnknown = adapterResult.resultJson?.usageUnknown === true ||
+          (requiresAcpUsageProof && usageAccounting.version !== 1) ||
+          (usageAccounting.version === 1 && (
+            usageAccounting.completeness !== "complete" || usageAccounting.bindingVerified !== true ||
+            usageAccounting.runId !== run.id ||
+            !["codex_session_cumulative_delta", "claude_prompt_usage"].includes(String(usageAccounting.source)) ||
+            typeof usageAccounting.sessionId !== "string" || !usageAccounting.sessionId.trim() ||
+            typeof usageAccounting.scopeHash !== "string" || !/^[0-9a-f]{64}$/.test(usageAccounting.scopeHash) ||
+            rawUsage?.totalTokens === undefined ||
+            (observedLegacyUsage !== null && (rawUsage?.totalTokens ?? -1) < observedLegacyUsage.observedTotalTokens) ||
+            (streamScope.version === 1 && !legacyUsageScopeMatches(streamScope, usageAccounting)) ||
+            (usageAccounting.source === "codex_session_cumulative_delta" && usageAccounting.baselineVerified !== true)
+          ));
+        const accountableUsage = usageUnknown && rawUsage
+          ? { ...rawUsage, totalTokens: undefined } : rawUsage;
         const sessionUsageResolution = await resolveNormalizedUsageForSession({
           agentId: agent.id,
           runId: run.id,
           sessionId:
             nextSessionState.displayId ?? nextSessionState.legacySessionId,
-          rawUsage,
+          rawUsage: accountableUsage,
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
@@ -25000,22 +25148,19 @@ export function heartbeatService(
           }
         }
 
-        const status =
-          outcome === "succeeded"
-            ? "succeeded"
-            : outcome === "cancelled"
-              ? "cancelled"
-              : outcome === "timed_out"
-                ? "timed_out"
-                : "failed";
+        const status = outcome;
 
         const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
         const usageJson =
           normalizedUsage ||
+          usageUnknown ||
           adapterResult.costUsd != null ||
           cacheAdjustedCostUsd != null
             ? ({
                 ...(normalizedUsage ?? {}),
+                ...(usageUnknown ? { usageUnknown: true } : usageAccounting.version === 1 ? { usageUnknown: false } : {}),
+                ...(observedLegacyUsage ? { observedTotalTokens: observedLegacyUsage.observedTotalTokens } : {}),
+                ...(usageAccounting.version === 1 ? { usageAccounting } : {}),
                 ...(rawUsage
                   ? {
                       rawInputTokens: rawUsage.inputTokens,
@@ -25121,6 +25266,16 @@ export function heartbeatService(
           persistedRunWrite.run;
         if (!persistedRunWrite.updated) {
           persistedRun = null;
+          if (outcome === "interrupted" && executionControl.controller.signal.aborted &&
+              adapterExecutionControls.get(run.id) === executionControl &&
+              persistedRunWrite.run?.errorCode === "server_shutdown_interrupted") {
+            const settled = await settleGracefulShutdownAdapterMetadata({
+              run, agent, adapterResult, patch: finalRunPatch, normalizedUsage,
+              session: nextSessionState, resourceStopCode: resourceStopCode ?? null,
+            });
+            logger.info({ runId: run.id, retained: Boolean(settled) }, "settled late adapter metadata after graceful shutdown");
+            return;
+          }
           // Native reconciliation can commit and project the terminal status in
           // the narrow window between adapter completion and this live write.
           // The status is authoritative, but it must not make us discard the

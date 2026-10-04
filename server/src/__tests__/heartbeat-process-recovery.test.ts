@@ -1,5 +1,7 @@
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getIssueResourceBlock } from "../services/issue-resource-limits.js";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
@@ -2881,6 +2883,186 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     });
   });
+
+  it.each(["partial", "complete below observed highwater"] as const)("persists qualified ACP lowerbounds before one physical token stop and keeps %s usage unknown", async (finalEvidence) => {
+    type Observation = { observedTotalTokens?: number; usageUnknown: boolean; usageAccounting: Record<string, unknown> };
+    let reportReady!: () => void;
+    const ready = new Promise<void>((resolve) => { reportReady = resolve; });
+    let abortCount = 0;
+    const sessionId = randomUUID();
+    const scopeHash = "a".repeat(64);
+    mockAdapterExecute.mockImplementationOnce((async (raw: unknown): Promise<AdapterExecutionResult> => {
+      const ctx = raw as AdapterExecutionContext & { onUsage?: (observation: Observation) => Promise<void> };
+      await ctx.onCancellationReady?.();
+      const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => { console.log('token stop drained'); process.exit(0); }); console.log('token stop ready'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "ignore"] });
+      childProcesses.add(child);
+      const logs: Promise<void>[] = [];
+      let reportChildReady!: () => void;
+      const childReady = new Promise<void>((resolve) => { reportChildReady = resolve; });
+      child.stdout!.on("data", chunk => { const text = String(chunk); logs.push(ctx.onLog("stdout", text)); if (text.includes("token stop ready")) reportChildReady(); });
+      const closed = new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("close", () => resolve()); });
+      await ctx.onSpawn?.({ pid: child.pid!, processGroupId: null, startedAt: new Date().toISOString() });
+      await childReady;
+      reportReady();
+      const abort = () => { abortCount++; child.kill("SIGTERM"); };
+      ctx.signal?.addEventListener("abort", abort, { once: true });
+      const accounting = { version: 1, source: "codex_session_cumulative_delta", completeness: "partial", runId: ctx.runId, sessionId, scopeHash, bindingVerified: true, baselineVerified: true };
+      try {
+        expect(ctx.onUsage).toBeTypeOf("function");
+        await ctx.onUsage!({ observedTotalTokens: 80, usageUnknown: true, usageAccounting: { ...accounting, sessionId: null, scopeHash: "", bindingVerified: false, baselineVerified: false } });
+        expect(ctx.signal?.aborted).toBe(false);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ctx.runId)))[0]?.resultJson?.legacyUsageCheckpoint).toBeUndefined();
+        await ctx.onUsage!({ observedTotalTokens: 80, usageUnknown: true, usageAccounting: accounting });
+        const observed = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ctx.runId)))[0]!;
+        expect(observed.resultJson?.legacyUsageCheckpoint).toMatchObject({ version: 1, runId: ctx.runId, sessionId, scopeHash, observedTotalTokens: 80, usageUnknown: true });
+        expect(observed.usageJson?.totalTokens).toBeUndefined();
+        expect(ctx.signal?.aborted).toBe(false);
+        await ctx.onUsage!({ observedTotalTokens: 160, usageUnknown: true, usageAccounting: { ...accounting, sessionId: randomUUID(), scopeHash: "b".repeat(64) } });
+        expect(ctx.signal?.aborted).toBe(false);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ctx.runId)))[0]?.usageJson?.observedTotalTokens).toBe(80);
+        await ctx.onUsage!({ observedTotalTokens: 160, usageUnknown: true, usageAccounting: accounting });
+        await ctx.onUsage!({ observedTotalTokens: 160, usageUnknown: true, usageAccounting: accounting });
+        await closed;
+        await Promise.all(logs);
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, provider: "test", model: "test-model", summary: "Qualified lowerbound token stop",
+          usage: { inputTokens: 80, cachedInputTokens: 40, outputTokens: 40, totalTokens: finalEvidence === "partial" ? 160 : 80 }, usageBasis: "per_run",
+          sessionId, sessionDisplayId: sessionId, sessionParams: { sessionId }, resultJson: { usageUnknown: finalEvidence === "partial", usageAccounting: { ...accounting, completeness: finalEvidence === "partial" ? "partial" : "complete" } } };
+      } finally {
+        ctx.signal?.removeEventListener("abort", abort);
+        child.kill("SIGKILL");
+        await closed;
+      }
+    }) as typeof mockAdapterExecute);
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "queued" });
+    await db.update(agents).set({ adapterConfig: { engine: "acp" } }).where(eq(agents.id, agentId));
+    await db.update(issues).set({ executionPolicy: { resourceLimits: { maxTokensPerRun: 150, maxTokensPerIssue: 1_500_000 } } }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await ready;
+    await heartbeat.drainActiveRunExecutions();
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "resource_run_token_limit" });
+    expect(abortCount).toBe(1);
+    expect(run?.resultJson?.legacyUsageCheckpoint).toMatchObject({ observedTotalTokens: 160, usageUnknown: true });
+    expect(run?.usageJson).toMatchObject({ observedTotalTokens: 160, usageUnknown: true });
+    expect(run?.usageJson?.totalTokens).toBeUndefined();
+    expect(run?.capacityReleasedAt).toBeTruthy();
+    expect(await getIssueResourceBlock(db, { companyId, issueId })).toMatchObject({ code: "issue_token_usage_unknown" });
+    const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]?.totalTokens).toBeNull();
+  });
+
+  it.each(["complete", "partial", "missing", "unproven numeric", "foreign controller"] as const)(
+    "retains graceful ACP late settlement once with %s usage evidence",
+    async (evidence) => {
+      let reportReady!: () => void;
+      const ready = new Promise<void>((resolve) => { reportReady = resolve; });
+      let reportClosed!: () => void;
+      const closed = new Promise<void>((resolve) => { reportClosed = resolve; });
+      let releaseResult!: () => void;
+      const resultRelease = new Promise<void>((resolve) => { releaseResult = resolve; });
+      const sessionId = randomUUID();
+      const foreignControllerId = randomUUID();
+      const ownedProcess: { child?: ChildProcess } = {};
+      mockAdapterExecute.mockImplementationOnce((async (raw: unknown): Promise<AdapterExecutionResult> => {
+        const ctx = raw as AdapterExecutionContext;
+        await ctx.onCancellationReady?.();
+        const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => { console.log('fake ACP closed'); process.exit(0); }); console.log('fake ACP ready'); setInterval(() => {}, 1000)"], { stdio: ["ignore", "pipe", "ignore"] });
+        ownedProcess.child = child;
+        childProcesses.add(child);
+        const logs: Promise<void>[] = [];
+        let reportChildReady!: () => void;
+        const childReady = new Promise<void>((resolve) => { reportChildReady = resolve; });
+        child.stdout!.on("data", chunk => {
+          const text = String(chunk);
+          logs.push(ctx.onLog("stdout", text));
+          if (text.includes("fake ACP ready")) reportChildReady();
+        });
+        const exit = new Promise<void>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", () => { reportClosed(); resolve(); });
+        });
+        await ctx.onSpawn?.({ pid: child.pid!, processGroupId: null, startedAt: new Date().toISOString() });
+        await childReady;
+        reportReady();
+        const stop = () => { child.kill("SIGTERM"); };
+        ctx.signal?.addEventListener("abort", stop, { once: true });
+        if (ctx.signal?.aborted) stop();
+        await exit;
+        await Promise.all(logs);
+        await resultRelease;
+        return {
+          exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+          summary: "Qualified local ACP fixture settled after shutdown", provider: "test", model: "test-model",
+          sessionId, sessionDisplayId: sessionId, sessionParams: { sessionId },
+          ...(evidence !== "missing" ? { usage: { inputTokens: 120, cachedInputTokens: 100, outputTokens: 30, totalTokens: 250 }, usageBasis: "per_run" as const } : {}),
+          resultJson: {
+            usageUnknown: evidence === "partial" || evidence === "missing",
+            ...(evidence !== "unproven numeric" ? { usageAccounting: { version: 1, source: "codex_session_cumulative_delta", completeness: evidence === "partial" ? "partial" : evidence === "missing" ? "unknown" : "complete",
+              runId: ctx.runId, sessionId, scopeHash: "c".repeat(64), bindingVerified: true, baselineVerified: true } } : {}),
+          },
+        };
+      }) as typeof mockAdapterExecute);
+      const { companyId, agentId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "queued" });
+      await db.update(agents).set({ adapterConfig: { engine: "acp" } }).where(eq(agents.id, agentId));
+      await db.update(issues).set({ executionPolicy: { resourceLimits: { maxTokensPerIssue: 1_500_000, maxTokensPerRun: 250_000 } } }).where(eq(issues.id, issueId));
+      const heartbeat = heartbeatService(db);
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await ready;
+        const active = await heartbeat.getRun(runId);
+        expect(active?.controllerBootId).toBeTruthy();
+        expect(active?.processPid).toBe(ownedProcess.child?.pid);
+        await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ retainedEvidence: { version: 1, note: "keep original shutdown history" } })}::jsonb` }).where(eq(heartbeatRuns.id, runId));
+        const drain = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+        expect(drain.interruptedRunIds).toEqual([runId]);
+        expect(drain.retryRunIds).toEqual([]);
+        await closed;
+        const interrupted = await heartbeat.getRun(runId);
+        expect(interrupted).toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted", usageJson: null, capacityReleasedAt: null });
+        expect(interrupted?.resultJson?.retainedEvidence).toEqual({ version: 1, note: "keep original shutdown history" });
+        expect(await getIssueResourceBlock(db, { companyId, issueId })).toMatchObject({ code: "issue_token_usage_unknown" });
+        if (evidence === "foreign controller") await db.update(heartbeatRuns).set({ controllerBootId: foreignControllerId }).where(eq(heartbeatRuns.id, runId));
+        await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+        releaseResult();
+        await heartbeat.drainActiveRunExecutions();
+        const settled = await heartbeat.getRun(runId);
+        expect(settled).toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted", error: interrupted?.error, signal: interrupted?.signal, finishedAt: interrupted?.finishedAt });
+        expect(settled?.resultJson?.retainedEvidence).toEqual(interrupted?.resultJson?.retainedEvidence);
+        const ledger = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+        if (evidence === "foreign controller") {
+          expect(settled).toMatchObject({ controllerBootId: foreignControllerId, usageJson: null, sessionIdAfter: null });
+          expect(ledger).toHaveLength(0);
+        } else {
+          expect(settled?.sessionIdAfter).toBe(sessionId);
+          expect(settled?.stdoutExcerpt).toContain("fake ACP closed");
+          expect(settled?.logSha256).toMatch(/^[0-9a-f]{64}$/);
+          expect(settled?.capacityReleasedAt).toBeTruthy();
+          if (evidence === "complete") {
+            expect(settled?.usageJson).toMatchObject({ inputTokens: 120, cachedInputTokens: 100, outputTokens: 30, totalTokens: 250 });
+            expect(ledger).toHaveLength(1);
+            expect(ledger[0]).toMatchObject({ totalTokens: 250, inputTokens: 120, cachedInputTokens: 100, outputTokens: 30 });
+            expect(await getIssueResourceBlock(db, { companyId, issueId })).toBeNull();
+          } else {
+            expect(settled?.usageJson?.totalTokens).toBeUndefined();
+            expect(settled?.usageJson?.usageUnknown).toBe(true);
+            expect(ledger.every(row => row.totalTokens === null)).toBe(true);
+            expect(await getIssueResourceBlock(db, { companyId, issueId })).toMatchObject({ code: "issue_token_usage_unknown" });
+          }
+        }
+        await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toHaveLength(ledger.length);
+        expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseResult();
+        ownedProcess.child?.kill("SIGKILL");
+        await heartbeat.drainActiveRunExecutions();
+      }
+    },
+  );
 
   it("snapshots and drains a server-stdio ACP run before embedded database shutdown", async () => {
     const child = spawnAliveProcess();
