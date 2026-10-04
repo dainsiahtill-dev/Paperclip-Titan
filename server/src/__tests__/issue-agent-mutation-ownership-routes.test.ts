@@ -115,6 +115,7 @@ const mockTaskWatchdogService = vi.hoisted(() => ({
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  resumeOrdinaryCommentWakeRequests: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -333,11 +334,14 @@ function createRunContextDb(
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
-  const rowsForSelection = async (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const rowsForSelection = async (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false, commentWakeQuery = false) => {
     if (chatBindingQuery) return chatBindings;
     // An unknown selector has no settled recovery receipt. Returning the
     // generic issue fixture here would invent an unrelated replay row.
     if (settledRecoveryQuery) return [];
+    // This fixture has no persisted comment wake; a generic agent row must not
+    // be mistaken for a durable queue identity.
+    if (commentWakeQuery) return [];
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
@@ -348,16 +352,16 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false, commentWakeQuery = false) => {
     const whereResult = {
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, commentWakeQuery)),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, commentWakeQuery)),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery, commentWakeQuery)),
     };
     const query = {
       innerJoin: vi.fn(() => query),
@@ -373,7 +377,7 @@ function createRunContextDb(
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
       from: vi.fn((table: Parameters<typeof getTableName>[0]) =>
-        buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions")),
+        buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions", getTableName(table) === "agent_wakeup_requests")),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
   };
@@ -575,6 +579,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockTaskWatchdogService.disableForIssue.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
+    mockHeartbeatService.resumeOrdinaryCommentWakeRequests.mockReset();
+    mockHeartbeatService.resumeOrdinaryCommentWakeRequests.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockReset();
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockReset();
@@ -1127,6 +1133,7 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       companyId,
       expect.objectContaining({ createdByRunId: ownerRunId }),
+      { agentId: ownerAgentId, userId: null, runId: ownerRunId },
     );
   });
 
@@ -1158,6 +1165,7 @@ describe("agent issue mutation checkout ownership", () => {
           changedFiles: 3,
         }),
       }),
+      { agentId: ownerAgentId, userId: null, runId: ownerRunId },
     );
   });
 
@@ -1187,6 +1195,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.objectContaining({
         metadata: expect.objectContaining({ additions: 11, deletions: 3, changedFiles: 2 }),
       }),
+      { agentId: ownerAgentId, userId: null, runId: ownerRunId },
     );
   });
 
@@ -1608,7 +1617,11 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
-    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+    expect(mockWorkProductService.update).toHaveBeenCalledWith(
+      "product-1",
+      { title: "Updated product", createdByRunId: ownerRunId },
+      { agentId: ownerAgentId, userId: null, runId: ownerRunId },
+    );
   });
 
   it("preserves board mutations on active checkouts", async () => {
@@ -2549,6 +2562,8 @@ describe("agent issue mutation checkout ownership", () => {
     function createWatchdogDb(options: {
       watchedIssueId?: string;
       watchdogIssueId?: string | null;
+      runIssueId?: string;
+      watchdogSourceIssueId?: string;
       ancestryParentId?: string | null;
       watchdogRows?: Record<string, unknown>[];
     } = {}) {
@@ -2557,7 +2572,11 @@ describe("agent issue mutation checkout ownership", () => {
         id: watchdogRunId,
         companyId,
         agentId: peerAgentId,
-        contextSnapshot: { taskWatchdog: { watchedIssueId, stopFingerprint: "task_watchdog_stop:test" } },
+        contextSnapshot: {
+          issueId: options.runIssueId ?? options.watchdogIssueId ?? watchdogReportIssueId,
+          taskId: options.runIssueId ?? options.watchdogIssueId ?? watchdogReportIssueId,
+          taskWatchdog: { watchedIssueId, stopFingerprint: "task_watchdog_stop:test" },
+        },
       }];
       const watchdogRows = options.watchdogRows ?? [{
         id: "dddddddd-dddd-4ddd-8ddd-ddddddddddde",
@@ -2572,18 +2591,26 @@ describe("agent issue mutation checkout ownership", () => {
         companyId,
         parentId: options.ancestryParentId ?? null,
       }];
-      const rowsForSelection = (selection: Record<string, unknown>) => {
+      const reusableWatchdogIssue = makeIssue({
+        id: options.watchdogIssueId ?? watchdogReportIssueId,
+        assigneeAgentId: peerAgentId,
+        originKind: "task_watchdog",
+        originId: options.watchdogSourceIssueId ?? watchedIssueId,
+      });
+      const rowsForSelection = (selection: Record<string, unknown>, tableName?: string) => {
+        if (tableName === "agent_wakeup_requests") return [];
         const keys = Object.keys(selection);
         if (keys.includes("entityId")) return [];
         if (keys.includes("contextSnapshot")) return runRows;
         if (keys.includes("watchdogAgentId")) return watchdogRows;
+        if (keys.includes("originId")) return [reusableWatchdogIssue];
         if (keys.includes("parentId")) return ancestryRows;
         if (keys.includes("status")) return [];
         if (keys.includes("agentCompanyId")) return runRows;
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
-      const buildQuery = (selection: Record<string, unknown>) => {
-        const rows = rowsForSelection(selection);
+      const buildQuery = (selection: Record<string, unknown>, tableName?: string) => {
+        const rows = rowsForSelection(selection, tableName);
         const whereResult = {
           orderBy: vi.fn(async () => []),
           limit: vi.fn(() => ({
@@ -2600,7 +2627,7 @@ describe("agent issue mutation checkout ownership", () => {
       return {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
-          from: vi.fn(() => buildQuery(selection)),
+          from: vi.fn((table: Parameters<typeof getTableName>[0]) => buildQuery(selection, getTableName(table))),
         })),
       };
     }
@@ -2899,6 +2926,26 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a watched-source run claiming a configured watchdog capability", async () => {
+      const app = await createApp(watchdogActor(), createWatchdogDb({ runIssueId: issueId }));
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Wrong run scope" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Task-watchdog capability must belong to the configured reusable watchdog task run.");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a configured watchdog task whose persisted source identity differs", async () => {
+      const app = await createApp(watchdogActor(), createWatchdogDb({
+        watchdogSourceIssueId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      }));
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ title: "Wrong persisted source" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Configured watchdog task has no matching persisted source identity.");
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
