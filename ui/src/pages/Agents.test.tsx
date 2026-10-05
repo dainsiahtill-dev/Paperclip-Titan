@@ -1099,4 +1099,20 @@ describe("Agents", () => {
     expect(container.textContent).toContain("Alpha");
     expect(container.querySelector('[aria-label="Invalid reporting chain"]')).not.toBeNull();
   });
+  it("offers recovery when the hierarchy request fails rather than rendering a blank chart", async () => {
+    mockAgentsApi.org.mockRejectedValue(new Error("Hierarchy unavailable"));
+    root = createRoot(container);
+    await act(async () => root!.render(<QueryClientProvider client={queryClient}><ToastProvider><Agents /></ToastProvider></QueryClientProvider>));
+    await flushReact();
+    const toggle = Array.from(container.querySelectorAll("button")).find(button => button.querySelector("svg.lucide-network"));
+    await act(async () => toggle!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Hierarchy unavailable"));
+    const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Try again");
+    expect(retry).toBeDefined();
+    mockAgentsApi.org.mockResolvedValue([{ id: "agent-1", name: "Alpha", role: "engineer", status: "active", reports: [] }]);
+    await act(async () => retry!.click());
+    await vi.waitFor(() => expect(container.textContent).not.toContain("Hierarchy unavailable"));
+    expect(container.textContent).toContain("Alpha");
+  });
+
 });

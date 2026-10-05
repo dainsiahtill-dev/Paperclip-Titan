@@ -3252,3 +3252,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 @media (prefers-reduced-motion: reduce) {
   .announcement-well { animation: none; }
 }
+
+/* Entry feedback must be usable before the React module graph finishes. */
+.app-bootstrap {
+  padding: calc(var(--spacing) * 6);
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans);
+}

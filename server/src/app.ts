@@ -1,3 +1,4 @@
+import { resolveStaticUiDist } from "./static-ui-selection.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
@@ -948,14 +949,7 @@ export async function createApp(
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
-    // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
-    const candidates = [
-      path.resolve(__dirname, "../ui-dist"),
-      path.resolve(__dirname, "../../ui/dist"),
-    ];
-    const uiDist = candidates.find((p) =>
-      fs.existsSync(path.join(p, "index.html")),
-    );
+    const uiDist = resolveStaticUiDist(__dirname, process.env.PAPERCLIP_UI_DIST_PATH);
     if (uiDist) {
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.

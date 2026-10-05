@@ -23,16 +23,15 @@ import { AppDetailSidebar } from "./AppConnectionSidebar.production";
 import { BreadcrumbBar } from "./BreadcrumbBar.production";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { Suspense } from "react";
+import { PaperclipLoading } from "./AnimatedPaperclipIcon";
+import { DeferredDialogs } from "./DeferredDialogs";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell.production";
 import { SecondarySidebar } from "./SecondarySidebar.production";
@@ -764,7 +763,7 @@ export function Layout() {
                   />
                 ) : (
                   <RouteErrorBoundary>
-                    <Outlet />
+                    <Suspense fallback={<PaperclipLoading />}><Outlet /></Suspense>
                   </RouteErrorBoundary>
                 )}
               </main>
@@ -773,12 +772,9 @@ export function Layout() {
           </div>
         </div>
         {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
-        <CommandPalette />
-        <NewIssueDialog />
-        <NewProjectDialog />
-        <NewGoalDialog />
-        <NewAgentDialog />
-        <KeyboardShortcutsCheatsheet
+        <DeferredDialogs />
+      <CommandPalette />
+                <KeyboardShortcutsCheatsheet
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}
         />

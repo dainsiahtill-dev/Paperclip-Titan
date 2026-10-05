@@ -45,7 +45,8 @@ const ConfigureBuiltInAgentModal = lazy(() =>
   })),
 );
 
-export const AGENT_FILTER_TABS = ["all", "active", "paused", "error", "builtin"] as const;
+import { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
+export { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
 
 const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
@@ -234,7 +235,7 @@ export function Agents() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: orgTree } = useQuery({
+  const { data: orgTree, isLoading: orgLoading, error: orgError, refetch: retryOrg } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
     queryFn: () => agentsApi.org(selectedCompanyId!),
     enabled: !!selectedCompanyId && effectiveView === "org",
@@ -554,6 +555,13 @@ export function Agents() {
       )}
 
       {/* Org chart view */}
+      {effectiveView === "org" && orgLoading && <PageSkeleton variant="list" />}
+      {effectiveView === "org" && orgError && (
+        <div role="alert" className="space-y-2">
+          <p className="text-sm text-destructive">{orgError.message}</p>
+          <Button variant="outline" size="sm" onClick={() => void retryOrg()}>Try again</Button>
+        </div>
+      )}
       {effectiveView === "org" && filteredOrg.length > 0 && (
         <div className="py-1">
           {filteredOrg.map((node) => (
