@@ -656,6 +656,7 @@ const support = await getEmbeddedPostgresTestSupport();
         });
       const chat = await issueService(db).create(runtimeCompany, {
         title: "Runtime chat",
+        assigneeAdapterOverrides: { useProjectWorkspace: false },
         conversationAgentId: runtimeAgent,
         conversationUserId: "local-board",
         assigneeAgentId: runtimeAgent,

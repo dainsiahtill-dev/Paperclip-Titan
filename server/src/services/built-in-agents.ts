@@ -798,6 +798,12 @@ function isBuiltInAgentMarkerConflict(error: unknown): boolean {
   return false;
 }
 
+function isBuiltInAgentNameConflict(error: unknown): boolean {
+  return error instanceof HttpError && error.status === 409 &&
+    typeof error.details === "object" && error.details !== null &&
+    (error.details as { code?: unknown }).code === "agent_name_conflict";
+}
+
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
   const accessSvc = accessService(db);
@@ -1672,10 +1678,10 @@ export function builtInAgentService(db: Db) {
         lastHeartbeatAt: null,
       }, { allowBuiltInAgentMetadata: true }) as Agent;
     } catch (error) {
-      // Lost the provisioning race: a concurrent writer inserted the row first
-      // and the partial unique index rejected ours. Re-run once; the winning
-      // row now exists, so we take the update path instead of inserting again.
-      if (!options.isRaceRetry && isBuiltInAgentMarkerConflict(error)) {
+      // Name admission can reject before the marker index. Only a same-company,
+      // active row with this exact built-in key proves that provisioning won.
+      if (!options.isRaceRetry && (isBuiltInAgentMarkerConflict(error) ||
+        (isBuiltInAgentNameConflict(error) && await findSingleAgent(companyId, definition)))) {
         return ensure(companyId, key, input, { isRaceRetry: true });
       }
       throw error;
@@ -1777,7 +1783,7 @@ export function builtInAgentService(db: Db) {
       // its own hire approval) first, and the partial unique index rejected
       // ours before we created a paired approval. Re-resolve to the winner and
       // return its pending state + open approval instead of surfacing the 23505.
-      if (isBuiltInAgentMarkerConflict(error)) {
+      if (isBuiltInAgentMarkerConflict(error) || isBuiltInAgentNameConflict(error)) {
         const winner = await findSingleAgent(companyId, definition);
         if (winner) {
           const winnerApproval = winner.status === "pending_approval"

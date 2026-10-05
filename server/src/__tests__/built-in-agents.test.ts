@@ -40,6 +40,7 @@ import {
 } from "../services/built-in-agents.ts";
 import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
+import { conflict } from "../errors.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1060,6 +1061,46 @@ describeEmbeddedPostgres("built-in agents", () => {
         expect(result.approval.id).toBe(briefsApprovals[0]!.id);
       }
     }
+  });
+
+  it.each([false, true])("rejects an unrelated same-name agent during provisioning (board approval=%s)", async (requireApproval) => {
+    const companyId = await seedCompany({ requireApproval });
+    const foreignCompanyId = await seedCompany({ requireApproval: false });
+    await builtInAgentService(db).ensure(foreignCompanyId, "briefs");
+    const human = await agentService(db).create(companyId, { name: "Briefs Agent", role: "engineer" });
+    await expect(builtInAgentService(db).provision(companyId, "briefs")).rejects.toMatchObject({
+      status: 409, details: { code: "agent_name_conflict" },
+    });
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: human.id, name: "Briefs Agent" });
+    expect(readBuiltInAgentMarker(rows[0]?.metadata)).toBeNull();
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toEqual([]);
+  });
+
+  it("rejects a different built-in key with the same display name", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const existingId = randomUUID();
+    await db.insert(agents).values({ id: existingId, companyId, name: "Briefs Agent", role: "general",
+      metadata: withBuiltInAgentMarker({}, { key: "learning", featureKeys: ["learning"] }) });
+    await expect(builtInAgentService(db).ensure(companyId, "briefs")).rejects.toMatchObject({
+      status: 409, details: { code: "agent_name_conflict" },
+    });
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(existingId);
+    expect(readBuiltInAgentMarker(rows[0]?.metadata)?.key).toBe("learning");
+  });
+
+  it.each([false, true])("does not swallow a generic provisioning conflict (board approval=%s)", async (requireApproval) => {
+    const companyId = await seedCompany({ requireApproval });
+    const failure = conflict("Unrelated provisioning conflict", { code: "different_conflict" });
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(failure);
+    try {
+      await expect(builtInAgentService(db).provision(companyId, "briefs")).rejects.toBe(failure);
+    } finally { transaction.mockRestore(); }
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toEqual([]);
   });
 
   it("self-heals duplicates during startup reconciliation without aborting later companies", async () => {

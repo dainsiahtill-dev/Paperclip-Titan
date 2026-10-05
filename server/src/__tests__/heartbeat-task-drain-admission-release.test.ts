@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createServer, type Server } from "node:http";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -12,6 +18,8 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  nativeRunFinalizations,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -19,6 +27,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
+import { readProcessStartedAt } from "../services/hot-restart.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -32,6 +42,8 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const privateCwds = new Set<string>();
+  const settlementServers = new Set<Server>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-task-drain-admission-release-");
@@ -62,13 +74,19 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   afterEach(async () => {
     stopTaskDrain();
+    for (const server of settlementServers) await new Promise<void>((resolve) => server.close(() => resolve()));
+    settlementServers.clear();
+    await db.delete(nativeRunFinalizations);
     await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(projects);
     await db.delete(companies);
+    for (const cwd of privateCwds) await rm(cwd, { recursive: true, force: true });
+    privateCwds.clear();
   });
 
   afterAll(async () => {
@@ -81,6 +99,21 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
+    const cwd = await mkdtemp(path.join(tmpdir(), "task-drain-private-"));
+    privateCwds.add(cwd);
+    // The real process finishes its ordinary task, so successful-run handoff
+    // recovery does not legitimately start a separate follow-up provider run.
+    const settlement = createServer(async (request, response) => {
+      const requestedRunId = new URL(request.url ?? "/", "http://localhost").searchParams.get("runId");
+      if (request.method !== "POST" || requestedRunId !== runId) { response.writeHead(403).end(); return; }
+      await db.update(issues).set({ status: "done", completedAt: new Date() })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), eq(issues.executionRunId, runId)));
+      response.writeHead(200).end();
+    });
+    settlementServers.add(settlement);
+    settlement.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => settlement.once("listening", resolve));
+    const port = (settlement.address() as { port: number }).port;
 
     await db.insert(companies).values({
       id: companyId,
@@ -98,7 +131,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       adapterType: "process",
       adapterConfig: {
         command: process.execPath,
-        args: ["-e", "process.exit(0)"],
+        args: ["-e", `require('node:fs').appendFileSync('invocations.txt', process.env.PAPERCLIP_RUN_ID + '\\n'); fetch('http://127.0.0.1:${port}/complete?runId=' + process.env.PAPERCLIP_RUN_ID, { method: 'POST' }).then(response => { if (!response.ok) process.exitCode = 1 })`],
+        cwd,
       },
       runtimeConfig: {
         heartbeat: {
@@ -117,6 +151,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       status: "todo",
       priority: "high",
       assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
       responsibleUserId: "responsible-user",
     });
 
@@ -139,11 +174,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       contextSnapshot: { issueId, wakeReason: "issue_assigned" },
     });
 
-    return { companyId, agentId, issueId, runId, wakeupRequestId };
+    return { companyId, agentId, issueId, runId, wakeupRequestId, cwd };
   }
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
-    const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+    const { companyId, issueId, runId, wakeupRequestId, cwd } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
 
     // The claim path publishes a "heartbeat.run.status" live event with
@@ -171,11 +206,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         status: heartbeatRuns.status,
         startedAt: heartbeatRuns.startedAt,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        capacityReleasedAt: heartbeatRuns.capacityReleasedAt,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(run).toMatchObject({ status: "queued", startedAt: null, responsibleUserId: null });
+    expect(run?.capacityReleasedAt).toBeInstanceOf(Date);
+    await expect(readFile(path.join(cwd, "invocations.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
     const wakeup = await db
       .select({ status: agentWakeupRequests.status, claimedAt: agentWakeupRequests.claimedAt })
@@ -217,6 +255,83 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(finished?.status).toBe("succeeded");
+    expect(await readFile(path.join(cwd, "invocations.txt"), "utf8")).toBe(`${runId}\n`);
+  }, 20_000);
+
+  it("keeps a live retained native runner's capacity reserved when drain trips during reattachment", async () => {
+    const { companyId, agentId, issueId, runId, cwd } = await seedQueuedRun();
+    const launch = async () => {
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd, detached: true, stdio: "ignore" });
+      const closed = once(child, "close");
+      await once(child, "spawn");
+      const startedAt = await readProcessStartedAt(child.pid!);
+      if (!startedAt) throw new Error("Fixture process start identity unavailable");
+      return { child, closed, pid: child.pid!, startedAt: new Date(startedAt) };
+    };
+    const oldController = await launch();
+    oldController.child.kill("SIGTERM");
+    await oldController.closed;
+    const retained = await launch();
+    let unsubscribe = () => {};
+    try {
+      const sessionId = randomUUID();
+      await db.update(companies).set({ defaultResponsibleUserId: "responsible-user" }).where(eq(companies.id, companyId));
+      await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, agentId));
+      await db.update(issues).set({ status: "in_progress", executionRunId: runId }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issueId,
+        nativeSessionId: sessionId, startedAt: retained.startedAt, capacityGroup: "", capacityReleasedAt: null,
+        processPid: retained.pid, processGroupId: retained.pid, processStartedAt: retained.startedAt,
+        runnerProfileJson: { sessionCheckpoint: { identity: { companyId, agentId, issueId, runId, sessionId },
+          sessionId, providerSessionId: "retained-live-fixture", process: { runnerPid: retained.pid, runnerProcessGroupId: retained.pid } } },
+      }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed",
+        leaseOwner: "former-fixture-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+        controllerBootId: randomUUID(), controllerPid: oldController.pid, controllerProcessStartedAt: oldController.startedAt,
+        controllerGeneration: 1,
+      });
+      const settings = instanceSettingsService(db);
+      await settings.updateGeneral({ agentConcurrency: { maxActiveRuns: 1, groups: [] } });
+      await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+      const heartbeat = heartbeatService(db);
+      unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+        const payload = event.payload as { runId?: string; eventType?: string };
+        if (event.type === "heartbeat.run.event" && payload.runId === runId && payload.eventType === "native.recovery.transition") startTaskDrain({});
+      });
+      const recovery = await heartbeat.recoverNativeRunsAfterRestart();
+      await heartbeat.drainActiveRunExecutions();
+      expect(recovery.claims).toContainEqual(expect.objectContaining({ kind: "reattach_existing_runner", runId,
+        process: { pid: retained.pid, processGroupId: retained.pid, startedAt: retained.startedAt.toISOString() } }));
+      expect(getTaskDrainStatus().draining).toBe(true);
+      const held = await heartbeat.getRun(runId);
+      stopTaskDrain();
+      unsubscribe();
+      unsubscribe = () => {};
+      const successorId = randomUUID(), projectId = randomUUID();
+      const successorCwd = await mkdtemp(path.join(tmpdir(), "retained-capacity-successor-"));
+      privateCwds.add(successorCwd);
+      await db.insert(projects).values({ id: projectId, companyId, name: "Private successor", executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } });
+      await db.insert(agents).values({ id: successorId, companyId, name: "Successor", role: "engineer", status: "idle", adapterType: "process",
+        adapterConfig: { cwd: successorCwd, command: process.execPath, args: ["-e", "require('node:fs').writeFileSync('successor.txt', process.env.PAPERCLIP_RUN_ID)"] },
+      });
+      const successor = await heartbeat.invoke(successorId, "on_demand", { projectId }, "manual");
+      await heartbeat.drainActiveRunExecutions();
+      const successorRun = await heartbeat.getRun(successor!.id);
+      const successorOutput = await readFile(path.join(successorCwd, "successor.txt"), "utf8").catch(() => null);
+      expect(held?.capacityReleasedAt, JSON.stringify({ successorStatus: successorRun?.status, successorOutput })).toBeNull();
+      expect(held).toMatchObject({ status: "queued", capacityGroup: "", processPid: retained.pid, processGroupId: retained.pid,
+        processStartedAt: retained.startedAt });
+      expect((await heartbeat.getRun(runId))?.capacityReleasedAt).toBeNull();
+      expect(successorRun?.status).toBe("queued");
+      expect(successorOutput).toBeNull();
+      expect(retained.child.exitCode).toBeNull();
+      expect(retained.child.signalCode).toBeNull();
+      expect(await readProcessStartedAt(retained.pid)).toBe(retained.startedAt.toISOString());
+    } finally {
+      unsubscribe();
+      stopTaskDrain();
+      if (retained.child.exitCode === null && retained.child.signalCode === null) retained.child.kill("SIGTERM");
+      await retained.closed;
+    }
   }, 20_000);
 
   // Fault the semantic release transaction, independent of how many read/
@@ -276,11 +391,13 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // The release transaction rolled back, so the run, wakeup, and issue
     // lock stay exactly as the admission claim left them.
     const run = await db
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, capacityGroup: heartbeatRuns.capacityGroup, capacityReleasedAt: heartbeatRuns.capacityReleasedAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(run?.status).toBe("running");
+    expect(run?.capacityGroup).not.toBeNull();
+    expect(run?.capacityReleasedAt).toBeNull();
 
     const wakeup = await db
       .select({ status: agentWakeupRequests.status })

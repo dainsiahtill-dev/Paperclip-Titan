@@ -1468,7 +1468,7 @@ describeEmbeddedPostgres("secretService", () => {
       type: "agent",
       id: agent!.id,
       label: "CodexCoder",
-      href: "/agents/codexcoder",
+      href: `/agents/${agent!.id}`,
       status: "idle",
     });
   });

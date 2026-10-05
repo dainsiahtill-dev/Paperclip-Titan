@@ -249,7 +249,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
     });
     mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace());
     mockExecutionWorkspaceService.update.mockResolvedValue(buildExecutionWorkspace());
-    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue(undefined);
+    mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue({ actorType: "agent", agentId: "agent-1", runId: "run-1", issueId: null });
     mockWorkspaceOperationService.assertRuntimeControlAvailable.mockResolvedValue(undefined);
     mockBuildWorkspaceRuntimeDesiredStatePatch.mockReturnValue({
       desiredState: "stopped",

@@ -305,7 +305,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
   function createInput(scope: Scope, extraEnv: Record<string, unknown> = {}) {
     return {
-      name: "Claude Login Agent",
+      name: `Claude Login Agent ${randomUUID()}`,
       role: "engineer",
       status: "idle" as const,
       adapterType: "claude_local",

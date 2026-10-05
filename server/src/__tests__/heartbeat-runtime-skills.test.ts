@@ -9,6 +9,7 @@ import {
   companies,
   companySkills,
   createDb,
+  projects,
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
@@ -17,7 +18,7 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import { runChildProcess, type PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -29,7 +30,9 @@ import { registerServerAdapter, unregisterServerAdapter } from "../adapters/inde
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
-const TEST_ADAPTER_TYPE = "runtime_skill_capture";
+// Capture is a test double for the supported local adapter. A custom adapter
+// cannot establish the host-owned protected workspace launch/drain protocol.
+const TEST_ADAPTER_TYPE = "codex_local";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -63,6 +66,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     mcpServers: AdapterRuntimeMcpServer[];
     config: Record<string, unknown>;
     serializedRuntimeInput: string;
+    workspaceCwd: string;
   }> = [];
   const cleanupDirs = new Set<string>();
 
@@ -80,6 +84,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     registerServerAdapter({
       type: TEST_ADAPTER_TYPE,
       execute: async (ctx) => {
+        if (!ctx.workspaceProcessGuard) throw new Error("Capture fixture requires the host workspace guard");
         const serializedRuntimeInput = JSON.stringify({
           config: ctx.config,
           context: ctx.context,
@@ -92,11 +97,18 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
           mcpServers: ctx.runtimeMcp?.getServers() ?? [],
           config: ctx.config,
           serializedRuntimeInput,
+          workspaceCwd: ctx.workspaceProcessGuard.root,
+        });
+        // Exercise the host's launch/bind/drain protocol before reusing this
+        // exact private cwd. An adapter return alone cannot prove namespace drain.
+        const child = await runChildProcess(ctx.runId, process.execPath, ["-e", "process.exit(0)"], {
+          cwd: ctx.workspaceProcessGuard.root, env: {}, timeoutSec: 2, graceSec: 1,
+          onLog: ctx.onLog, onSpawn: ctx.onSpawn, signal: ctx.signal,
         });
         return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
+          exitCode: child.exitCode,
+          signal: child.signal,
+          timedOut: child.timedOut,
           label: "Captured runtime skills",
         };
       },
@@ -144,6 +156,15 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     await tempDb?.cleanup();
   });
 
+  async function privateProject(companyId: string, agentIds: string[]) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-skills-private-"));
+    cleanupDirs.add(root);
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(projects).values({ id: companyId, companyId, name: "Private runtime context", executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } });
+    for (const id of agentIds) await fs.mkdir(path.join(root, id));
+    return root;
+  }
+
   it("materializes different pinned skill versions for different agents at runtime", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
@@ -161,6 +182,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    const workspaceRoot = await privateProject(companyId, [firstAgentId, secondAgentId]);
     await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Runtime Coach\n\nVersion one.\n", "utf8");
     await db.insert(companySkills).values({
       id: skillId,
@@ -206,6 +228,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
         status: "idle",
         adapterType: TEST_ADAPTER_TYPE,
         adapterConfig: {
+          cwd: path.join(workspaceRoot, firstAgentId),
           paperclipSkillSync: {
             desiredSkills: [{ key: skillKey, versionId: versionOne.id }],
           },
@@ -221,6 +244,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
         status: "idle",
         adapterType: TEST_ADAPTER_TYPE,
         adapterConfig: {
+          cwd: path.join(workspaceRoot, secondAgentId),
           paperclipSkillSync: {
             desiredSkills: [{ key: skillKey, versionId: versionTwo.id }],
           },
@@ -234,11 +258,11 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     await settings.updateExperimental({ enableBetaSkills: true });
 
     const heartbeat = heartbeatService(db);
-    const firstRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    const firstRun = await heartbeat.invoke(firstAgentId, "on_demand", { projectId: companyId }, "manual");
     expect(firstRun).not.toBeNull();
     expect((await waitForRunToFinish(heartbeat, firstRun!.id))?.status).toBe("succeeded");
 
-    const secondRun = await heartbeat.invoke(secondAgentId, "on_demand", {}, "manual");
+    const secondRun = await heartbeat.invoke(secondAgentId, "on_demand", { projectId: companyId }, "manual");
     expect(secondRun).not.toBeNull();
     expect((await waitForRunToFinish(heartbeat, secondRun!.id))?.status).toBe("succeeded");
 
@@ -268,13 +292,16 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     const oldMtime = new Date("2024-01-01T00:00:00.000Z");
     await fs.utimes(firstSkillFile, oldMtime, oldMtime);
 
-    const repeatRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    const repeatRun = await heartbeat.invoke(firstAgentId, "on_demand", { projectId: companyId }, "manual");
     expect(repeatRun).not.toBeNull();
-    expect((await waitForRunToFinish(heartbeat, repeatRun!.id))?.status).toBe("succeeded");
+    expect(await waitForRunToFinish(heartbeat, repeatRun!.id)).toMatchObject({ status: "succeeded", errorCode: null, error: null });
     const repeatedSkill = capturedRuns
       .filter((run) => run.agentId === firstAgentId)
       .at(-1)
       ?.skills.find((entry) => entry.key === skillKey);
+    const firstAgentCwds = capturedRuns.filter((run) => run.agentId === firstAgentId).map((run) => run.workspaceCwd);
+    expect(firstAgentCwds).toHaveLength(2);
+    expect(new Set(firstAgentCwds).size).toBe(1);
     expect(repeatedSkill).toMatchObject({
       source: firstSkill!.source,
       versionId: versionOne.id,
@@ -283,7 +310,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     expect((await fs.stat(firstSkillFile)).mtime.toISOString()).toBe(oldMtime.toISOString());
 
     await settings.updateExperimental({ enableBetaSkills: false });
-    const defaultRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    const defaultRun = await heartbeat.invoke(firstAgentId, "on_demand", { projectId: companyId }, "manual");
     expect(defaultRun).not.toBeNull();
     expect((await waitForRunToFinish(heartbeat, defaultRun!.id))?.status).toBe("succeeded");
     const defaultSkill = capturedRuns
@@ -310,7 +337,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     });
 
     await settings.updateExperimental({ enableBetaSkills: true });
-    const restoredRun = await heartbeat.invoke(firstAgentId, "on_demand", {}, "manual");
+    const restoredRun = await heartbeat.invoke(firstAgentId, "on_demand", { projectId: companyId }, "manual");
     expect(restoredRun).not.toBeNull();
     expect((await waitForRunToFinish(heartbeat, restoredRun!.id))?.status).toBe("succeeded");
     const restoredSkill = capturedRuns
@@ -336,6 +363,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    const workspaceRoot = await privateProject(companyId, [agentId]);
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -343,7 +371,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       role: "engineer",
       status: "idle",
       adapterType: TEST_ADAPTER_TYPE,
-      adapterConfig: {},
+      adapterConfig: { cwd: path.join(workspaceRoot, agentId) },
       runtimeConfig: {},
       permissions: {},
     });
@@ -404,7 +432,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const run = await heartbeat.invoke(agentId, "on_demand", { projectId: companyId }, "manual");
     expect(run).not.toBeNull();
     expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
 

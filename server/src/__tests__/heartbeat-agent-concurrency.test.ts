@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.ts";
@@ -20,6 +23,12 @@ describePostgres("shared Agent run capacity", () => {
   let database!: ReturnType<typeof createDb>;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let heartbeat!: ReturnType<typeof heartbeatService>;
+  let privateRoot: string;
+  const privateCwd = (agentId: string) => {
+    const cwd = path.join(privateRoot, agentId);
+    mkdirSync(cwd, { recursive: true });
+    return cwd;
+  };
   const dispatched: string[] = [];
   const releases = new Map<string, () => void>();
   let blockAdapter = false;
@@ -31,12 +40,14 @@ describePostgres("shared Agent run capacity", () => {
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-agent-capacity-");
     database = createDb(temporary.connectionString);
+    privateRoot = mkdtempSync(path.join(tmpdir(), "agent-capacity-private-"));
+    await instanceSettingsService(database).updateExperimental({ enableIsolatedWorkspaces: true });
     heartbeat = heartbeatService(database);
     registerServerAdapter({
       type: ADAPTER,
       execute: async (context) => {
         if (physicalDeadlineAdapter) {
-          const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+          const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", cwd: String(context.config.cwd) });
           await once(child, "spawn");
           const closed = once(child, "close");
           const stop = () => child.kill();
@@ -100,6 +111,7 @@ describePostgres("shared Agent run capacity", () => {
   afterAll(async () => {
     unregisterServerAdapter(ADAPTER);
     await temporary?.cleanup();
+    rmSync(privateRoot, { recursive: true, force: true });
   });
 
   it("serializes automatic resource admission across different children under one parent", async () => {
@@ -139,6 +151,7 @@ describePostgres("shared Agent run capacity", () => {
   });
 
   async function seed(groupForHolder: string, groupForCandidate: string) {
+    await instanceSettingsService(database).updateExperimental({ enableIsolatedWorkspaces: true });
     const companyId = randomUUID();
     const holderId = randomUUID();
     const candidateId = randomUUID();
@@ -148,6 +161,7 @@ describePostgres("shared Agent run capacity", () => {
       issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
       defaultResponsibleUserId: "board",
     });
+    await database.insert(projects).values({ id: companyId, companyId, name: "Private capacity execution", executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } });
     await database.insert(agents).values([
       {
         id: holderId,
@@ -156,7 +170,7 @@ describePostgres("shared Agent run capacity", () => {
         role: "engineer",
         status: "running",
         adapterType: ADAPTER,
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(holderId) },
         runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1, concurrencyGroup: groupForHolder } },
         permissions: {},
       },
@@ -167,7 +181,7 @@ describePostgres("shared Agent run capacity", () => {
         role: "engineer",
         status: "idle",
         adapterType: ADAPTER,
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(candidateId) },
         runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1, concurrencyGroup: groupForCandidate } },
         permissions: {},
       },
@@ -235,10 +249,10 @@ describePostgres("shared Agent run capacity", () => {
     await database.update(issues).set({ executionPolicy: sql`jsonb_build_object('resourceLimits', jsonb_build_object('maxRunSeconds', 2))` }).where(eq(issues.id, issueId));
     await instanceSettingsService(database).updateGeneral({ agentConcurrency: { maxActiveRuns: null, groups: [{ name: "deadline", maxActiveRuns: 1 }] } });
     physicalDeadlineAdapter = true;
-    const first = await heartbeat.invoke(holderId, "on_demand", { issueId }, "manual");
+    const first = await heartbeat.invoke(holderId, "on_demand", { issueId, projectId: companyId }, "manual");
     expect(first).not.toBeNull();
     await waitForDispatchCount(1);
-    const next = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const next = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     for (let attempt = 0; attempt < 100 && !stoppedDeadlineRuns.has(first!.id); attempt += 1) await new Promise(resolve => setTimeout(resolve, 50));
     expect(stoppedDeadlineRuns.has(first!.id)).toBe(true);
     expect((await heartbeat.getRun(first!.id))?.capacityReleasedAt).toBeNull();
@@ -256,12 +270,12 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("keeps the next MiniMax Agent queued until the shared slot releases", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     await instanceSettingsService(database).updateGeneral({
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
 
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     const waiting = await heartbeat.getRun(candidate!.id);
     expect(waiting?.status).toBe("queued");
@@ -299,7 +313,7 @@ describePostgres("shared Agent run capacity", () => {
         role: "engineer",
         status: "running",
         adapterType: ADAPTER,
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(agentId) },
         runtimeConfig: { heartbeat: { concurrencyGroup: "minimax", maxConcurrentRuns: 1 } },
         permissions: {},
       });
@@ -315,7 +329,7 @@ describePostgres("shared Agent run capacity", () => {
       });
     }
 
-    const seventh = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const seventh = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(seventh).not.toBeNull();
     expect((await heartbeat.getRun(seventh!.id))?.status).toBe("queued");
     expect(dispatched).not.toContain(seventh!.id);
@@ -325,7 +339,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("applies the instance ceiling across different groups", async () => {
-    const { candidateId } = await seed("openai", "minimax");
+    const { companyId, candidateId } = await seed("openai", "minimax");
     await instanceSettingsService(database).updateGeneral({
       agentConcurrency: { maxActiveRuns: 1, groups: [
         { name: "openai", maxActiveRuns: 6 },
@@ -333,14 +347,14 @@ describePostgres("shared Agent run capacity", () => {
       ] },
     });
 
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
     expect(dispatched).not.toContain(candidate!.id);
   }, 30_000);
 
   it("serializes simultaneous claims from separate controllers", async () => {
-    const { holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
     await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
     await instanceSettingsService(database).updateGeneral({
@@ -350,8 +364,8 @@ describePostgres("shared Agent run capacity", () => {
     secondHeartbeat = heartbeatService(database);
 
     const [first, second] = await Promise.all([
-      heartbeat.invoke(holderId, "on_demand", {}, "manual"),
-      secondHeartbeat.invoke(candidateId, "on_demand", {}, "manual"),
+      heartbeat.invoke(holderId, "on_demand", { projectId: companyId }, "manual"),
+      secondHeartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual"),
     ]);
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
@@ -408,21 +422,21 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("keeps a slot occupied after cancellation until the adapter has stopped", async () => {
-    const { holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
     await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
     await instanceSettingsService(database).updateGeneral({
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
     blockAdapter = true;
-    const first = await heartbeat.invoke(holderId, "on_demand", {}, "manual");
+    const first = await heartbeat.invoke(holderId, "on_demand", { projectId: companyId }, "manual");
     expect(first).not.toBeNull();
     await waitForDispatchCount(1);
     // Models the existing pause path's order: status changes before the
     // process finishes its grace period.
     await database.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, first!.id));
 
-    const second = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const second = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(second).not.toBeNull();
     expect((await heartbeat.getRun(second!.id))?.status).toBe("queued");
     expect(dispatched).toHaveLength(1);
@@ -437,7 +451,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("reclaims a completed run's slot after a missed release on this controller", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({
       status: "succeeded",
       finishedAt: new Date(),
@@ -448,7 +462,7 @@ describePostgres("shared Agent run capacity", () => {
     await instanceSettingsService(database).updateGeneral({
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
 
@@ -458,7 +472,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("keeps a foreign controller's terminal run reserved without stop proof", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({
       status: "succeeded",
       finishedAt: new Date(),
@@ -472,7 +486,7 @@ describePostgres("shared Agent run capacity", () => {
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
 
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     await heartbeat.resumeQueuedRuns();
     expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
@@ -480,7 +494,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it.each(["succeeded", "failed", "cancelled", "interrupted"])("releases a former controller's stopped %s run and dispatches the queue once", async (status) => {
-    const { holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, holderId, candidateId } = await seed("minimax", "minimax");
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
     await once(child, "spawn");
     try {
@@ -503,7 +517,7 @@ describePostgres("shared Agent run capacity", () => {
       await instanceSettingsService(database).updateGeneral({
         agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
       });
-      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
       expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
       await heartbeat.resumeQueuedRuns();
       expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).not.toBeNull();
@@ -516,7 +530,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("refuses local PID recovery for another host namespace", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({
       controllerBootId: randomUUID(), capacityGroup: "minimax",
       controllerLeaseExpiresAt: new Date(Date.now() - 60_000),
@@ -537,7 +551,7 @@ describePostgres("shared Agent run capacity", () => {
       await instanceSettingsService(database).updateGeneral({
         agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
       });
-      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
       await heartbeat.resumeQueuedRuns();
       expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
       expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
@@ -547,7 +561,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("invalidates a stop receipt when the same run records a later process", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({
       controllerBootId: legacyControllerBootId, capacityGroup: "minimax",
       status: "interrupted", finishedAt: new Date(),
@@ -562,7 +576,7 @@ describePostgres("shared Agent run capacity", () => {
       await instanceSettingsService(database).updateGeneral({
         agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
       });
-      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
       await heartbeat.resumeQueuedRuns();
       expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
       expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
@@ -596,7 +610,7 @@ describePostgres("shared Agent run capacity", () => {
       await instanceSettingsService(database).updateGeneral({
         agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
       });
-      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
       await heartbeat.resumeQueuedRuns();
       expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
       expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
@@ -606,7 +620,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("stops an opted-in adapter on graceful shutdown and releases its reservation", async () => {
-    const { holderRunId, holderId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, holderId } = await seed("minimax", "minimax");
     await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, holderRunId));
     await database.update(agents).set({ status: "idle" }).where(eq(agents.id, holderId));
@@ -614,7 +628,7 @@ describePostgres("shared Agent run capacity", () => {
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
     stopAwareAdapter = true;
-    const run = await heartbeat.invoke(holderId, "on_demand", {}, "manual");
+    const run = await heartbeat.invoke(holderId, "on_demand", { projectId: companyId }, "manual");
     await waitForDispatchCount(1);
     await heartbeat.drainRunningRunsForShutdown("SIGTERM");
     await waitForCapacityRelease(run!.id);
@@ -622,7 +636,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("does not issue local stop proof for a remote SSH PID without an environment lease", async () => {
-    const { holderRunId } = await seed("", "");
+    const { companyId, holderRunId } = await seed("", "");
     await database.update(heartbeatRuns).set({ controllerBootId: legacyControllerBootId })
       .where(eq(heartbeatRuns.id, holderRunId));
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
@@ -641,7 +655,7 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("retains a same-host former controller's slot until its real process group exits", async () => {
-    const { holderRunId, candidateId } = await seed("minimax", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("minimax", "minimax");
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
     await once(child, "spawn");
     try {
@@ -657,7 +671,7 @@ describePostgres("shared Agent run capacity", () => {
       await instanceSettingsService(database).updateGeneral({
         agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
       });
-      const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+      const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
       await heartbeat.resumeQueuedRuns();
       expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
       expect((await heartbeat.getRun(candidate!.id))?.status).toBe("queued");
@@ -697,7 +711,7 @@ describePostgres("shared Agent run capacity", () => {
       agentConcurrency: { maxActiveRuns: null, groups: [{ name: "minimax", maxActiveRuns: 1 }] },
     });
 
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     await heartbeat.resumeQueuedRuns();
     expect((await heartbeat.getRun(holderRunId))?.capacityReleasedAt).toBeNull();
@@ -712,9 +726,9 @@ describePostgres("shared Agent run capacity", () => {
   }, 30_000);
 
   it("keeps an Agent with an unconfigured group queued", async () => {
-    const { holderRunId, candidateId } = await seed("", "minimax");
+    const { companyId, holderRunId, candidateId } = await seed("", "minimax");
     await database.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, holderRunId));
-    const candidate = await heartbeat.invoke(candidateId, "on_demand", {}, "manual");
+    const candidate = await heartbeat.invoke(candidateId, "on_demand", { projectId: companyId }, "manual");
     expect(candidate).not.toBeNull();
     const persisted = await heartbeat.getRun(candidate!.id);
     expect(persisted?.status).toBe("queued");

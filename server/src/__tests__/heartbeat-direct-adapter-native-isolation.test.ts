@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
   afterAll,
   afterEach,
@@ -15,6 +18,7 @@ import {
   completionContracts,
   createDb,
   heartbeatRuns,
+  projects,
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisions,
@@ -31,6 +35,7 @@ import {
   unregisterServerAdapter,
 } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -68,6 +73,7 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   let tempDb: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
+  let privateRoot: string;
   const execute = vi.fn<ServerAdapterModule["execute"]>();
 
   beforeAll(async () => {
@@ -75,6 +81,8 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
       "heartbeat-direct-adapter-isolation-",
     );
     db = createDb(tempDb.connectionString);
+    privateRoot = mkdtempSync(path.join(tmpdir(), "direct-adapter-private-"));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     heartbeat = heartbeatService(db);
     for (const [adapterType] of DIRECT_ADAPTERS) {
       registerServerAdapter({
@@ -130,11 +138,13 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
       unregisterServerAdapter(adapterType);
     }
     await tempDb?.cleanup();
+    rmSync(privateRoot, { recursive: true, force: true });
   });
 
   it.each(DIRECT_ADAPTERS)(
     "executes flag-off %s once without creating native records",
     async (adapterType, provider) => {
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
       const companyId = randomUUID();
       const agentId = randomUUID();
       const directProofJson =
@@ -156,6 +166,9 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         requireBoardApprovalForNewAgents: false,
         defaultResponsibleUserId: "responsible-user",
       });
+      const cwd = path.join(privateRoot, agentId);
+      mkdirSync(cwd, { recursive: true });
+      await db.insert(projects).values({ id: companyId, companyId, name: "Private direct execution", executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } });
       await db.insert(agents).values({
         id: agentId,
         companyId,
@@ -163,12 +176,12 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
         role: "engineer",
         status: "idle",
         adapterType,
-        adapterConfig: {},
+        adapterConfig: { cwd },
         runtimeConfig: {},
         permissions: {},
       });
 
-      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      const queued = await heartbeat.invoke(agentId, "on_demand", { projectId: companyId }, "manual");
       expect(queued).not.toBeNull();
       const finished = await waitForRunToFinish(heartbeat, queued!.id);
 

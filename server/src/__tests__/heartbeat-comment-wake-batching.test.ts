@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createServer } from "node:http";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
@@ -31,6 +34,7 @@ import {
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { isRetiredExternalChatQuestionSource, questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
@@ -194,6 +198,12 @@ async function createControlledGatewayServer() {
 
 describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
+  let privateRoot: string;
+  const privateCwd = (agentId: string) => {
+    const cwd = path.join(privateRoot, agentId);
+    mkdirSync(cwd, { recursive: true });
+    return cwd;
+  };
   let tempDb: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
@@ -203,6 +213,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       "paperclip-heartbeat-comment-wake-",
     );
     db = createDb(started.connectionString);
+    privateRoot = mkdtempSync(path.join(tmpdir(), "wake-batching-private-"));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     tempDb = started;
   }, 120_000);
 
@@ -210,6 +222,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     await heartbeatService(db).drainActiveRunExecutions();
     await closeDbClient(db);
     await tempDb?.cleanup();
+    rmSync(privateRoot, { recursive: true, force: true });
   });
 
   afterEach(() => {
@@ -239,7 +252,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       role: "ceo",
       status: "running",
       adapterType: "process",
-      adapterConfig: {},
+      adapterConfig: { cwd: privateCwd(agentId) },
       runtimeConfig: {},
       permissions: {},
     });
@@ -264,6 +277,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     });
 
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "Hire an agent",
@@ -361,7 +375,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       role: "engineer",
       status: "running",
       adapterType: "process",
-      adapterConfig: {},
+      adapterConfig: { cwd: privateCwd(agentId) },
       runtimeConfig: {},
       permissions: {},
     });
@@ -386,6 +400,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     });
 
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "Resume handed-back work",
@@ -486,6 +501,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -500,6 +516,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Batch wake comments",
@@ -720,6 +737,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: { "x-openclaw-token": "gateway-token" },
           payloadTemplate: { message: "wake now" },
@@ -729,6 +747,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         permissions: {},
       });
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Discard deferred follow-up",
@@ -877,6 +896,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -891,6 +911,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Interrupt queued comment",
@@ -1022,6 +1043,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -1036,6 +1058,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Reopen after deferred comment",
@@ -1234,6 +1257,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(assigneeAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -1254,6 +1278,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(mentionedAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -1269,6 +1294,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       ]);
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Agent feedback at completion boundary",
@@ -1474,6 +1500,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -1488,6 +1515,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Self-comment must not reopen",
@@ -1669,6 +1697,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -1683,6 +1712,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Interaction continuation survives self-comment filtering",
@@ -1884,6 +1914,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "running",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(agentId),
             url: gateway.url,
             headers: { "x-openclaw-token": "gateway-token" },
             payloadTemplate: { message: "wake now" },
@@ -1893,6 +1924,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           permissions: {},
         });
         await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
           id: issueId,
           companyId,
           title: "Continue an answered Slack question",
@@ -2363,6 +2395,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -2377,6 +2410,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Human follow-up must survive mixed deferred batches",
@@ -2582,6 +2616,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -2596,6 +2631,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Deleted follow-up must not reopen",
@@ -2770,6 +2806,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -2784,6 +2821,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Self-authored note must not reopen",
@@ -2954,6 +2992,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -2968,6 +3007,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Interaction continuation survives self-comment filtering",
@@ -3119,6 +3159,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -3133,6 +3174,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Require a comment",
@@ -3285,6 +3327,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(primaryAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -3305,6 +3348,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(mentionedAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -3320,6 +3364,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       ]);
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Prevent concurrent mention execution",
@@ -3492,6 +3537,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(primaryAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -3512,6 +3558,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           status: "idle",
           adapterType: "openclaw_gateway",
           adapterConfig: {
+            cwd: privateCwd(mentionedAgentId),
             url: gateway.url,
             headers: {
               "x-openclaw-token": "gateway-token",
@@ -3527,6 +3574,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       ]);
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Mention should not steal execution ownership",
@@ -3640,6 +3688,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "idle",
         adapterType: "openclaw_gateway",
         adapterConfig: {
+          cwd: privateCwd(agentId),
           url: gateway.url,
           headers: {
             "x-openclaw-token": "gateway-token",
@@ -3654,6 +3703,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
         id: issueId,
         companyId,
         title: "Use existing comment",
@@ -3813,7 +3863,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(finishingAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -3824,7 +3874,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(validAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -3842,6 +3892,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       responsibleUserId: "responsible-user",
     });
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "Continue past a missing deferred agent",
@@ -3952,7 +4003,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(finishingAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -3963,7 +4014,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(crossCompanyAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -3981,6 +4032,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       responsibleUserId: "responsible-user",
     });
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "Cross-company deferred agent",
@@ -4050,7 +4102,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(finishingAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -4061,7 +4113,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(holdAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -4079,6 +4131,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       responsibleUserId: "responsible-user",
     });
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "A pause hold gates a plain wake but not a verified one",
@@ -4203,7 +4256,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(finishingAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -4214,7 +4267,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         role: "engineer",
         status: "idle",
         adapterType: "process",
-        adapterConfig: {},
+        adapterConfig: { cwd: privateCwd(deferredAgentId) },
         runtimeConfig: {},
         permissions: {},
       },
@@ -4232,6 +4285,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       // No responsibleUserId: the finishing run itself must not resolve this wake.
     });
     await db.insert(issues).values({
+        executionWorkspaceSettings: { mode: "agent_default" },
       id: issueId,
       companyId,
       title: "No responsible user can be resolved",

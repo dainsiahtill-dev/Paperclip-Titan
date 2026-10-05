@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import {
   afterAll,
@@ -96,13 +99,18 @@ describe("durable inbound chat scheduler receipts", () => {
   afterAll(async () => {
     unregisterServerAdapter("durable_chat_retry_test");
     await temporary.cleanup();
+    for (const cwd of privateRoots) rmSync(cwd, { recursive: true, force: true });
   });
+
+  const privateRoots = new Set<string>();
 
   async function fixture(deferred = false) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       issueId = randomUUID(),
       activeRunId = randomUUID();
+    const cwd = mkdtempSync(path.join(tmpdir(), "durable-chat-private-"));
+    privateRoots.add(cwd);
     await db.insert(companies).values({
       id: companyId,
       name: "Durable wake",
@@ -117,7 +125,7 @@ describe("durable inbound chat scheduler receipts", () => {
       role: "ceo",
       status: "running",
       adapterType: "process",
-      adapterConfig: {},
+      adapterConfig: { cwd },
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     });
     await db.insert(heartbeatRuns).values({
@@ -140,6 +148,7 @@ describe("durable inbound chat scheduler receipts", () => {
       id: issueId,
       companyId,
       title: "Bound chat task",
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
       status: "in_progress",
       assigneeAgentId: agentId,
       responsibleUserId: "board-user",

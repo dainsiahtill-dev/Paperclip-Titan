@@ -24,6 +24,7 @@ import {
 } from "../__tests__/helpers/embedded-postgres.js";
 import { buildExecutionContinuation, currentContinuationOrigins } from "./execution-continuation.js";
 import { persistRetrySuppression } from "./execution-retry-disposition.js";
+import { readExecutionProfileBinding } from "./execution-profile-binding.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -64,6 +65,9 @@ const support = await getEmbeddedPostgresTestSupport();
           status: "in_progress",
           assigneeAgentId: agentId,
         });
+      const [admittedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const [admittedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const executionProfileBinding = await readExecutionProfileBinding(db, admittedIssue, admittedAgent);
       await db
         .insert(heartbeatRuns)
         .values({
@@ -71,6 +75,7 @@ const support = await getEmbeddedPostgresTestSupport();
           companyId,
           agentId,
           status: "failed",
+          runnerProfileJson: { executionProfileBinding },
           contextSnapshot: { issueId, commentId: gmailId },
         });
       await db.insert(issueComments).values([
@@ -166,13 +171,14 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
       }
     });
-    it("rejects checkpoint scope drift at the dispatch continuation boundary", async () => {
+    it("rejects cwd-only execution profile drift after qualifying unchanged host input", async () => {
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
       const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
       await persistRetrySuppression(db, source, "Disabled by operator");
-      await db.update(agents).set({ adapterConfig: { cwd: "/changed-after-admission" } }).where(eq(agents.id, agentId));
-      try { await expect(build()).rejects.toThrow("continuation_checkpoint_scope_changed"); }
+      await expect(build()).resolves.toMatchObject({ checkpoint: { version: 1, sourceRunId: runId } });
+      await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: "/changed-after-admission" } }).where(eq(agents.id, agentId));
+      try { await expect(build()).rejects.toThrow("continuation_execution_profile_changed"); }
       finally {
         await db.update(agents).set({ adapterConfig: agent.adapterConfig }).where(eq(agents.id, agentId));
         await db.update(issues).set({ status: issue.status, updatedAt: issue.updatedAt, statusVersion: issue.statusVersion }).where(eq(issues.id, issueId));

@@ -73,6 +73,8 @@ import {
   principalPermissionGrants,
   toolConnections,
 } from "@paperclipai/db";
+import { projects } from "@paperclipai/db";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import type { ChatProvider } from "@paperclipai/shared";
 import { isPaperclipExternalChatTurn } from "@paperclipai/adapter-utils/server-utils";
 import type { Attachment, Author, Message, Thread } from "chat";
@@ -23592,6 +23594,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
 
     const heartbeat = heartbeatService(db);
+    const cwd = mkdtempSync(path.join(os.tmpdir(), "chat-shortcut-private-"));
+    const settings = instanceSettingsService(db);
+    const originalIsolation = (await settings.getExperimental()).enableIsolatedWorkspaces;
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    const projectId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: fixture.companyId, name: "Private direct chat", executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" } });
     try {
       await db
         .update(companies)
@@ -23601,6 +23609,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .update(agents)
         .set({
           adapterType,
+          adapterConfig: { cwd },
           runtimeConfig: {
             heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
           },
@@ -23609,7 +23618,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
       const { callbacks, endpoint, runtime, service } =
         await configuredSlackEndpoint(fixture, {
-          wakeup: heartbeat.wakeup,
+          wakeup: (agentId, options) => heartbeat.wakeup(agentId, { ...options, contextSnapshot: { ...options?.contextSnapshot, projectId } }),
         });
       const configuredEndpoint = await service.get(endpoint.id);
       const [principal] = await db
@@ -23924,6 +23933,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ]),
       );
     } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: originalIsolation });
+      rmSync(cwd, { recursive: true, force: true });
       await heartbeat.drainActiveRunExecutions();
       unregisterServerAdapter(adapterType);
     }

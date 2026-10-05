@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
@@ -92,12 +95,17 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    for (const cwd of privateRoots) rmSync(cwd, { recursive: true, force: true });
   }, 60_000);
+
+  const privateRoots = new Set<string>();
 
   async function insertAgentAndIssue() {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const cwd = mkdtempSync(path.join(tmpdir(), "worktree-suppression-private-"));
+    privateRoots.add(cwd);
 
     await db.insert(companies).values({
       id: companyId,
@@ -116,6 +124,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       status: "idle",
       adapterType: "process",
       adapterConfig: {
+        cwd,
         command: process.execPath,
         args: ["-e", "process.exit(0)"],
       },
@@ -133,6 +142,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       id: issueId,
       companyId,
       title: "Assigned work",
+      assigneeAdapterOverrides: { useProjectWorkspace: false },
       status: "todo",
       priority: "high",
       assigneeAgentId: agentId,

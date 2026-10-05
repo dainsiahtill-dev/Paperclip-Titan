@@ -45,7 +45,7 @@ function makeAgent(): AgentDetailRecord {
   return {
     id: AGENT_ID,
     companyId: COMPANY_ID,
-    name: "Alpha Agent",
+    name: "Alpha",
     urlKey: "alpha",
     role: "engineer",
     title: null,

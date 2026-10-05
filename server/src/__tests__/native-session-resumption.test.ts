@@ -1,7 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
@@ -635,7 +637,11 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
     const newerWakeKey = `newer-comment:${newerCommentId}`;
     const turnId = "provider-active-turn";
     const providerSessionId = "provider-existing-session";
-    const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    const privateRoot = mkdtempSync(path.join(tmpdir(), "native-recovery-private-"));
+    const repoRoot = path.join(privateRoot, "old");
+    const newerCwd = path.join(privateRoot, "new");
+    mkdirSync(repoRoot);
+    mkdirSync(newerCwd);
     const contract = {
       revision: "phase6-recovery-v1",
       objective: "Recover the persisted provider turn",
@@ -821,6 +827,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
       db = createDb(temporary.connectionString);
       await instanceSettingsService(db).updateExperimental({
         enableNativeRunner: newerRequest,
+        enableIsolatedWorkspaces: true,
       });
       await db.insert(companies).values({
         id: companyId,
@@ -834,6 +841,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         .values({
           id: projectId,
           companyId,
+          executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" },
           name: "Recovery project",
           status: "active",
         });
@@ -850,10 +858,9 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         companyId,
         name: "Native recovery agent",
         adapterType: "paperclip_runner",
-        // Match the persisted fixture workspace's strategy explicitly. A
-        // metadata-free workspace is not proof of the current config; an actual
-        // strategy change correctly refuses immutable native-input rebinding.
-        adapterConfig: { workspaceStrategy: { type: "project_primary" } },
+        // Bind the original private cwd before saving immutable provider input.
+        // Later issue pointers must not rewrite that original execution.
+        adapterConfig: { cwd: repoRoot },
         status: "active",
         runtimeConfig: {
           heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
@@ -882,8 +889,8 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         projectId,
         projectWorkspaceId,
         sourceIssueId: issueId,
-        mode: "shared_workspace",
-        strategyType: "project_primary",
+        mode: "adapter_managed",
+        strategyType: "adapter_managed",
         name: "Persisted recovery workspace",
         status: "active",
         cwd: repoRoot,
@@ -895,11 +902,11 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         projectId,
         projectWorkspaceId,
         sourceIssueId: issueId,
-        mode: "shared_workspace",
-        strategyType: "project_primary",
+        mode: "adapter_managed",
+        strategyType: "adapter_managed",
         name: "Newer issue workspace",
         status: "active",
-        cwd: repoRoot,
+        cwd: newerCwd,
         providerType: "local_fs",
       });
       await db
@@ -909,7 +916,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           // recovered. The older run must still restore its own immutable workspace binding.
           executionWorkspaceId: newerExecutionWorkspaceId,
           executionWorkspacePreference: "reuse_existing",
-          executionWorkspaceSettings: { mode: "shared_workspace" },
+          executionWorkspaceSettings: { mode: "agent_default" },
         })
         .where(eq(issues.id, issueId));
       await db.insert(completionContracts).values({
@@ -1006,6 +1013,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         );
         await temporary.cleanup();
       }
+      rmSync(privateRoot, { recursive: true, force: true });
     });
 
     it("preserves the old provider contract and admits newer direction only in a separate turn", async () => {
@@ -1414,11 +1422,20 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         .update(agents)
         .set({ adapterType: "codex_local" })
         .where(eq(agents.id, agentId));
+      const freshCwd = path.join(privateRoot, "flag-off");
+      mkdirSync(freshCwd);
+      execFileSync("rtk", ["proxy", "git", "init", "--quiet", freshCwd]);
+      const freshProjectWorkspaceId = randomUUID();
+      const freshExecutionWorkspaceId = randomUUID();
+      await db.insert(projectWorkspaces).values({ id: freshProjectWorkspaceId, companyId, projectId,
+        name: "Private flag-off project workspace", cwd: freshCwd, isPrimary: false });
       await db.insert(issues).values({
         id: freshIssueId,
+        executionWorkspaceSettings: { mode: "agent_default" },
+        assigneeAdapterOverrides: { useProjectWorkspace: false, adapterConfig: { cwd: freshCwd } },
         companyId,
         projectId,
-        projectWorkspaceId,
+        projectWorkspaceId: freshProjectWorkspaceId,
         issueNumber: 2,
         identifier: "NRR-2",
         title: "Start only after the native kill switch is off",
@@ -1426,6 +1443,12 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         assigneeAgentId: agentId,
         workMode: "standard",
       });
+      await db.insert(executionWorkspaces).values({ id: freshExecutionWorkspaceId, companyId, projectId,
+        projectWorkspaceId: freshProjectWorkspaceId, sourceIssueId: freshIssueId,
+        mode: "adapter_managed", strategyType: "adapter_managed", name: "Private flag-off execution",
+        status: "active", cwd: freshCwd, providerType: "local_fs" });
+      await db.update(issues).set({ executionWorkspaceId: freshExecutionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, freshIssueId));
       const fresh = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",

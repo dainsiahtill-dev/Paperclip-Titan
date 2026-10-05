@@ -18148,7 +18148,10 @@ export function heartbeatService(
   // activeRunExecutionPromises while the wakeup stayed "claimed" or the
   // issue stayed locked to a queued run — task-drain status would then read
   // quiescent while the database still held part of the old claim.
-  async function releaseRunClaimedJustBeforeSuppression(runId: string) {
+  async function releaseRunClaimedJustBeforeSuppression(
+    runId: string,
+    queuedAdmissionClaim?: typeof heartbeatRuns.$inferSelect,
+  ) {
     const now = new Date();
     await db.transaction(async (tx) => {
       const released = await tx
@@ -18157,6 +18160,19 @@ export function heartbeatService(
           status: "queued",
           startedAt: null,
           responsibleUserId: null,
+          // Only a host-created queued claim can refund an unstarted slot.
+          // Recovery can retain a live runner while taking this same rollback.
+          capacityReleasedAt: queuedAdmissionClaim?.id === runId && queuedAdmissionClaim.startedAt
+            ? sql<Date>`case when ${heartbeatRuns.companyId} = ${queuedAdmissionClaim.companyId}
+                and ${heartbeatRuns.agentId} = ${queuedAdmissionClaim.agentId}
+                and ${heartbeatRuns.startedAt} = ${queuedAdmissionClaim.startedAt.toISOString()}::timestamptz
+                and ${heartbeatRuns.controllerBootId} is not distinct from ${queuedAdmissionClaim.controllerBootId}
+                and ${heartbeatRuns.capacityGroup} is not distinct from ${queuedAdmissionClaim.capacityGroup}
+                and ${heartbeatRuns.capacityReleasedAt} is null
+                and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+                and ${heartbeatRuns.processStartedAt} is null
+              then ${now.toISOString()}::timestamptz else ${heartbeatRuns.capacityReleasedAt} end`
+            : undefined,
           updatedAt: now,
         })
         .where(
@@ -20174,7 +20190,7 @@ export function heartbeatService(
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        const execution = executeRun(claimedRun.id).catch((err) => {
+        const execution = executeRun(claimedRun.id, { queuedAdmissionClaim: claimedRun }).catch((err) => {
           logger.error(
             { err, runId: claimedRun.id },
             "queued heartbeat execution failed",
@@ -20289,13 +20305,14 @@ export function heartbeatService(
     runOptions: {
       nativeLeaseOwner?: string;
       nativeRestartRecovery?: NativeRestartRecoveryClaim;
+      queuedAdmissionClaim?: typeof heartbeatRuns.$inferSelect;
     } = {},
   ) {
     const attemptStartedAtMs = Date.now();
     let attestedQuestionResponseAtMs: number | null = null;
     if ((await getSchedulingSuppression()).suppressed) {
       try {
-        await releaseRunClaimedJustBeforeSuppression(runId);
+        await releaseRunClaimedJustBeforeSuppression(runId, runOptions.queuedAdmissionClaim);
       } catch (err) {
         logger.error(
           { err, runId },
