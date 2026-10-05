@@ -17,7 +17,17 @@ it("runs the actual Codex CLI adapter with pinned source and server-owned manage
   await fs.writeFile(command, `#!/bin/sh\ncase "$1" in --version) printf 'codex-cli 0.1.0\\n'; exit 0;; esac\nprintf source > source-effect\nprintf runtime > "$CODEX_HOME/runtime-effect"\nprintf '%s\\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'\n`, { mode: 0o700 });
   const stat = await fs.stat(workspace); const launches: WorkspaceLaunchIdentity[] = [], drains: WorkspaceLaunchIdentity[] = [];
   const guard = { root: workspace, device: String(stat.dev), inode: String(stat.ino), privateRoots: [home],
-    beforeLaunch: async () => `launch-${launches.length}`, bindLaunch: async (identity: WorkspaceLaunchIdentity) => { launches.push(identity); },
+    beforeLaunch: async () => `launch-${launches.length}`,
+    bindLaunch: async (identity: WorkspaceLaunchIdentity) => {
+      for (const effect of [path.join(workspace, "source-effect"), path.join(home, "runtime-effect")]) await expect(fs.access(effect)).rejects.toThrow();
+      launches.push(identity);
+    },
+    bindPayload: async (identity: WorkspaceLaunchIdentity) => {
+      for (const effect of [path.join(workspace, "source-effect"), path.join(home, "runtime-effect")]) await expect(fs.access(effect)).rejects.toThrow();
+      expect(identity).toMatchObject(launches[launches.length - 1]);
+      expect(identity.payloadPid).toBeGreaterThan(0);
+      launches[launches.length - 1] = identity;
+    },
     recordDrain: async (identity: WorkspaceLaunchIdentity) => { drains.push(identity); }, markUnknown: async () => {},
   };
   const result = await withWorkspaceProcessGuard(guard, () => execute({
