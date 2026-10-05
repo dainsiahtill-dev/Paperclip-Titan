@@ -35,21 +35,33 @@ async function fixture() {
   const launches: WorkspaceLaunchIdentity[] = [], drains: WorkspaceLaunchIdentity[] = [];
   const guard: WorkspaceProcessGuard = { root, device: String(stat.dev), inode: String(stat.ino), signal: controller.signal,
     beforeLaunch: async () => "launch-1", bindLaunch: async identity => { launches.push(identity); },
+    bindPayload: async identity => {
+      expect(identity).toMatchObject(launches[launches.length - 1]!);
+      launches[launches.length - 1] = identity;
+    },
     recordDrain: async identity => { drains.push(identity); }, markUnknown: async () => {},
   };
   return { root, guard, controller, launches, drains };
 }
 
 it("writes only after launch commit and records physical namespace drain", async () => {
-  const f = await fixture(); let committed = false;
+  const f = await fixture(); let committed = false, payloadCommitted = false;
   f.guard.bindLaunch = async identity => {
     expect(await fs.readFile(path.join(f.root, "sentinel"), "utf8").catch(() => null)).toBeNull();
     committed = true; f.launches.push(identity);
   };
+  const commitPayload = f.guard.bindPayload!;
+  f.guard.bindPayload = async identity => {
+    expect(committed).toBe(true);
+    expect(await fs.readFile(path.join(f.root, "sentinel"), "utf8").catch(() => null)).toBeNull();
+    expect(identity.payloadPid).toBeGreaterThan(0);
+    expect(identity.payloadStart).toBeTruthy();
+    await commitPayload(identity); payloadCommitted = true;
+  };
   const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("success", "/bin/sh", ["-c", "printf safe > sentinel"], {
     cwd: f.root, env: {}, timeoutSec: 2, graceSec: 1, onLog: async () => {},
   }));
-  expect(result.exitCode, result.stderr).toBe(0); expect(committed).toBe(true);
+  expect(result.exitCode, result.stderr).toBe(0); expect(committed).toBe(true); expect(payloadCommitted).toBe(true);
   expect(await fs.readFile(path.join(f.root, "sentinel"), "utf8")).toBe("safe");
   expect(f.drains).toEqual(f.launches); expect(f.drains).toHaveLength(1);
 });

@@ -1,3 +1,6 @@
+import express from "express";
+import request from "supertest";
+import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity } from "@paperclipai/adapter-utils/workspace-process-guard";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getIssueResourceBlock } from "../services/issue-resource-limits.js";
@@ -77,6 +80,7 @@ import {
   toolConnections,
   workAssessments,
   workspaceOperations,
+  workspaceWriteOwners,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -108,6 +112,24 @@ import {
   commitNativeStatusDecision,
   NativeStatusRaceError,
 } from "../services/native-runtime/status-decision-committer.js";
+const guardFixtureHooks = vi.hoisted(() => ({ afterPayload: null as null | ((guard: any) => Promise<void>), beforeDrain: null as null | ((guard: any) => Promise<void>) }));
+const mockGuardStopConfirmation = vi.hoisted(() => vi.fn(async (read: () => Promise<any>) => read()));
+vi.mock("../services/workspace-write-ownership.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/workspace-write-ownership.js")>();
+  return { ...actual, workspaceWriteOwnershipService: (...args: Parameters<typeof actual.workspaceWriteOwnershipService>) => {
+    const service = actual.workspaceWriteOwnershipService(...args);
+    const confirm = service.confirmStopped.bind(service);
+    service.confirmStopped = (...input) => mockGuardStopConfirmation(() => confirm(...input));
+    const buildGuard = service.guard.bind(service);
+    service.guard = (...input) => {
+      const guard = buildGuard(...input);
+      return { ...guard, bindPayload: async identity => { await guard.bindPayload!(identity); await guardFixtureHooks.afterPayload?.(guard); },
+        recordDrain: async (identity, stop) => { await guardFixtureHooks.beforeDrain?.(guard); await guard.recordDrain(identity, stop); } };
+    };
+    return service;
+  } };
+});
+
 const mockTelemetryClient = vi.hoisted(() => ({
   track: vi.fn(),
   hashPrivateRef: vi.fn(() => "test-private-reference"),
@@ -454,6 +476,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
   const childProcesses = new Set<ChildProcess>();
+  const lifecycleFixtureRuns = new Set<string>();
+  const retainedFixtureHomes = new Set<string>();
+  const retainedFixtureAnchors: Array<Awaited<ReturnType<typeof fs.open>>> = [];
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
@@ -477,6 +502,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Status becomes terminal before the host's finalization/namespace cleanup.
+    // Do not delete this fixture's task underneath its remaining host effects.
+    for (const runId of lifecycleFixtureRuns) await heartbeatService(db).waitForRunExecutionDrain(runId);
+    lifecycleFixtureRuns.clear();
+    guardFixtureHooks.afterPayload = null;
+    guardFixtureHooks.beforeDrain = null;
+    mockGuardStopConfirmation.mockReset().mockImplementation(async read => read());
     vi.clearAllMocks();
     // A recovery policy can stop before adapter dispatch; do not leak an
     // unused one-shot failure into the next test's otherwise healthy run.
@@ -490,7 +522,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const localServiceSupervisor = await vi.importActual<
       typeof import("../services/local-service-supervisor.js")
     >("../services/local-service-supervisor.js");
-    mockTerminateLocalService.mockImplementation(
+    mockTerminateLocalService.mockReset().mockImplementation(
       localServiceSupervisor.terminateLocalService,
     );
     mockAdapterExecute.mockImplementation(async () => ({
@@ -665,7 +697,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await closeRegisteredClients(externalTestDatabaseUrl);
     }
     await tempDb?.cleanup();
+    for (const anchor of retainedFixtureAnchors) await anchor.close();
+    for (const home of retainedFixtureHomes) await removeRetainedFixtureHome(home);
+    retainedFixtureHomes.clear();
   });
+
+  /** Lifecycle fixtures exercise executor ownership, not shared-source write admission. */
+  async function useSupportedLifecycleWorkspace(runId: string) {
+    lifecycleFixtureRuns.add(runId);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    if (!run) throw new Error("Missing lifecycle fixture run");
+    const cwd = resolveDefaultAgentWorkspaceDir(run.agentId);
+    await fs.mkdir(cwd, { recursive: true });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    await db.update(agents).set({ adapterConfig: sql`${agents.adapterConfig} || ${JSON.stringify({ cwd, ...(agent.adapterType === "codex_local" ? { engine: "cli" } : {}) })}::jsonb` }).where(eq(agents.id, run.agentId));
+    let issueId = typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null;
+    if (!issueId) {
+      const [issue] = await db.insert(issues).values({ companyId: run.companyId, title: "Exercise executor lifecycle", status: "in_progress",
+        assigneeAgentId: run.agentId, responsibleUserId: "responsible-user", executionRunId: runId, checkoutRunId: runId,
+        assigneeAdapterOverrides: { useProjectWorkspace: false } }).returning();
+      issueId = issue.id;
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, issueId } }).where(eq(heartbeatRuns.id, runId));
+      if (run.wakeupRequestId) await db.update(agentWakeupRequests).set({ payload: sql`${agentWakeupRequests.payload} || ${JSON.stringify({ issueId })}::jsonb` })
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+    } else {
+      await db.update(issues).set({ assigneeAdapterOverrides: sql`coalesce(${issues.assigneeAdapterOverrides}, '{}'::jsonb) || '{"useProjectWorkspace":false}'::jsonb` }).where(eq(issues.id, issueId));
+    }
+  }
 
   async function seedRunFixture(input?: {
     adapterType?: string;
@@ -840,6 +898,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const executorHeartbeat = heartbeatService(db);
     const reaperHeartbeat = heartbeatService(db);
 
+    await useSupportedLifecycleWorkspace(runId);
     await executorHeartbeat.resumeQueuedRuns();
     await Promise.race([
       adapterStarted,
@@ -2535,19 +2594,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retries).toHaveLength(0);
   });
 
-  async function withTempPaperclipHome<T>(
-    fn: (home: string) => Promise<T>,
-  ): Promise<T> {
-    const home = await fs.mkdtemp(
-      path.join(os.tmpdir(), "paperclip-hot-restart-"),
-    );
-    const previousHome = process.env.PAPERCLIP_HOME;
-    process.env.PAPERCLIP_HOME = home;
-    try {
-      return await fn(home);
-    } finally {
-      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
-      else process.env.PAPERCLIP_HOME = previousHome;
+  async function removeRetainedFixtureHome(home: string) {
       // Native dispatch materializes read-only runtime bundles in this owned
       // temporary home. Restore directory permissions solely for test cleanup.
       const makeDirectoriesWritable = async (
@@ -2565,6 +2612,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       };
       await makeDirectoriesWritable(home);
       await fs.rm(home, { recursive: true, force: true });
+  }
+
+  async function withTempPaperclipHome<T>(
+    fn: (home: string) => Promise<T>,
+  ): Promise<T> {
+    const home = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-hot-restart-"),
+    );
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = home;
+    try {
+      return await fn(home);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      // Keep physical roots until this isolated database closes: unknown native
+      // observations deliberately survive logical row cleanup and inode reuse
+      // must not turn another fixture into the same physical resource.
+      retainedFixtureHomes.add(home);
     }
   }
 
@@ -2583,6 +2649,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           await heartbeat.cancelRun(id);
         },
       });
+      await useSupportedLifecycleWorkspace(runId);
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       expect(reachedSelection).toBe(true);
@@ -2617,9 +2684,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           await heartbeat.cancelRun(id);
         },
       });
+      await useSupportedLifecycleWorkspace(runId);
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
-      expect(reachedDispatch).toBe(true);
+      expect(reachedDispatch, JSON.stringify(await heartbeat.getRun(runId).then(run => ({ status: run?.status, stage: run?.executionStage, error: run?.error, errorCode: run?.errorCode, runtimeMode: run?.runtimeMode })))).toBe(true);
       expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "native",
         resultJson: { startupPreparationSettledAt: expect.any(String) },
       });
@@ -2662,6 +2730,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       );
       const heartbeat = heartbeatService(db, { nativeSessionBackendFactory });
+      await useSupportedLifecycleWorkspace(runId);
       await heartbeat.resumeQueuedRuns();
       await waitForValue(
         async () =>
@@ -4530,6 +4599,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId));
 
     const heartbeat = heartbeatService(db);
+    await useSupportedLifecycleWorkspace(runId);
     await heartbeat.resumeQueuedRuns();
 
     const runs = await waitForValue(async () => {
@@ -4679,6 +4749,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agents.id, agentId));
 
     const heartbeat = heartbeatService(db);
+    await useSupportedLifecycleWorkspace(runId);
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
@@ -7039,11 +7110,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.update(agents).set({ adapterConfig: {
       command: process.execPath, args: ["-e", "console.log('ready');setInterval(() => {}, 1000)"], graceSec: 1,
     } }).where(eq(agents.id, agentId));
-    mockAdapterExecute.mockImplementationOnce((async (input: unknown) =>
-      actualProcess.execute(input as Parameters<typeof actualProcess.execute>[0])) as typeof mockAdapterExecute);
+    let cliReady = false;
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
+      const context = input as Parameters<typeof actualProcess.execute>[0];
+      return actualProcess.execute({ ...context, onLog: async (stream, text) => {
+        await context.onLog(stream, text); if (text.includes("ready")) cliReady = true;
+      } });
+    }) as typeof mockAdapterExecute);
     const heartbeat = heartbeatService(db);
+    await useSupportedLifecycleWorkspace(runId);
     await heartbeat.resumeQueuedRuns();
-    expect(await waitForValue(async () => runningProcesses.get(runId))).toBeTruthy();
+    expect(await waitForValue(async () => (await heartbeat.getRun(runId))?.processPid)).toBeTruthy();
+    expect(adapterExecutionControls.has(runId)).toBe(true);
+    await vi.waitFor(() => expect(cliReady).toBe(true), { timeout: 5_000 });
     const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "continue" }).returning();
     const [wake] = await db.insert(agentWakeupRequests).values({
       companyId, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
@@ -7550,6 +7629,122 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  it.each(["single", "duplicate", "startup", "proof_failure", "forced", "late_result"] as const)("stops an actual guarded Codex fake CLI through the public cancellation route (%s)", async kind => {
+    const actualProcess = await vi.importActual<typeof import("../adapters/process/execute.js")>("../adapters/process/execute.js");
+    const { companyId, agentId, runId } = await seedRunFixture({ adapterType: "codex_local", agentStatus: "idle", runStatus: "queued" });
+    const onInterrupt = kind === "forced" ? "" : kind === "duplicate"
+      ? "setInterval(()=>{if(fs.existsSync('release-exit'))process.exit(0)},10)" : "process.exit(0)";
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", `const fs=require('node:fs');process.on('SIGINT',()=>{fs.appendFileSync('signals','x');fs.writeFileSync('interrupted','yes');${onInterrupt}});console.log('guarded-fixture-ready');setInterval(()=>fs.appendFileSync('effects','x'),20)`],
+      graceSec: kind === "duplicate" ? 3 : 1 } }).where(eq(agents.id, agentId));
+    await useSupportedLifecycleWorkspace(runId);
+    let ready = false, payloadBound = false;
+    let releaseBootstrap!: () => void;
+    const bootstrap = new Promise<void>(resolve => { releaseBootstrap = resolve; });
+    if (kind === "startup") guardFixtureHooks.afterPayload = async () => { payloadBound = true; await bootstrap; };
+    if (kind === "proof_failure") guardFixtureHooks.beforeDrain = async guard => {
+      // Preserve unknown ownership and its physical resource identities until
+      // this private database closes, including scratch paths teardown removes.
+      for (const root of [guard.root, ...(guard.privateRoots ?? [])]) {
+        const anchor = await fs.open(root, "r").catch(() => null); if (anchor) retainedFixtureAnchors.push(anchor);
+      }
+      throw new Error("fixture drain receipt unavailable");
+    };
+    let result: AdapterExecutionResult | undefined;
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
+      const context = input as Parameters<typeof actualProcess.execute>[0];
+      result = await actualProcess.execute({ ...context, onLog: async (stream, text) => {
+        await context.onLog(stream, text); if (text.includes("guarded-fixture-ready")) ready = true;
+      } }).catch(error => {
+        if (kind !== "proof_failure") throw error;
+        return { exitCode: 0, signal: null, timedOut: false };
+      });
+      if (kind === "late_result" || kind === "proof_failure") result = { ...result, resultJson: { ...result.resultJson,
+        executionCancellation: { state: "acknowledged", requestId: "adapter-forged", generation: "adapter-forged", sessionPreserved: true } } };
+      return result;
+    }) as typeof mockAdapterExecute);
+    const heartbeat = heartbeatService(db);
+    let identity: WorkspaceLaunchIdentity | undefined;
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(() => expect(kind === "startup" ? payloadBound : ready).toBe(true), { timeout: 5_000 });
+      expect((await heartbeat.getRun(runId))?.processPid).toBeGreaterThan(0);
+      const [before] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, runId));
+      expect(before.state).toBe("active");
+      identity = before.launchIdentity as WorkspaceLaunchIdentity;
+      expect(identity.payloadPid).toBeGreaterThan(0);
+      expect(await workspaceNamespaceDrained(identity)).toBe(false);
+      const { agentRoutes } = await import("../routes/agents.js");
+      const { errorHandler } = await import("../middleware/index.js");
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { (req as any).actor = { type: "board", userId: "local-board", companyIds: [companyId], source: "local_implicit", isInstanceAdmin: true }; next(); });
+      app.use("/api", agentRoutes(db)); app.use(errorHandler);
+      let firstSettled = false;
+      const stop = () => request(app).post(`/api/heartbeat-runs/${runId}/cancel`).send({});
+      const first = stop().then(response => { firstSettled = true; return response; });
+      let duplicate: ReturnType<typeof first.then> | undefined;
+      if (kind === "duplicate") {
+        await vi.waitFor(async () => expect(await fs.readFile(path.join(before.canonicalRoot, "interrupted"), "utf8")).toBe("yes"));
+        duplicate = stop().then(response => response);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        expect(firstSettled).toBe(false);
+        const [stopping] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, before.id));
+        expect(stopping.releasedAt).toBeNull();
+        await fs.writeFile(path.join(before.canonicalRoot, "release-exit"), "yes");
+      }
+      if (kind === "startup") {
+        await vi.waitFor(async () => expect(await workspaceNamespaceDrained(identity!)).toBe(true));
+        expect(firstSettled).toBe(false);
+        expect((await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, before.id)))[0].releasedAt).toBeNull();
+        releaseBootstrap();
+      }
+      const response = await first;
+      const effectPath = path.join(before.canonicalRoot, "effects");
+      const firstEffects = await fs.readFile(effectPath, "utf8").catch(() => "");
+      await new Promise(resolve => setTimeout(resolve, 80));
+      const laterEffects = await fs.readFile(effectPath, "utf8").catch(() => "");
+      expect(laterEffects).toBe(firstEffects);
+      expect(await workspaceNamespaceDrained(identity)).toBe(true);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      const [after] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, runId));
+      if (kind === "proof_failure") {
+        expect(response.status).toBe(409);
+        expect(after.state).toBe("unknown");
+        expect(after.releasedAt).toBeNull();
+        expect((await heartbeat.getRun(runId))?.resultJson?.executionCancellation).not.toMatchObject({ state: "acknowledged" });
+      } else {
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({ status: "cancelled", resultJson: { executionCancellation: { state: "acknowledged", sessionPreserved: false } } });
+        expect(after.state).toBe("released");
+        expect((await heartbeat.getRun(runId))?.resultJson?.executionCancellation).toEqual(response.body.resultJson.executionCancellation);
+        expect(after.stopReceipt?.launchId).toBe(before.launchId);
+        expect((after.stopReceipt?.stop as any)?.requestId).toBe(response.body.resultJson.executionCancellation.requestId);
+        if (kind === "startup") expect(laterEffects).toBe("");
+        else {
+          expect((after.stopReceipt?.stop as any)?.signal).toBe("SIGINT");
+          expect(await fs.readFile(path.join(before.canonicalRoot, "interrupted"), "utf8")).toBe("yes");
+          if (kind === "forced") { expect(result?.signal).toBe("SIGKILL"); expect((after.stopReceipt?.stop as any)?.forced).toBe(true); }
+          else expect(result?.exitCode).toBe(0);
+        }
+        if (duplicate) {
+          const second = await duplicate as any;
+          expect(second.status).toBe(200);
+          expect(second.body.resultJson.executionCancellation.requestId).toBe(response.body.resultJson.executionCancellation.requestId);
+          expect(await fs.readFile(path.join(before.canonicalRoot, "signals"), "utf8")).toBe("x");
+        }
+      }
+      expect(adapterExecutionControls.has(runId)).toBe(false);
+    } finally {
+      releaseBootstrap();
+      await heartbeat.cancelRun(runId).catch(() => undefined);
+      if (identity && !await workspaceNamespaceDrained(identity)) {
+        const stat = await fs.readFile(`/proc/${identity.namespacePid}/stat`, "utf8").catch(() => null);
+        if (stat && stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] === identity.namespaceStart) process.kill(identity.namespacePid, "SIGKILL");
+      }
+      await heartbeat.waitForRunExecutionDrain(runId);
+    }
+  });
+
   it.each(([
     { mode: "signal", graceful: false, failure: null },
     { mode: "graceful exit", graceful: true, failure: null },
@@ -7618,12 +7813,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           await resultRelease;
         return observedResult;
       }) as typeof mockAdapterExecute);
-      mockTerminateLocalService.mockImplementationOnce(async (...args) => {
+      if (adapterType === "codex_local") mockGuardStopConfirmation.mockImplementationOnce(async read => {
+        const proof = await read();
+        reportTerminated();
+        await terminationRelease;
+        if (failure === "termination") throw new Error("owned termination unconfirmed");
+        return proof;
+      });
+      else mockTerminateLocalService.mockImplementationOnce(async (...args) => {
         await actualSupervisor.terminateLocalService(...args);
         reportTerminated();
         await terminationRelease;
-        if (failure === "termination")
-          throw new Error("owned termination unconfirmed");
+        if (failure === "termination") throw new Error("owned termination unconfirmed");
       });
       const { runId, agentId } = await seedRunFixture({
         adapterType,
@@ -7645,11 +7846,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
         .where(eq(agents.id, agentId));
       const heartbeat = heartbeatService(db);
+      await useSupportedLifecycleWorkspace(runId);
       await heartbeat.resumeQueuedRuns();
-      const running = await waitForValue(async () =>
-        runningProcesses.get(runId),
-      );
-      expect(running?.child.pid).toBeTruthy();
+      const running = await waitForValue(async () => {
+        if (adapterType === "process") return runningProcesses.get(runId);
+        const [owner] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, runId));
+        return owner?.launchIdentity?.payloadPid ? { child: { pid: owner.launchIdentity.payloadPid } } : null;
+      });
+      expect(running?.child.pid, JSON.stringify(await heartbeat.getRun(runId).then(run => ({ status: run?.status, stage: run?.executionStage, error: run?.error, errorCode: run?.errorCode })))).toBeTruthy();
       await ready;
       const cancellation = heartbeat
         .cancelRun(runId, "Stopped by test operator")
@@ -7660,6 +7864,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       let duplicate: typeof cancellation | undefined;
       let duplicateSettled = false;
       let writeSpy: ReturnType<typeof vi.spyOn> | undefined;
+      let terminalCommitInjectionHit = false;
       let first!: Awaited<typeof cancellation>;
       let second: Awaited<typeof cancellation> | undefined;
       try {
@@ -7667,8 +7872,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(await waitForValue(async () => observedResult)).toMatchObject(
           graceful
             ? { exitCode: 0, signal: null }
-            : { exitCode: null, signal: stopSignal },
+            : adapterType === "codex_local" ? { exitCode: 130, signal: null } : { exitCode: null, signal: stopSignal },
         );
+        if (adapterType === "codex_local") {
+          const [owner] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, runId));
+          expect((owner.stopReceipt?.stop as any)?.signal).toBe("SIGINT");
+          expect(await workspaceNamespaceDrained(owner.launchIdentity as WorkspaceLaunchIdentity)).toBe(true);
+        }
         // The process utility already removed its child record on close. A new
         // service instance must still join the original cancellation owner.
         expect(runningProcesses.has(runId)).toBe(false);
@@ -7691,9 +7901,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(duplicateSettled).toBe(false);
         if (failure === "write") {
           const error = new Error("owned cancellation write unavailable");
-          writeSpy = adapterType === "codex_local"
-            ? vi.spyOn(db, "update").mockImplementationOnce(() => { throw error; })
-            : vi.spyOn(db, "transaction").mockRejectedValueOnce(error);
+          // Both paths commit cancellation through the existing transaction.
+          // Inject before that commit, not into a later wake/activity projection.
+          const transact = db.transaction.bind(db);
+          writeSpy = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback: any, options: any) => transact(async tx => {
+            const proxy = new Proxy(tx, { get(target, key) {
+              if (key === "update") return (table: unknown) => {
+                const builder = target.update(table as any);
+                return new Proxy(builder, { get(query, property) {
+                  if (property === "set") return (values: any) => {
+                    if (table === heartbeatRuns && values.status === "cancelled") { terminalCommitInjectionHit = true; throw error; }
+                    return query.set(values);
+                  };
+                  const value = Reflect.get(query, property); return typeof value === "function" ? value.bind(query) : value;
+                } });
+              };
+              const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
+            } });
+            return callback(proxy);
+          }, options)) as typeof db.transaction);
         }
       } finally {
         releaseTermination();
@@ -7701,6 +7927,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         writeSpy?.mockRestore();
         releaseResult();
       }
+      if (failure === "write") expect(terminalCommitInjectionHit).toBe(true);
       if (failure) {
         expect(first.error?.message).toContain(
           failure === "write"
@@ -7719,7 +7946,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(first.run?.status).toBe("cancelled");
         expect(second?.run?.status).toBe("cancelled");
       }
-      expect(mockTerminateLocalService).toHaveBeenCalledTimes(1);
+      expect(adapterType === "codex_local" ? mockGuardStopConfirmation : mockTerminateLocalService).toHaveBeenCalledTimes(1);
       expect(
         await db
           .select()
@@ -7768,6 +7995,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
         .where(eq(agents.id, agentId));
       const heartbeat = heartbeatService(db);
+      await useSupportedLifecycleWorkspace(runId);
       await heartbeat.resumeQueuedRuns();
       const finished = await waitForRunToSettle(heartbeat, runId, 5_000);
       expect(finished?.status).toBe(status);
@@ -7826,6 +8054,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
+    await useSupportedLifecycleWorkspace(runId);
     await heartbeat.resumeQueuedRuns();
     await ready;
     const owned = runningProcesses.get(runId);
@@ -11887,6 +12116,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
         }).where(eq(agents.id, source.agentId));
       }
+      if (mode === "native") await useSupportedLifecycleWorkspace(child.runId);
       const factory = vi.fn(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
       let release!: () => void;
       let locked: Promise<unknown> | undefined;
@@ -12187,6 +12417,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issues)
       .where(eq(issues.id, source.issueId));
+    await useSupportedLifecycleWorkspace(child.runId);
     // Real preparation output, no process/checkpoint/provider evidence. The
     // actual restart classifier must choose bootstrap_incomplete below; this
     // fixture does not claim that a missing PID proves a retired provider.

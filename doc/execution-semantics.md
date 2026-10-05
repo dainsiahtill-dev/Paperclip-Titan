@@ -1025,6 +1025,27 @@ existing retry restrictions. Retrying the original scope revalidates current
 owner, task revision, workspace/material scope and physical stop evidence and
 retains its original deadline and attempt counters.
 
+Exact retry also binds the saved employee environment selector, AI connection
+selector and safety preset, the effective workspace/project/task overlays, and
+the selected environment configuration and instance execution policy. A versioned
+server capture records the effective profile before execution; only digests are
+retained, with no secret resolution in admission previews. Wake enablement and
+unrelated UI preferences are excluded. Old runs without a qualified capture
+require a fresh remaining-work decision; current settings never become a
+retroactive source snapshot.
+
+Dispatch checks the admitted binding against current configuration and the
+actual environment selected before lease acquisition, workspace effects and
+provider invocation. Runtime-created workspace bookkeeping is normalized to its
+authorized effective configuration; changed commands or target configuration
+remain a scope change. If a host check rejects drift before entering the adapter,
+the failed successor receives the same audited suppression workflow with code
+`execution_profile_changed`. Its separate authorization reference retains the
+parent's decision without claiming that profile actually executed. A generic
+retry cannot escape that hold; the existing remaining-work action can authorize
+the new profile and budget. Active execution controls and outstanding or failed
+lease cleanup still block admission.
+
 When scope/owner changed or that deadline expired, **Authorize remaining work**
 on the run page lets an operator review the current task and owner, enter a new
 remaining-work objective, and explicitly enter additional wall time. It sends

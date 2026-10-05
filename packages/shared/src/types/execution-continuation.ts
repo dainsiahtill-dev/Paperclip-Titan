@@ -2,12 +2,14 @@
 export interface ExecutionRetryDisposition {
   version: 1;
   state: "blocked" | "resumed" | "superseded";
-  code: "heartbeat_wake_on_demand_disabled";
+  code: "heartbeat_wake_on_demand_disabled" | "execution_profile_changed";
   sourceRunId: string;
   issueId: string | null;
   agentId: string;
   issueRevision: string | null;
   sourceFingerprint: string;
+  /** Null/absent on legacy source runs; exact resume requires a captured v1 profile. */
+  executionProfileFingerprint?: string | null;
   workspaceFingerprint: string;
   scopeFingerprint: string;
   requiresExplicitResume: true;
@@ -33,6 +35,8 @@ export interface ExecutionCheckpointEnvelope {
   sourceFingerprint: string;
   issueRevision: string;
   agentId: string;
+  /** Null/absent on legacy source runs; exact resume requires a captured v1 profile. */
+  executionProfileFingerprint?: string | null;
   workspaceFingerprint: string;
   scopeFingerprint: string;
   artifactFingerprint: string;

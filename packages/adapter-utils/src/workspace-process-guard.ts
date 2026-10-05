@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import fs, { constants } from "node:fs/promises";
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { buildLocalProcessSandboxSpawnTarget } from "./local-process-sandbox.js";
@@ -12,7 +12,10 @@ export type WorkspaceLaunchIdentity = {
   launchId: string; pid: number; processGroupId: number; startedAt: string;
   namespacePid: number; namespace: string; namespaceStart: string; bootId: string;
   observerNamespace: string; observerMountNamespace: string; sourceAccess?: "ro";
+  payloadPid?: number; payloadStart?: string; payloadMountNamespace?: string;
 };
+
+export type WorkspaceStopObservation = { requestId: string | null; signal: NodeJS.Signals | null; forced: boolean };
 
 /** Host closures only. Never serialize this capability into agent config/env. */
 export interface WorkspaceProcessGuard {
@@ -23,9 +26,12 @@ export interface WorkspaceProcessGuard {
   sourceAccess?: "ro";
   beforeLaunch(): Promise<string>;
   bindLaunch(identity: WorkspaceLaunchIdentity): Promise<void>;
-  recordDrain(identity: WorkspaceLaunchIdentity): Promise<void>;
+  bindPayload?(identity: WorkspaceLaunchIdentity): Promise<void>;
+  recordDrain(identity: WorkspaceLaunchIdentity, stop?: WorkspaceStopObservation): Promise<void>;
   markUnknown(launchId: string): Promise<void>;
-  markStopping?(): Promise<void>;
+  markStopping?(launchId?: string): Promise<void>;
+  cancelBeforeSpawn?(launchId: string): Promise<void>;
+  stopPolicy?: () => { signal: NodeJS.Signals; graceMs: number; requestId?: string };
 }
 const scope = new AsyncLocalStorage<WorkspaceProcessGuard>();
 export const withWorkspaceProcessGuard = <T>(guard: WorkspaceProcessGuard, work: () => Promise<T>): Promise<T> => scope.run(guard, work);
@@ -72,6 +78,7 @@ export async function runGuardedWorkspaceProcess(
   const anchor = await fs.open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   let target: Awaited<ReturnType<typeof buildLocalProcessSandboxSpawnTarget>> | undefined;
   let launchId: string | undefined;
+  let spawned = false;
   const privateAnchors: Array<{ root: string; handle: Awaited<ReturnType<typeof fs.open>> }> = [];
   try {
     const stat = await anchor.stat();
@@ -126,14 +133,18 @@ export async function runGuardedWorkspaceProcess(
     // accepts one explicit host nonce; it consumes only its line, preserving
     // the provider's remaining stdin. It performs no source/runtime writes.
     const acknowledgement = randomUUID();
+    const bootstrapScript = 'IFS= read -r ack && [ "$ack" = "$1" ] || exit 125; shift; exec "$@"';
     const payload = target.args.indexOf("--");
     if (payload < 0) throw new Error("Protected process payload boundary missing");
-    target.args.splice(payload + 1, 0, "/bin/sh", "-c", 'IFS= read -r ack && [ "$ack" = "$1" ] || exit 125; shift; exec "$@"', "paperclip-launch-gate", acknowledgement);
+    target.args.splice(payload + 1, 0, "/bin/sh", "-c", bootstrapScript, "paperclip-launch-gate", acknowledgement);
     launchId = await guard.beforeLaunch();
     signal?.throwIfAborted();
+    const observer = { bootId: (await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
+      namespace: await fs.readlink("/proc/self/ns/pid"), mountNamespace: await fs.readlink("/proc/self/ns/mnt") };
     const startedAt = new Date().toISOString();
     const child = spawn(target.command, target.args, { cwd, env: { ...env, ...target.env },
       detached: true, stdio: ["pipe", "pipe", "pipe", "pipe", anchor.fd, "pipe", ...privateAnchors.map(entry => entry.handle.fd)] });
+    spawned = true;
     const gate = child.stdio[3] as Duplex;
     const status = (child.stdio as unknown as Duplex[])[5]!;
     let stdout = "", stderr = "", statusText = "", timedOut = false;
@@ -141,23 +152,96 @@ export async function runGuardedWorkspaceProcess(
     let identity: WorkspaceLaunchIdentity | undefined;
     let namespacePid: number | undefined;
     let namespaceStart: string | undefined;
+    let namespaceIdentity: string | undefined;
+    let permissionGranted = false;
+    let processBound = false;
+    const stopObservation: WorkspaceStopObservation = { requestId: null, signal: null, forced: false };
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
     let committing: Promise<void> | undefined;
     let logChain = Promise.resolve();
     let stopping: Promise<void> | undefined;
     let terminalTimer: ReturnType<typeof setTimeout> | undefined;
     let terminalCleanup = false;
-    const stop = () => {
-      stopping ??= guard.markStopping?.().catch(error => { launchError ??= error; }) ?? Promise.resolve();
-      // During --block-fd setup bwrap has not installed every parent-death
-      // handler yet. Kill the namespace init before closing any gate fd.
-      if (namespacePid && namespaceStart) { try {
+    const signalNamespace = (requested: NodeJS.Signals) => {
+      if (!namespacePid || !namespaceStart || !namespaceIdentity) return false;
+      try {
+        if (readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== observer.bootId ||
+          readlinkSync("/proc/self/ns/pid") !== observer.namespace || readlinkSync("/proc/self/ns/mnt") !== observer.mountNamespace ||
+          readlinkSync(`/proc/${namespacePid}/ns/pid`) !== namespaceIdentity || namespaceIdentity === observer.namespace) throw new Error("Protected stop namespace identity changed");
         const stat = readFileSync(`/proc/${namespacePid}/stat`, "utf8");
-        if (stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] === namespaceStart) process.kill(namespacePid, "SIGKILL");
-      } catch (error) { if (!["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) launchError ??= error; } }
+        if (stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] !== namespaceStart) throw new Error("Protected stop process identity changed");
+        process.kill(namespacePid, requested);
+        return true;
+      } catch (error) {
+        if (!["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      }
+    };
+    const signalPayload = (requested: NodeJS.Signals) => {
+      if (!identity?.payloadPid || !identity.payloadStart || !identity.payloadMountNamespace)
+        throw new Error("Protected payload identity is unavailable for graceful stop");
+      try {
+        if (readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== identity.bootId ||
+          readlinkSync("/proc/self/ns/pid") !== identity.observerNamespace || readlinkSync("/proc/self/ns/mnt") !== identity.observerMountNamespace ||
+          readlinkSync(`/proc/${identity.payloadPid}/ns/pid`) !== identity.namespace ||
+          readlinkSync(`/proc/${identity.payloadPid}/ns/mnt`) !== identity.payloadMountNamespace) throw new Error("Protected payload namespace changed");
+        const stat = readFileSync(`/proc/${identity.payloadPid}/stat`, "utf8");
+        const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        if (fields[19] !== identity.payloadStart || Number(fields[1]) !== identity.namespacePid) throw new Error("Protected payload process identity changed");
+        process.kill(identity.payloadPid, requested);
+        return true;
+      } catch (error) {
+        if (!["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      }
+    };
+    const bindBootstrapPayload = async (namespace: WorkspaceLaunchIdentity) => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        signal?.throwIfAborted();
+        const children = (await fs.readFile(`/proc/${namespace.namespacePid}/task/${namespace.namespacePid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean);
+        if (children.length > 1) throw new Error("Protected bootstrap payload is ambiguous");
+        if (children.length === 1) {
+          const pid = Number(children[0]);
+          const argv = (await fs.readFile(`/proc/${pid}/cmdline`)).toString().split("\0");
+          if (argv[0] === "/bin/sh" && argv[1] === "-c" && argv[2] === bootstrapScript && argv[3] === "paperclip-launch-gate" && argv[4] === acknowledgement) {
+            const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+            const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+            if (Number(fields[1]) !== namespace.namespacePid || await fs.readlink(`/proc/${pid}/ns/pid`) !== namespace.namespace)
+              throw new Error("Protected bootstrap payload binding changed");
+            return { ...namespace, payloadPid: pid, payloadStart: fields[19]!, payloadMountNamespace: await fs.readlink(`/proc/${pid}/ns/mnt`) };
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      throw new Error("Protected bootstrap payload did not bind before ACK");
+    };
+    const forceStop = () => {
+      try { if (signalNamespace("SIGKILL")) stopObservation.forced = true; } catch (error) { launchError ??= error; }
       child.kill("SIGKILL");
     };
+    const stop = (force = false) => {
+      if (force) {
+        if (forceTimer) clearTimeout(forceTimer);
+        forceStop();
+      }
+      if (stopping) return;
+      if (signal?.aborted) stopObservation.requestId = guard.stopPolicy?.().requestId ?? null;
+      stopping = (async () => {
+        await guard.markStopping?.(launchId);
+        if (force || !permissionGranted || !guard.stopPolicy) { forceStop(); return; }
+        const policy = guard.stopPolicy();
+        if (signalPayload(policy.signal)) stopObservation.signal = policy.signal;
+        const graceMs = Number.isFinite(policy.graceMs) ? Math.max(0, policy.graceMs) : 0;
+        if (!graceMs) forceStop();
+        else forceTimer = setTimeout(() => {
+          // Revalidate the same durable generation/launch immediately before escalation.
+          void (async () => { await guard.markStopping?.(launchId); forceStop(); })()
+            .catch(error => { launchError ??= error; forceStop(); });
+        }, graceMs);
+      })().catch(error => { launchError ??= error; forceStop(); });
+    };
+    const abort = () => stop();
     const timeout = opts.timeoutSec > 0 ? setTimeout(() => { timedOut = true; stop(); }, opts.timeoutSec * 1000) : null;
-    signal?.addEventListener("abort", stop, { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
     const log = (stream: "stdout" | "stderr", chunk: unknown) => {
       if (stream === "stdout") stdout = (stdout + String(chunk)).slice(-4_000_000);
       else stderr = (stderr + String(chunk)).slice(-4_000_000);
@@ -182,7 +266,7 @@ export async function runGuardedWorkspaceProcess(
         let info: Record<string, unknown>; try { info = JSON.parse(line); } catch { continue; }
         if (typeof info["child-pid"] !== "number" || committing) continue;
         namespacePid = info["child-pid"] as number;
-        try { const stat = readFileSync(`/proc/${namespacePid}/stat`, "utf8"); namespaceStart = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]; }
+        try { const stat = readFileSync(`/proc/${namespacePid}/stat`, "utf8"); namespaceStart = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]; namespaceIdentity = readlinkSync(`/proc/${namespacePid}/ns/pid`); }
         catch (error) { launchError = error; stop(); continue; }
         committing = (async () => {
           identity = { ...(guard.sourceAccess === "ro" ? { sourceAccess: "ro" as const } : {}), launchId: launchId!, pid: child.pid!, processGroupId: child.pid!, startedAt,
@@ -192,6 +276,12 @@ export async function runGuardedWorkspaceProcess(
           if (identity.namespace === await fs.readlink("/proc/self/ns/pid")) throw new Error("Protected process namespace was not isolated");
           await guard.bindLaunch(identity);
           await opts.onSpawn?.({ pid: child.pid!, processGroupId: child.pid!, startedAt });
+          processBound = true;
+          // Open only the outer setup gate. The fixed bootstrap still cannot
+          // exec provider argv until its exact kernel identity is host-bound.
+          gate.write("1");
+          identity = await bindBootstrapPayload(identity);
+          await guard.bindPayload?.(identity);
           const current = await fs.stat(guard.root);
           if (String(current.dev) !== guard.device || String(current.ino) !== guard.inode) throw new Error("Protected workspace root changed before launch ACK");
           for (const entry of privateAnchors) {
@@ -199,30 +289,32 @@ export async function runGuardedWorkspaceProcess(
             if (pinned.dev !== selected.dev || pinned.ino !== selected.ino) throw new Error("Protected runtime root changed before launch ACK");
           }
           signal?.throwIfAborted();
-          gate.write("1");
+          permissionGranted = true;
           child.stdin?.end(`${acknowledgement}\n${opts.stdin ?? ""}`);
         })().catch(error => { launchError = error; stop(); });
       }
     });
     if (signal?.aborted) stop();
-    child.on("exit", () => { stop(); gate.destroy(); child.stdin?.destroy(); });
+    child.on("exit", () => { stop(true); gate.destroy(); child.stdin?.destroy(); });
     const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.on("error", reject); child.on("close", (code, stoppedSignal) => resolve({ code, signal: stoppedSignal }));
-    }).finally(() => { if (timeout) clearTimeout(timeout); if (terminalTimer) clearTimeout(terminalTimer); signal?.removeEventListener("abort", stop); });
+    }).finally(() => { if (timeout) clearTimeout(timeout); if (terminalTimer) clearTimeout(terminalTimer); if (forceTimer) clearTimeout(forceTimer); signal?.removeEventListener("abort", abort); });
     await committing;
     await stopping;
     await logChain;
-    if (launchError) throw launchError;
+    if (launchError && !(signal?.aborted && launchError === signal.reason && identity && processBound)) throw launchError;
     if (!identity) throw new Error(`Protected process did not establish a namespace identity: ${stderr}`);
     if (!await workspaceNamespaceDrained(identity)) throw new Error("Protected process namespace drain unverified");
-    await guard.recordDrain(identity);
+    await guard.recordDrain(identity, stopObservation);
     return { exitCode: result.code, signal: result.signal, timedOut, stdout, stderr, pid: child.pid ?? null, startedAt,
       ...(terminalCleanup ? { terminalResultCleanup: { kind: "terminal_result_cleanup" as const, stopped: true as const,
         stopReason: "unmanaged_background_task_stopped" as const, reason: "unmanaged background task stopped; no durable live path" as const,
         terminalResultSeen: true, signal: "SIGKILL" as const, forceKilled: true } } : {}),
     };
   } catch (error) {
-    if (launchId) await guard.markUnknown(launchId);
+    if (launchId && !spawned && signal?.aborted && error === signal.reason && guard.cancelBeforeSpawn)
+      await guard.cancelBeforeSpawn(launchId);
+    else if (launchId) await guard.markUnknown(launchId);
     throw error;
   } finally { await anchor.close(); await Promise.all(privateAnchors.map(entry => entry.handle.close())); await target?.cleanup?.(); }
 }

@@ -1,3 +1,5 @@
+import { nativeSha256 } from "./native-runtime/canonical.js";
+import { assertExecutionProfileDispatch, executionEnvironmentFingerprint, executionInstanceProfileFingerprint, readExecutionProfileBinding, retainExecutionProfileBinding } from "./execution-profile-binding.js";
 import { enforceAgentSafetyPreset, resolveAgentPresetWorkspaceConcurrency } from "@paperclipai/shared";
 import { preflightProfile, freezeGovernedStdioProfile } from "./agent-preflight-profile.js";
 import { compareQueuedCandidates } from "./queued-run-fairness.js";
@@ -15626,7 +15628,8 @@ export function heartbeatService(
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "issue_execution_lock_changed"
-            | "heartbeat_wake_on_demand_disabled";
+            | "heartbeat_wake_on_demand_disabled"
+            | "execution_profile_changed";
           issueId: string | null;
           details: Record<string, unknown>;
         };
@@ -20303,6 +20306,7 @@ export function heartbeatService(
     }
 
     let legacyAdapterEntered = false;
+    let guardedStopProofFailed = false;
     const initialExecutionRun = await getRun(runId);
     if (!initialExecutionRun) return;
     let run = initialExecutionRun;
@@ -20407,6 +20411,15 @@ export function heartbeatService(
     const executionControl = createAdapterExecutionControl();
     const physicalOwnership = workspaceWriteOwnershipService(db);
     let physicalWorkspaceOwner: Parameters<typeof physicalOwnership.guard>[0] | null = null;
+    let hostGuardActivated = false;
+    const guardedAdapterDetails = (value: Record<string, unknown> | null | undefined) => {
+      if (!physicalWorkspaceOwner || !hostGuardActivated || !value) return value;
+      const safe = { ...value };
+      // Stop proof is a host fact. Neither a normal return nor an error payload
+      // from an adapter may replace the current host cancellation settlement.
+      delete safe.executionCancellation;
+      return safe;
+    };
     let resourceDeadline: ReturnType<typeof armIssueRunDeadline> | null = null;
     let resourceStopCode: string | null = null;
     const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
@@ -21539,6 +21552,37 @@ export function heartbeatService(
         ...workspaceManagedConfig,
         ...(quotaFallbackPin?.usingBackup ? quotaBackupSharedOverrides(issueAssigneeOverrides?.adapterConfig) : issueAssigneeOverrides?.adapterConfig ?? {}),
       });
+      // The checkpoint is admitted before environment selection. Bind the actual
+      // selected row and final saved-policy overlays before any workspace/provider effects.
+      const profileIssue = issueId ? (await db.select().from(issues).where(and(eq(issues.companyId, agent.companyId), eq(issues.id, issueId))))[0] ?? null : null;
+      const dispatchProfile = await readExecutionProfileBinding(db, profileIssue, agent);
+      const authorizedProfile = executionContinuation?.checkpoint?.executionProfileFingerprint;
+      const actualInstanceFingerprint = executionInstanceProfileFingerprint({ ...resolvedInstanceSettings,
+        experimental: { ...experimentalInstanceSettings, enableManagedSandboxOnly: managedSandboxOnly,
+          enableNativeRunner: resolvedInstanceSettings.experimental.enableNativeRunner } });
+      const captureQualified = dispatchProfile.instanceFingerprint === actualInstanceFingerprint &&
+        dispatchProfile.environmentFingerprint === executionEnvironmentFingerprint(selectedEnvironmentForConfig, selectedEnvironmentId) &&
+        dispatchProfile.adapterConfigFingerprint === nativeSha256(mergedConfig);
+      const assertRetryProfile = async (environment = selectedEnvironmentForConfig) => {
+        if (!authorizedProfile) {
+          // Ordinary runs retain existing admission semantics, but a captured
+          // source must still describe the row actually used for acquisition.
+          if (captureQualified && dispatchProfile.environmentFingerprint !== executionEnvironmentFingerprint(environment, selectedEnvironmentId))
+            throw new Error("execution_profile_capture_changed");
+          return;
+        }
+        if (!captureQualified || dispatchProfile.fingerprint !== authorizedProfile) throw new Error("continuation_execution_profile_changed");
+        await assertExecutionProfileDispatch(db, { companyId: agent.companyId, agentId: agent.id, issueId,
+          expected: dispatchProfile, environment, selectedEnvironmentId,
+          effectiveAdapterConfig: mergedConfig });
+      };
+      await assertRetryProfile();
+      // Unsupported historical/quota recovery inputs stay unqualified, rather
+      // than relabelling the current saved profile as an old effective input.
+      if (!persistedNativeExecutionInput && captureQualified) {
+        await retainExecutionProfileBinding(db, run, dispatchProfile);
+        run = { ...run, runnerProfileJson: { ...parseObject(run.runnerProfileJson), executionProfileBinding: dispatchProfile } };
+      }
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
         selectedEnvironmentId,
@@ -21791,6 +21835,7 @@ export function heartbeatService(
             ),
           ),
         );
+      await assertRetryProfile();
       const {
         selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
         workspace: resolvedWorkspace,
@@ -22006,6 +22051,7 @@ export function heartbeatService(
           agentId: agent.id,
         },
       );
+      await assertRetryProfile();
       const {
         executionWorkspace,
         reusedExecutionWorkspace,
@@ -22433,7 +22479,9 @@ export function heartbeatService(
       >;
       try {
         await controllerLease.assertOwned();
+        await assertRetryProfile();
         acquiredEnvironment = await envOrchestrator.acquireForRun({
+          beforeAcquire: assertRetryProfile,
           companyId: agent.companyId,
           selectedEnvironmentId,
           localEnvironmentId: localEnvironment.id,
@@ -22519,6 +22567,7 @@ export function heartbeatService(
         ReturnType<typeof envOrchestrator.realizeForRun>
       >;
       try {
+        await assertRetryProfile();
         realizationResult = await envOrchestrator.realizeForRun({
           environment: selectedEnvironment,
           lease: activeEnvironmentLease.lease,
@@ -22608,6 +22657,7 @@ export function heartbeatService(
           (!isResolvedInteractionContinuationWakeContext(context) &&
             run.scheduledRetryReason !== "native_safe_replacement")
         ) {
+          await assertRetryProfile();
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
         await options.beforeResolvedInteractionContinuationDispatchCheck?.({
@@ -22619,6 +22669,7 @@ export function heartbeatService(
           runId: run.id,
           issueId,
         });
+        await assertRetryProfile();
         const gate = await runDispatch.dispatchResolvedInteractionIfCurrent({
           runId: run.id,
           companyId: run.companyId,
@@ -24107,6 +24158,12 @@ export function heartbeatService(
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
                 then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch')
                 else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson} ? 'retryExecutionProfileAuthorization'
+                then jsonb_build_object('retryExecutionProfileAuthorization', ${heartbeatRuns.runnerProfileJson}->'retryExecutionProfileAuthorization')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson} ? 'executionProfileBinding'
+                then jsonb_build_object('executionProfileBinding', ${heartbeatRuns.runnerProfileJson}->'executionProfileBinding')
+                else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'quotaFallback'
                 then jsonb_build_object('quotaFallback', ${heartbeatRuns.runnerProfileJson}->'quotaFallback')
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
@@ -24489,6 +24546,7 @@ export function heartbeatService(
               }
             }
             try {
+              await assertRetryProfile();
               const guardedDispatch =
                 await dispatchResolvedInteractionContinuationWithAtomicGate(
                   (markDispatchStarted) =>
@@ -24723,7 +24781,28 @@ export function heartbeatService(
                   const privateRoots = [path.join(instanceRoot, "companies", agent.companyId, "codex-home"),
                     path.join(instanceRoot, "companies", agent.companyId, "agents", agent.id, "codex-home"),
                     ...(runScratch ? [runScratch.dir] : []), ...(managedHome ? [managedHome] : [])];
-                  const workspaceProcessGuard = physicalWorkspaceOwner ? physicalOwnership.guard(physicalWorkspaceOwner, executionControl.controller.signal, privateRoots) : undefined;
+                  const baseWorkspaceProcessGuard = physicalWorkspaceOwner ? physicalOwnership.guard(physicalWorkspaceOwner, executionControl.controller.signal, privateRoots, () => ({
+                    signal: agent.adapterType === "codex_local" ? "SIGINT" : "SIGTERM",
+                    requestId: executionControl.stopRequestId ?? executionControl.id,
+                    graceMs: cancellationTerminationGraceMs(asNumber(runtimeConfig.graceSec, 15), executionControl.terminationGraceMs),
+                  })) : undefined;
+                  const workspaceProcessGuard = baseWorkspaceProcessGuard ? { ...baseWorkspaceProcessGuard, beforeLaunch: async () => {
+                    // Activation is a monotonic host fact, independent of adapter
+                    // JSON or optional ACP readiness callbacks. No child exists yet.
+                    hostGuardActivated = true;
+                    const owner = physicalWorkspaceOwner!;
+                    executionControl.guardedStop ??= requestId => physicalOwnership.waitForStopped(owner, requestId, () => executionControl.controller.signal.aborted)
+                      .catch(error => {
+                        if (error instanceof Error && error.message === "workspace_write_stop_unverified")
+                          throw conflict("Execution termination could not be verified. Its workspace remains held.");
+                        throw error;
+                      });
+                    await registerAdapterExecutionControl(run.id, executionControl);
+                    const current = await getRun(run.id);
+                    if (!current || isHeartbeatRunTerminalStatus(current.status)) executionControl.controller.abort(new Error("Run stopped before protected startup"));
+                    executionControl.controller.signal.throwIfAborted();
+                    return baseWorkspaceProcessGuard.beforeLaunch();
+                  } } : undefined;
                   const executeAdapter = () => adapter.execute({
                     workspaceProcessGuard,
                     runId: run.id,
@@ -24817,6 +24896,15 @@ export function heartbeatService(
               );
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
+          }
+          if (physicalWorkspaceOwner && hostGuardActivated) adapterResult = { ...adapterResult, resultJson: guardedAdapterDetails(adapterResult.resultJson),
+            ...(executionControl.controller.signal.aborted ? { clearSession: true } : {}) };
+          if (physicalWorkspaceOwner && hostGuardActivated && executionControl.controller.signal.aborted && !executionControl.stopRequestId && !failedProcessRunCancellations.get(run.id)?.failed) {
+            const stopProof = await physicalOwnership.confirmStopped(physicalWorkspaceOwner, executionControl.stopRequestId ?? executionControl.id)
+              .catch(error => { guardedStopProofFailed = true; throw error; });
+            adapterResult = { ...adapterResult, clearSession: true, resultJson: { ...parseObject(adapterResult.resultJson),
+              executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+                ...stopProof, sessionPreserved: false } } };
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
@@ -25114,6 +25202,8 @@ export function heartbeatService(
         const latestRun = await getRun(run.id);
         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
           outcome = latestRun.status;
+        } else if (processCancellation?.failed) {
+          outcome = "failed";
         } else if (executionControl.controller.signal.aborted) {
           outcome = "cancelled";
         } else if (adapterResult.nativeFinalization) {
@@ -25951,7 +26041,9 @@ export function heartbeatService(
 
         const stoppedDuringFailure = executionControl.controller.signal.aborted;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
-        const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+        const guardedStopProof = physicalWorkspaceOwner && hostGuardActivated && stoppedDuringFailure && !executionControl.stopRequestId && !guardedStopProofFailed && !failedProcessRunCancellations.get(run.id)?.failed
+          ? await physicalOwnership.confirmStopped(physicalWorkspaceOwner, executionControl.stopRequestId ?? executionControl.id).catch(() => null) : null;
+        const failureOutcome = failedProcessRunCancellations.get(run.id)?.failed ? "failed" : stoppedDuringFailure ? "cancelled" : "failed";
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
           error: message,
           errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
@@ -25961,9 +26053,10 @@ export function heartbeatService(
             errorMessage: message,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
-              ...(workspaceValidationFailure?.resultJson ??
-                configurationIncompleteFailure?.resultJson ??
-                {}),
+              ...(guardedStopProof ? { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+                ...guardedStopProof, sessionPreserved: false } } : {}),
+              ...guardedAdapterDetails(workspaceValidationFailure?.resultJson ??
+                configurationIncompleteFailure?.resultJson ?? {}),
               ...(!legacyAdapterEntered && run.runtimeMode !== "native"
                 ? {
                     executionRecovery: {
@@ -26010,6 +26103,8 @@ export function heartbeatService(
             level: "error",
             message,
           });
+          if (!legacyAdapterEntered && !nativeDispatchStarted && message === "continuation_execution_profile_changed")
+            await persistRetrySuppression(db, failedRun, "Execution target/profile changed before provider dispatch; a new explicit decision is required.", true);
           const livenessRun =
             (await classifyAndPersistRunLiveness(failedRun)) ?? failedRun;
           try {
@@ -26202,7 +26297,7 @@ export function heartbeatService(
               )
             : null);
         const setupFailureResultJson = {
-          ...setupFailureDetails,
+          ...guardedAdapterDetails(setupFailureDetails),
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         };
         const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
@@ -26250,6 +26345,8 @@ export function heartbeatService(
             level: "error",
             message,
           }).catch(() => undefined);
+          if (!legacyAdapterEntered && !nativeDispatchStarted && message === "continuation_execution_profile_changed")
+            await persistRetrySuppression(db, failedRun, "Execution target/profile changed before provider dispatch; a new explicit decision is required.", true);
           const livenessRun = (await classifyAndPersistRunLiveness(
             failedRun,
           ).catch(() => failedRun)) ?? failedRun;
@@ -29326,8 +29423,7 @@ export function heartbeatService(
       let releaseProcessCancellation: (() => void) | undefined;
       const processCancellationSettlement =
         run.runtimeMode !== "native" &&
-        !control &&
-        running
+        ((!control && running) || control?.guardedStop)
           ? {
               settled: new Promise<void>((resolve) => {
                 releaseProcessCancellation = resolve;
@@ -29344,6 +29440,7 @@ export function heartbeatService(
         );
       }
       const cancellation = await (async () => {
+        let guardedStopProof: Record<string, unknown> | null = null;
         try {
           if (control) {
             await db
@@ -29371,7 +29468,10 @@ export function heartbeatService(
                   eq(heartbeatRuns.status, "running"),
                 ),
               );
+            control.stopRequestId ??= randomUUID();
+            control.terminationGraceMs ??= options.terminationGraceMs;
             control.controller.abort(new Error(reason));
+            if (control.guardedStop) guardedStopProof = await control.guardedStop(control.stopRequestId!);
           }
           let terminationSettled = false;
           try {
@@ -29404,7 +29504,7 @@ export function heartbeatService(
             }
           }
 
-          if (control) {
+          if (control && !control.guardedStop) {
             await waitForAdapterStop(control.settled);
             const stopped = await getRun(run.id);
             if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
@@ -29460,6 +29560,8 @@ export function heartbeatService(
                             errorCode, errorMessage: reason,
                           })
                         : {}),
+                      ...(guardedStopProof ? { executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString(),
+                        ...guardedStopProof, sessionPreserved: false } } : {}),
                       // The native cancellation helper may have advanced a durable
                       // pending intent to its acknowledged state after `run` was
                       // first read. Never let that stale snapshot overwrite the

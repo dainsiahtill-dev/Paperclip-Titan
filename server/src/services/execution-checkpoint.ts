@@ -8,13 +8,15 @@ import { nativeSha256 } from "./native-runtime/canonical.js";
 
 export async function buildExecutionCheckpoint(db: Db, input: { source: typeof heartbeatRuns.$inferSelect;
   issue: typeof issues.$inferSelect; agentId: string; completedActions: NonNullable<ExecutionContinuationEnvelope["completedActions"]>;
-  authorizedScope?: { workspaceFingerprint: string; scopeFingerprint: string; requestId: string; maxRunSeconds: number } }): Promise<ExecutionCheckpointEnvelope> {
+  authorizedScope?: { workspaceFingerprint: string; scopeFingerprint: string; requestId: string; maxRunSeconds: number; executionProfileFingerprint: string } }): Promise<ExecutionCheckpointEnvelope> {
   const { source, issue } = input;
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, issue.companyId), eq(agents.id, input.agentId)));
   if (!agent) throw new Error("continuation_task_ownership_changed");
   const scope = await retryScopeFingerprints(db, issue, agent);
   const disposition = await readVerifiedRetryDisposition(db, source);
   const expectedScope = input.authorizedScope ?? disposition;
+  if (expectedScope && (!expectedScope.executionProfileFingerprint || expectedScope.executionProfileFingerprint !== scope.executionProfileFingerprint))
+    throw new Error("continuation_execution_profile_changed");
   if (expectedScope && (expectedScope.workspaceFingerprint !== scope.workspaceFingerprint || expectedScope.scopeFingerprint !== scope.scopeFingerprint ||
     (!input.authorizedScope && disposition?.sourceFingerprint !== retrySourceFingerprint(source))))
     throw new Error("continuation_checkpoint_scope_changed");
@@ -32,7 +34,7 @@ export async function buildExecutionCheckpoint(db: Db, input: { source: typeof h
   const deadline = source.contextSnapshot?.resourceDeadline as { deadlineAt?: unknown } | undefined;
   const sourceDeadlineAt = typeof deadline?.deadlineAt === "string" && Number.isFinite(Date.parse(deadline.deadlineAt)) ? deadline.deadlineAt : null;
   return { version: 1, sourceRunId: source.id, sourceFingerprint: retrySourceFingerprint(source), issueRevision: issue.updatedAt.toISOString(),
-    agentId: agent.id, ...scope, artifactFingerprint: nativeSha256(materials), materials,
+    agentId: agent.id, ...scope, executionProfileFingerprint: expectedScope?.executionProfileFingerprint ?? undefined, artifactFingerprint: nativeSha256(materials), materials,
     // API effects and command exits preserve completed work. Neither certifies engineering acceptance or stage completion.
     stage: "residual", stageCertification: "unverified", pendingStages: ["implementation", "verification", "report"],
     nextAction: "inspect_existing_work_then_complete_pending_stages",

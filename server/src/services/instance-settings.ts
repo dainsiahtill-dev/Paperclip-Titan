@@ -492,6 +492,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
+    /** Admission previews must not initialize settings or provision an environment. */
+    readExecutionSettings: async (lock = false) => {
+      const query = db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY));
+      const [row] = await (lock ? query.for("share") : query);
+      return { defaultEnvironmentId: row?.defaultEnvironmentId ?? null,
+        general: toGeneralView(row?.general), experimental: toExperimentalView(row?.experimental) };
+    },
+
     update: async (
       patch: PatchInstanceSettings,
       writeOptions?: { db?: InstanceSettingsWriteDb },

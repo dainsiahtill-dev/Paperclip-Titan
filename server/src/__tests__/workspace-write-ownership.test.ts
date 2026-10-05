@@ -126,6 +126,14 @@ it("reuses one durable private-home reservation for sequential contained launche
     expect(await fs.readFile(effects, "utf8").catch(() => "")).toBe(launches.length === 0 ? "" : "first");
     await bind(identity); launches.push(identity);
   };
+  const bindPayload = guard.bindPayload!;
+  guard.bindPayload = async identity => {
+    expect(await fs.readFile(effects, "utf8").catch(() => "")).toBe(launches.length === 1 ? "" : "first");
+    expect(identity).toMatchObject(launches[launches.length - 1]!);
+    expect(identity.payloadPid).toBeGreaterThan(0);
+    await bindPayload(identity);
+    launches[launches.length - 1] = identity;
+  };
   guard.recordDrain = async identity => { await drain(identity); drains.push(identity); };
   const options = { cwd, env: { PRIVATE_HOME: home }, timeoutSec: 2, graceSec: 1, onLog: async () => {} };
   const first = await withWorkspaceProcessGuard(guard, () => runChildProcess("private-first", "/bin/sh", ["-c", 'printf first >> "$PRIVATE_HOME/effects"'], options));

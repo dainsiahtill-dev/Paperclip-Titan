@@ -17,6 +17,8 @@ import {
   companySkills,
   createDb,
   environmentLeases,
+  environments,
+  instanceSettings,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -32,6 +34,34 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { issueRecoveryActionReadModelSchema } from "../../../packages/shared/src/validators/issue.js";
+
+const profileDispatchHooks = vi.hoisted(() => ({ afterCheckpoint: null as null | (() => Promise<void>), afterAcquire: null as null | (() => Promise<void>), beforeAcquire: null as null | (() => Promise<void>) }));
+vi.mock("../services/execution-checkpoint.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/execution-checkpoint.js")>();
+  return { ...actual, buildExecutionCheckpoint: async (...args: Parameters<typeof actual.buildExecutionCheckpoint>) => {
+    const result = await actual.buildExecutionCheckpoint(...args);
+    const hook = profileDispatchHooks.afterCheckpoint;
+    profileDispatchHooks.afterCheckpoint = null;
+    await hook?.();
+    return result;
+  } };
+});
+vi.mock("../services/environment-run-orchestrator.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/environment-run-orchestrator.js")>();
+  return { ...actual, environmentRunOrchestrator: (...args: Parameters<typeof actual.environmentRunOrchestrator>) => {
+    const service = actual.environmentRunOrchestrator(...args);
+    return { ...service, acquireForRun: async (...input: Parameters<typeof service.acquireForRun>) => {
+      const before = profileDispatchHooks.beforeAcquire;
+      profileDispatchHooks.beforeAcquire = null;
+      await before?.();
+      const result = await service.acquireForRun(...input);
+      const hook = profileDispatchHooks.afterAcquire;
+      profileDispatchHooks.afterAcquire = null;
+      await hook?.();
+      return result;
+    } };
+  } };
+});
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -147,8 +177,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     // a late write races the deletes and can deadlock or break a foreign key.
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await cleanupRetryFixture();
+    await db.update(instanceSettings).set({ defaultEnvironmentId: null });
+    await db.update(environments).set({ config: {} }).where(eq(environments.driver, "local"));
     vi.clearAllMocks();
     suppressedRetryPhysicalInvocations = 0;
+    profileDispatchHooks.afterCheckpoint = null;
+    profileDispatchHooks.afterAcquire = null;
+    profileDispatchHooks.beforeAcquire = null;
   });
 
   afterAll(async () => {
@@ -326,7 +361,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       permissions: {},
     });
 
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const [task] = await db.insert(issues).values({ companyId, title: "Observe provider quota", status: "in_progress", assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { useProjectWorkspace: false } }).returning();
+    const run = await heartbeat.invoke(agentId, "on_demand", { issueId: task.id }, "manual");
     expect(run).not.toBeNull();
 
     const failedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -654,6 +691,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   it("preserves another active recovery incident while recording source suppression", async () => {
     const { companyId, agentId, issueId, runId } = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    await captureFixtureProfile({ companyId, agentId, issueId, runId });
     const [existing] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "stranded_assigned_issue",
       ownerType: "board", cause: "legacy_execution_requires_reconciliation", fingerprint: "other-source", evidence: { retained: true }, nextAction: "Inspect other incident" }).returning();
     await heartbeat.scheduleBoundedRetry(runId, { retryReason: MAX_TURN_CONTINUATION_RETRY_REASON });
@@ -665,7 +703,17 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       payload: { issueId }, requestedByActorType: "user", requestedByActorId: "local-board" })).rejects.toThrow("Another recovery incident");
   });
 
-  async function seedSuppressedRetry(input?: { deadlineAt?: string; attempt?: number; status?: string }) {
+  async function captureFixtureProfile(fixture: { companyId: string; agentId: string; issueId: string; runId: string }) {
+    const { environmentService } = await import("../services/environments.js");
+    await environmentService(db).ensureLocalEnvironment(fixture.companyId);
+    const { readExecutionProfileBinding } = await import("../services/execution-profile-binding.js");
+    const [profileAgent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    const [profileIssue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    const executionProfileBinding = await readExecutionProfileBinding(db, profileIssue, profileAgent);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { executionProfileBinding } }).where(eq(heartbeatRuns.id, fixture.runId));
+  }
+
+  async function seedSuppressedRetry(input?: { deadlineAt?: string; attempt?: number; status?: string; sourceEnvironmentId?: string; unstamped?: boolean; project?: boolean }) {
     const fixture = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
     await db.update(agents).set({ adapterType: SUPPRESSED_RETRY_TEST_ADAPTER }).where(eq(agents.id, fixture.agentId));
     await db.update(heartbeatRuns).set({ status: input?.status ?? "timed_out", error: "Original timeout",
@@ -674,6 +722,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       conversationContinuation: "continue_conversation_v1", artifacts: ["kept"],
       apiToolReceipts: { saved: { state: "completed", operationId: "save_document", result: { documentId: "kept" } } },
     } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { useProjectWorkspace: false } }).where(eq(issues.id, fixture.issueId));
+    const { environmentService } = await import("../services/environments.js");
+    await environmentService(db).ensureLocalEnvironment(fixture.companyId);
+    if (input?.sourceEnvironmentId) await db.update(agents).set({ defaultEnvironmentId: input.sourceEnvironmentId }).where(eq(agents.id, fixture.agentId));
+    if (input?.project) {
+      const [project] = await db.insert(projects).values({ companyId: fixture.companyId, name: "Profile target project", status: "in_progress" }).returning();
+      await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, fixture.issueId));
+    }
+    if (!input?.unstamped) await captureFixtureProfile(fixture);
     await heartbeat.scheduleBoundedRetry(fixture.runId);
     await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, fixture.agentId));
     return fixture;
@@ -689,6 +746,187 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     app.use(errorHandler);
     return app;
   }
+
+  it.each(["checkpoint", "acquired_environment"])("rejects post-admission profile drift after %s before invoking the adapter", async phase => {
+    const { companyId, agentId, runId } = await seedSuppressedRetry();
+    let changed = false;
+    const drift = async () => {
+      changed = true;
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true }, safetyPreset: "testing" } }).where(eq(agents.id, agentId));
+    };
+    if (phase === "checkpoint") profileDispatchHooks.afterCheckpoint = drift;
+    else profileDispatchHooks.afterAcquire = drift;
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(202);
+    const successor = await waitForRunToFinish(heartbeat, response.body.id);
+    expect(changed).toBe(true);
+    expect(successor?.error).toContain("continuation_execution_profile_changed");
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it("rejects target drift inside environment acquisition before creating a lease", async () => {
+    const { companyId, agentId, runId } = await seedSuppressedRetry();
+    profileDispatchHooks.beforeAcquire = async () => {
+      await db.update(environments).set({ config: { profile: "changed-before-acquire" } }).where(eq(environments.driver, "local"));
+    };
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(202);
+    const successor = await waitForRunToFinish(heartbeat, response.body.id);
+    expect(successor?.error).toContain("continuation_execution_profile_changed");
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, response.body.id))).toHaveLength(0);
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it.each([false, true])("keeps failed pre-dispatch successors bound through generic retry and permits one explicit fresh decision (legacy admission: %s)", async legacyAdmission => {
+    const { companyId, agentId, issueId, runId } = await seedSuppressedRetry({ attempt: 1, deadlineAt: "2030-01-01T00:00:00.000Z" });
+    profileDispatchHooks.afterCheckpoint = async () => {
+      if (legacyAdmission) {
+        // An audited decision admitted before v1 profile references existed.
+        await db.update(activityLog).set({ details: sql`jsonb_set(${activityLog.details}, '{retryDisposition}', (${activityLog.details}->'retryDisposition') - 'executionProfileFingerprint')` })
+          .where(and(eq(activityLog.entityId, runId), inArray(activityLog.action, ["issue.retry_suppressed", "issue.retry_resumed"])));
+        await db.update(heartbeatRuns).set({ runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'retryExecutionProfileAuthorization'` })
+          .where(eq(heartbeatRuns.retryOfRunId, runId));
+      }
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true }, safetyPreset: "testing" } }).where(eq(agents.id, agentId));
+    };
+    const app = await boardWakeApp(companyId);
+    const base = { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run" };
+    const first = await request(app).post(`/api/agents/${agentId}/wakeup`).send({ ...base, failedRunId: runId });
+    expect(first.status).toBe(202);
+    await waitForRunToFinish(heartbeat, first.body.id);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const failed = (await heartbeat.getRun(first.body.id))!;
+    expect(failed.error).toContain("continuation_execution_profile_changed");
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+    const repeated = await request(app).post(`/api/agents/${agentId}/wakeup`).send({ ...base, failedRunId: failed.id });
+    expect(repeated.status).toBe(409);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id))).toHaveLength(0);
+    expect((await heartbeat.getRun(failed.id))?.retryDisposition).toMatchObject({ state: "blocked", code: "execution_profile_changed" });
+    if (legacyAdmission) expect((await heartbeat.getRun(failed.id))?.retryDisposition?.executionProfileFingerprint).toBeNull();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const body = { ...base, failedRunId: failed.id, retrySupersession: { requestId: randomUUID(), expectedIssueRevision: issue.updatedAt.toISOString(),
+      expectedAssigneeAgentId: agentId, residualObjective: "Complete the residual with the explicitly selected current execution profile.", maxRunSeconds: 120 } };
+    const [fresh, duplicate] = await Promise.all([request(app).post(`/api/agents/${agentId}/wakeup`).send(body), request(app).post(`/api/agents/${agentId}/wakeup`).send(body)]);
+    expect(fresh.status).toBe(202);
+    expect(duplicate.body.id).toBe(fresh.body.id);
+    const successor = (await waitForRunToFinish(heartbeat, fresh.body.id))!;
+    expect(successor.status).toBe("succeeded");
+    expect(suppressedRetryPhysicalInvocations).toBe(1);
+    expect(successor.scheduledRetryAttempt).toBe(1);
+    expect(successor.contextSnapshot?.resourceDeadline).toMatchObject({ maxRunSeconds: 120 });
+    expect((await heartbeat.getRun(failed.id))?.contextSnapshot).toEqual(failed.contextSnapshot);
+    expect((await heartbeat.getRun(runId))?.scheduledRetryAttempt).toBe(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id))).toHaveLength(1);
+  });
+
+  it.each([false, true])("distinguishes authorized workspace bookkeeping from changed effective commands (changed: %s)", async changed => {
+    const { companyId, agentId, issueId, runId } = await seedSuppressedRetry({ project: true });
+    profileDispatchHooks.afterAcquire = async () => {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [local] = await db.select().from(environments).where(eq(environments.driver, "local"));
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, projectId: issue.projectId!, sourceIssueId: issueId,
+        mode: "adapter_managed", strategyType: "cwd", name: "Runtime materialization", metadata: { config: { environmentId: local.id,
+          ...(changed ? { provisionCommand: "must-never-run" } : {}) } } }).returning();
+      await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issueId));
+    };
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(202);
+    const successor = await waitForRunToFinish(heartbeat, response.body.id);
+    if (changed) {
+      expect(successor?.error).toContain("continuation_execution_profile_changed");
+      expect(suppressedRetryPhysicalInvocations).toBe(0);
+    } else {
+      expect(successor?.status).toBe("succeeded");
+      expect(suppressedRetryPhysicalInvocations).toBe(1);
+    }
+  });
+
+  it("captures the actual dispatched profile and never relabels it with later saved settings", async () => {
+    const { companyId, agentId, issueId, runId } = await seedSuppressedRetry();
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(202);
+    const dispatched = (await waitForRunToFinish(heartbeat, response.body.id))!;
+    expect(suppressedRetryPhysicalInvocations).toBe(1);
+    const captured = (dispatched.runnerProfileJson as any)?.executionProfileBinding;
+    expect(captured).toMatchObject({ version: 1, fingerprint: expect.any(String) });
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false }, safetyPreset: "testing" } }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({ status: "timed_out", error: "Original profile timeout", errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, dispatched.id));
+    const { persistRetrySuppression } = await import("../services/execution-retry-disposition.js");
+    const source = (await heartbeat.getRun(dispatched.id))!;
+    const held = await persistRetrySuppression(db, source, "disabled in fixture");
+    expect(held?.executionProfileFingerprint).toBe(captured.fingerprint);
+    const { readExecutionProfileBinding } = await import("../services/execution-profile-binding.js");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect((await readExecutionProfileBinding(db, issue, agent)).fingerprint).not.toBe(captured.fingerprint);
+  });
+
+  it("keeps an unstamped legacy source unsupported instead of capturing current settings at suppression", async () => {
+    const { companyId, agentId, runId } = await seedSuppressedRetry({ unstamped: true });
+    const source = (await heartbeat.getRun(runId))!;
+    expect((source.resultJson?.retryDisposition as any)?.executionProfileFingerprint).toBeNull();
+    expect(source.runnerProfileJson?.executionProfileBinding).toBeUndefined();
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(409);
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it.each([false, true])("rejects changed or legacy exact target but accepts one fresh target supersession without resetting source history (unstamped: %s)", async unstamped => {
+    const [environmentA] = await db.insert(environments).values({ name: `Stopped A ${randomUUID()}`, driver: "ssh", config: { host: "never-contact.invalid", user: "fixture" } }).returning();
+    const { companyId, agentId, issueId, runId } = await seedSuppressedRetry({ sourceEnvironmentId: environmentA.id, unstamped, attempt: 1, deadlineAt: "2030-01-01T00:00:00.000Z" });
+    const { environmentService } = await import("../services/environments.js");
+    const environmentB = await environmentService(db).ensureLocalEnvironment(companyId);
+    await db.update(agents).set({ defaultEnvironmentId: environmentB.id }).where(eq(agents.id, agentId));
+    const oldSource = (await heartbeat.getRun(runId))!;
+    if (unstamped) {
+      expect((oldSource.resultJson?.retryDisposition as any)?.executionProfileFingerprint).toBeNull();
+      expect(oldSource.runnerProfileJson?.executionProfileBinding).toBeUndefined();
+    }
+    const app = await boardWakeApp(companyId);
+    const base = { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId };
+    expect((await request(app).post(`/api/agents/${agentId}/wakeup`).send(base)).status).toBe(409);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const decision = { ...base, retrySupersession: { requestId: randomUUID(), expectedIssueRevision: issue.updatedAt.toISOString(),
+      expectedAssigneeAgentId: agentId, residualObjective: "Complete reviewed residual on the newly selected target B.", maxRunSeconds: 120 } };
+    const [first, duplicate] = await Promise.all([request(app).post(`/api/agents/${agentId}/wakeup`).send(decision), request(app).post(`/api/agents/${agentId}/wakeup`).send(decision)]);
+    expect(first.status).toBe(202);
+    expect(duplicate.body.id).toBe(first.body.id);
+    const successor = (await waitForRunToFinish(heartbeat, first.body.id))!;
+    expect(suppressedRetryPhysicalInvocations).toBe(1);
+    expect(successor.status).toBe("succeeded");
+    const { readExecutionProfileBinding } = await import("../services/execution-profile-binding.js");
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const [currentIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect((successor.runnerProfileJson as any)?.executionProfileBinding?.fingerprint).toBe((await readExecutionProfileBinding(db, currentIssue, agent)).fingerprint);
+    expect((await heartbeat.getRun(runId))?.contextSnapshot).toEqual(oldSource.contextSnapshot);
+    expect((await heartbeat.getRun(runId))?.usageJson).toEqual(oldSource.usageJson);
+    expect((await heartbeat.getRun(runId))?.scheduledRetryAttempt).toBe(1);
+    expect(successor.scheduledRetryAttempt).toBe(1);
+    expect(successor.contextSnapshot?.resourceDeadline).toMatchObject({ maxRunSeconds: 120 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
+  });
+
+  it.each(["environment_selector", "ai_connection", "safety_preset", "environment_config", "instance_selector"])("rejects exact retry after only %s changes, before launch", async change => {
+    const { companyId, agentId, runId } = await seedSuppressedRetry();
+    const { environmentService } = await import("../services/environments.js");
+    const selectedLocal = await environmentService(db).ensureLocalEnvironment(companyId);
+    if (change === "environment_selector") await db.update(agents).set({ defaultEnvironmentId: selectedLocal.id }).where(eq(agents.id, agentId));
+    if (change === "ai_connection") await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true }, aiConnection: { mode: "agent", connectionId: randomUUID() } } }).where(eq(agents.id, agentId));
+    if (change === "safety_preset") await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true }, safetyPreset: "testing" } }).where(eq(agents.id, agentId));
+    if (change === "environment_config") {
+      const { environmentService } = await import("../services/environments.js");
+      const local = await environmentService(db).ensureLocalEnvironment(companyId);
+      await db.update(environments).set({ config: { executionProfile: "changed" } }).where(eq(environments.id, local.id));
+    }
+    if (change === "instance_selector") {
+      const { instanceSettingsService } = await import("../services/instance-settings.js");
+      await instanceSettingsService(db).update({ defaultEnvironmentId: selectedLocal.id });
+    }
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({ source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId });
+    expect(response.status).toBe(409);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
 
   it.each(["interrupted", "cancelled"])("admits the verified suppressed %s source through the public exact retry route", async status => {
     const { companyId, agentId, issueId, runId } = await seedSuppressedRetry({ status });
@@ -823,6 +1061,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   it("cannot mint a hold from an actual adapter lifecycle callback and matching result", async () => {
     const { companyId, agentId, issueId } = await seedMaxTurnFixture();
+    await db.update(issues).set({ assigneeAdapterOverrides: { useProjectWorkspace: false } }).where(eq(issues.id, issueId));
     const adapterType = "forged_suppression_test";
     await db.update(agents).set({ adapterType }).where(eq(agents.id, agentId));
     registerServerAdapter({ type: adapterType, execute: async context => {
@@ -2283,6 +2522,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       expect((wakeupRequest?.payload as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(expectedMode);
 
       await cleanupRetryFixture();
+    await db.update(instanceSettings).set({ defaultEnvironmentId: null });
+    await db.update(environments).set({ config: {} }).where(eq(environments.driver, "local"));
     }
   });
 
@@ -2311,6 +2552,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
 
     await cleanupRetryFixture();
+    await db.update(instanceSettings).set({ defaultEnvironmentId: null });
+    await db.update(environments).set({ config: {} }).where(eq(environments.driver, "local"));
   });
 
   it("keeps a permanent provider model rejection on configuration repair instead of retrying", async () => {
@@ -2353,6 +2596,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
 
     await cleanupRetryFixture();
+    await db.update(instanceSettings).set({ defaultEnvironmentId: null });
+    await db.update(environments).set({ config: {} }).where(eq(environments.driver, "local"));
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {

@@ -10,6 +10,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -110,6 +111,14 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     }
   });
 
+  async function localExecutionTask(companyId: string, agentId: string) {
+    const cwd = await mkdtemp(join(tmpdir(), "paperclip-local-environment-task-"));
+    await db.update(agents).set({ adapterConfig: sql`${agents.adapterConfig} || ${JSON.stringify({ cwd })}::jsonb` }).where(eq(agents.id, agentId));
+    const [issue] = await db.insert(issues).values({ companyId, title: "Verify Local environment lifecycle", status: "in_progress",
+      assigneeAgentId: agentId, assigneeAdapterOverrides: { useProjectWorkspace: false } }).returning();
+    return issue.id;
+  }
+
   it("runs work through the default Local environment lease", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -138,7 +147,8 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       permissions: {},
     });
 
-    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const issueId = await localExecutionTask(companyId, agentId);
+    const queued = await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual");
     expect(queued).not.toBeNull();
 
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
@@ -209,7 +219,8 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       permissions: {},
     });
 
-    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    const issueId = await localExecutionTask(companyId, agentId);
+    const queued = await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual");
     expect(queued).not.toBeNull();
 
     const finished = await waitForRunToFinish(heartbeat, queued!.id);

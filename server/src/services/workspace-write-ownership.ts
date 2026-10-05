@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, heartbeatRuns, projectWorkspaces, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
-import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard } from "@paperclipai/adapter-utils/workspace-process-guard";
+import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard, type WorkspaceStopObservation } from "@paperclipai/adapter-utils/workspace-process-guard";
 
 type Owner = typeof workspaceWriteOwners.$inferSelect;
 export type WorkspaceOwnerHandle = Pick<Owner, "id" | "companyId" | "runId" | "generation">;
@@ -184,29 +184,67 @@ export function workspaceWriteOwnershipService(db: Db) {
       });
     },
     async bindLaunch(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {
-      await transition(handle, "launch_bound", owner => owner.state === "launching" && owner.launchId === identity.launchId ? { state: "active", launchIdentity: identity } : null);
+      await transition(handle, "launch_bound", owner => ["launching", "stopping"].includes(owner.state) && owner.launchId === identity.launchId ? { state: owner.state === "stopping" ? "stopping" : "active", launchIdentity: identity } : null);
     },
-    async markStopping(handle: WorkspaceOwnerHandle) {
-      await transition(handle, "stopping", owner => ["launching", "active", "stopping"].includes(owner.state) ? { state: "stopping" } : null);
+    async bindPayload(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {
+      await transition(handle, "payload_bound", owner => ["active", "stopping"].includes(owner.state) && owner.launchId === identity.launchId &&
+        identity.payloadPid && identity.payloadStart && identity.payloadMountNamespace && owner.launchIdentity &&
+        Object.entries(owner.launchIdentity).every(([key, value]) => (identity as unknown as Record<string, unknown>)[key] === value)
+        ? { launchIdentity: identity } : null);
+    },
+    async cancelBeforeSpawn(handle: WorkspaceOwnerHandle, launchId: string) {
+      await transition(handle, "cancelled_before_spawn", owner => ["launching", "stopping"].includes(owner.state) && owner.launchId === launchId && !owner.launchIdentity
+        ? { state: "reserved", launchId: null, stopReceipt: null } : null);
+    },
+    async waitForStopped(handle: WorkspaceOwnerHandle, requestId: string, aborted: () => boolean) {
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        if (!aborted()) throw new Error("workspace_write_stop_not_requested");
+        const [owner] = await db.select().from(workspaceWriteOwners).where(selector(handle));
+        if (!owner || ["unknown", "unprotected"].includes(owner.state)) throw new Error("workspace_write_stop_unverified");
+        if (owner.state === "reserved") return service.confirmStopped(handle, requestId);
+        if (Date.now() >= deadline) throw new Error("Execution is still stopping; termination has not been verified.");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    },
+    async confirmStopped(handle: WorkspaceOwnerHandle, requestId: string) {
+      return db.transaction(async tx => {
+        const [owner] = await tx.select().from(workspaceWriteOwners).where(selector(handle)).for("share");
+        if (!owner || owner.state !== "reserved") throw new Error("workspace_write_stop_unverified");
+        if (!owner.launchId) return { requestId, ownerId: owner.id, generation: owner.generation, launchId: null, proof: "not_launched" as const };
+        const identity = owner.launchIdentity as WorkspaceLaunchIdentity | null;
+        if (!identity || owner.stopReceipt?.generation !== owner.generation || owner.stopReceipt?.launchId !== owner.launchId ||
+          !Object.entries(identity).every(([key, value]) => owner.stopReceipt?.[key] === value) || !await workspaceNamespaceDrained(identity))
+          throw new Error("workspace_write_stop_unverified");
+        const observedStop = owner.stopReceipt?.stop as WorkspaceStopObservation | undefined;
+        return { requestId, ownerId: owner.id, generation: owner.generation, launchId: owner.launchId, proof: "namespace_drained" as const,
+          signal: observedStop?.requestId === requestId ? observedStop.signal : null,
+          namespaceForced: observedStop?.requestId === requestId ? observedStop.forced : false };
+      });
+    },
+    async markStopping(handle: WorkspaceOwnerHandle, launchId?: string) {
+      await transition(handle, "stopping", owner => ["launching", "active", "stopping"].includes(owner.state) && (!launchId || owner.launchId === launchId) ? { state: "stopping" } : null);
     },
     async markUnknown(handle: WorkspaceOwnerHandle, launchId: string) {
       await transition(handle, "unknown", owner => owner.launchId === launchId ? { state: "unknown" } : null);
     },
-    async recordDrain(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {
+    async recordDrain(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity, stop?: WorkspaceStopObservation) {
       if (!await workspaceNamespaceDrained(identity)) throw new Error("workspace_write_namespace_drain_unverified");
       await transition(handle, "namespace_drained", owner => ["active", "stopping"].includes(owner.state) && owner.launchId === identity.launchId
         && Object.entries(identity).every(([key, value]) => owner.launchIdentity?.[key] === value)
-        ? { state: "reserved", stopReceipt: { ...identity, generation: owner.generation, observedAt: new Date().toISOString() } } : null);
+        ? { state: "reserved", stopReceipt: { ...identity, generation: owner.generation, ...(stop ? { stop } : {}), observedAt: new Date().toISOString() } } : null);
     },
     async releaseIfStopped(handle: WorkspaceOwnerHandle) {
       await transition(handle, "released", owner => owner.state === "reserved" && (!owner.launchId || owner.stopReceipt?.launchId === owner.launchId)
         ? { state: "released", releasedAt: new Date() } : null);
     },
-    guard(owner: Owner, signal?: AbortSignal, privateRoots?: string[]): WorkspaceProcessGuard {
-      return { root: owner.canonicalRoot, device: owner.device, inode: owner.inode, signal, privateRoots,
+    guard(owner: Owner, signal?: AbortSignal, privateRoots?: string[], stopPolicy?: WorkspaceProcessGuard["stopPolicy"]): WorkspaceProcessGuard {
+      return { root: owner.canonicalRoot, device: owner.device, inode: owner.inode, signal, privateRoots, stopPolicy,
         beforeLaunch: async () => { await service.reservePrivateRoots(owner, privateRoots ?? []); return service.beforeLaunch(owner); }, bindLaunch: identity => service.bindLaunch(owner, identity),
-        recordDrain: identity => service.recordDrain(owner, identity), markUnknown: launchId => service.markUnknown(owner, launchId),
-        markStopping: () => service.markStopping(owner),
+        bindPayload: identity => service.bindPayload(owner, identity),
+        cancelBeforeSpawn: launchId => service.cancelBeforeSpawn(owner, launchId),
+        recordDrain: (identity, stop) => service.recordDrain(owner, identity, stop), markUnknown: launchId => service.markUnknown(owner, launchId),
+        markStopping: launchId => service.markStopping(owner, launchId),
       };
     },
   };

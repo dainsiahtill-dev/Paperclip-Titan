@@ -17,14 +17,33 @@ Before every supported spawn, the host reserves a launch generation. The guard
 pins source and authorized private runtime directory FDs, starts Bubblewrap with
 a PID namespace and no nested user namespaces, and captures its exact boot,
 namespace-init PID/start identity and namespace inode. The provider stays behind
-both a Bubblewrap block FD and an explicit nonce ACK on stdin until ownership
-and the existing run process metadata both commit. EOF is not ACK. A controller
+both a Bubblewrap block FD and an explicit nonce ACK on stdin. After namespace
+ownership and run process metadata commit, the outer gate opens only far enough
+to start the fixed host bootstrap. The host validates its unique direct-child
+PID/start, PID/mount namespace, fixed script and current launch nonce, then binds
+that payload identity to the same ownership generation before the inner ACK.
+No adapter output supplies this identity. EOF is not ACK. A controller
 death before ACK cannot execute an argv writer. Loader and shell startup hooks
 are removed before the outer sandbox process starts. The remaining provider
 stdin follows the ACK line unchanged.
 
-Cancellation kills the exact namespace init and wrapper. A same-host observer
-must verify the matching namespace is drained before recording a stop receipt.
+Public Stop and Pause register and signal the existing host execution control,
+even when the CLI adapter has no optional readiness callback. For a fully bound
+Codex payload, Stop sends SIGINT to that exact verified payload; other supported
+local CLIs use their normal termination signal. The configured grace and the
+existing per-cancel bound apply once, without extension by duplicate requests.
+If needed, the host then kills the exact namespace init and wrapper. Before the
+inner ACK, cancellation never grants permission to execute the provider.
+
+A same-host observer must verify the matching namespace is drained before
+recording a stop receipt. Stop acknowledgement references the current run,
+request, ownership generation and latest launch. Duplicate requests join the
+same cancellation settlement and share a failure; delayed adapter results
+cannot overwrite it as success. Missing identity or failed drain persistence
+retains an unknown hold and cannot produce an acknowledgement. Historical
+records without a payload identity cannot claim a verified graceful interrupt.
+Raw Bubblewrap exit values remain raw, and physical stop does not certify that
+a CLI session was preserved; a forced stop never fabricates session continuity.
 Adapter return alone cannot release ownership. Sequential helper launches use
 distinct launch IDs; an overlapping helper is refused while another is active.
 No auxiliary PID can overwrite an active provider identity. Failed identity

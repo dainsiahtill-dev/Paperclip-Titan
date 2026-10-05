@@ -261,6 +261,7 @@ export function environmentRunOrchestrator(
    * This is the primary entry point for heartbeat run setup.
    */
   async function acquireForRun(input: {
+    beforeAcquire?: (environment: Environment) => Promise<void>;
     companyId: string;
     selectedEnvironmentId: string;
     localEnvironmentId: string;
@@ -277,6 +278,8 @@ export function environmentRunOrchestrator(
       selectedEnvironmentId: input.selectedEnvironmentId,
       localEnvironmentId: input.localEnvironmentId,
     });
+
+    await input.beforeAcquire?.(environment);
 
     // Step 2: Acquire lease
     const leaseRecord = await acquireLease({

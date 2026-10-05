@@ -4,6 +4,7 @@ import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatR
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { readCapturedExecutionProfile, readExecutionProfileBinding } from "./execution-profile-binding.js";
 import { conflict } from "../errors.js";
 import { getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -13,9 +14,9 @@ import { readIssueResourcePolicies } from "./issue-resource-limits.js";
 
 const dispositionSchema = z.object({
   version: z.literal(1), state: z.enum(["blocked", "resumed", "superseded"]),
-  code: z.literal("heartbeat_wake_on_demand_disabled"), sourceRunId: z.string().uuid(),
+  code: z.enum(["heartbeat_wake_on_demand_disabled", "execution_profile_changed"]), sourceRunId: z.string().uuid(),
   issueId: z.string().uuid().nullable(), agentId: z.string().uuid(), issueRevision: z.string().nullable(),
-  sourceFingerprint: z.string(), workspaceFingerprint: z.string(), scopeFingerprint: z.string(),
+  sourceFingerprint: z.string(), executionProfileFingerprint: z.string().nullable().optional(), workspaceFingerprint: z.string(), scopeFingerprint: z.string(),
   requiresExplicitResume: z.literal(true), recoveryActionId: z.string().uuid().nullable(),
   resumedByUserId: z.string().optional(), successorRunId: z.string().uuid().optional(),
   supersessionRequestId: z.string().uuid().optional(),
@@ -58,7 +59,7 @@ export async function listVerifiedRetryHolds(db: Db, companyId: string, issueId:
 }
 
 type SupersessionDecision = RetrySupersessionRequest & { sourceRunId: string; successorRunId?: string; requestFingerprint: string;
-  workspaceFingerprint: string; scopeFingerprint: string };
+  workspaceFingerprint: string; scopeFingerprint: string; executionProfileFingerprint: string };
 export async function readVerifiedRetrySupersession(db: Db, companyId: string, sourceRunId: string, successorRunId: string) {
   const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, sourceRunId)));
   if (!source) return null;
@@ -103,11 +104,11 @@ export async function retryScopeFingerprints(db: Db, issue: typeof issues.$infer
     overrides: issue?.assigneeAdapterOverrides ?? null, sessionGeneration: issue?.conversationSessionGeneration ?? null,
     resourcePolicies: issue ? (await readIssueResourcePolicies(db, agent.companyId, issue.id, lock)).map(({ issueId, limits }) => ({ issueId, limits })) : [],
     materials: issue ? await readContinuationMaterials(db, agent.companyId, issue.id, lock) : [] });
-  return { workspaceFingerprint, scopeFingerprint };
+  return { workspaceFingerprint, scopeFingerprint, executionProfileFingerprint: (await readExecutionProfileBinding(db, issue, agent, lock)).fingerprint };
 }
 
 /** Issue then source locks serialize suppression with ordinary retry admission. */
-export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.$inferSelect, reason: string) {
+export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.$inferSelect, reason: string, preDispatchProfileDrift = false) {
   const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
   return db.transaction(async tx => {
     const lockedDb = tx as unknown as Db;
@@ -122,6 +123,22 @@ export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.
     if (successor || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status)) return null;
     const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
     if (!agent) throw new Error("retry_suppression_agent_missing");
+    let authorizedProfile: string | null = null;
+    if (preDispatchProfileDrift) {
+      const reference = object(object(source.runnerProfileJson).retryExecutionProfileAuthorization);
+      const [parent] = source.retryOfRunId ? await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, source.companyId), eq(heartbeatRuns.id, source.retryOfRunId))) : [];
+      const parentDecision = parent ? await readVerifiedRetryDisposition(lockedDb, parent) : null;
+      const supersession = parent && parentDecision?.state === "superseded"
+        ? await readVerifiedRetrySupersession(lockedDb, source.companyId, parent.id, source.id) : null;
+      authorizedProfile = supersession?.executionProfileFingerprint ?? parentDecision?.executionProfileFingerprint ?? null;
+      if (source.error !== "continuation_execution_profile_changed" || parentDecision?.successorRunId !== source.id ||
+        !["resumed", "superseded"].includes(parentDecision.state)) throw new Error("retry_profile_rejection_authority_missing");
+      // A pre-upgrade admitted decision may lack the v1 reference. Keep its
+      // audited lineage held but unqualified; never infer an old profile from
+      // today's settings or let another generic retry discard the decision.
+      if (reference.version !== 1 || reference.sourceRunId !== parent?.id || reference.fingerprint !== authorizedProfile)
+        authorizedProfile = null;
+    }
     let recoveryActionId: string | null = null;
     if (issue && issue.assigneeAgentId === source.agentId && !issue.hiddenAt && !["done", "cancelled"].includes(issue.status)
       && (!issue.executionRunId || issue.executionRunId === source.id)) {
@@ -132,16 +149,17 @@ export async function persistRetrySuppression(db: Db, run: typeof heartbeatRuns.
         const [action] = await tx.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: issue.id,
           kind: "stranded_assigned_issue", ownerType: "board", cause: "retry_suppressed", fingerprint: source.id,
           returnOwnerAgentId: source.agentId, evidence: { sourceRunId: source.id, requiresExplicitResume: true },
-          nextAction: "Enable on-demand wakes, then explicitly retry this exact source run after reviewing its remaining work.",
+          nextAction: preDispatchProfileDrift ? "Review the changed execution target/profile and authorize the current remaining work with a new bounded budget." : "Enable on-demand wakes, then explicitly retry this exact source run after reviewing its remaining work.",
           wakePolicy: { automatic: false } }).returning();
         recoveryActionId = action.id;
         [issue] = await tx.update(issues).set({ status: "blocked", statusVersion: sql`${issues.statusVersion} + 1`,
           blockedTransitionAt: new Date(), updatedAt: new Date() }).where(and(eq(issues.companyId, source.companyId), eq(issues.id, issue.id))).returning();
       }
     }
-    const disposition: ExecutionRetryDisposition = { version: 1, state: "blocked", code: "heartbeat_wake_on_demand_disabled",
+    const disposition: ExecutionRetryDisposition = { version: 1, state: "blocked", code: preDispatchProfileDrift ? "execution_profile_changed" : "heartbeat_wake_on_demand_disabled",
       sourceRunId: source.id, agentId: source.agentId, issueId, issueRevision: issue?.updatedAt.toISOString() ?? null,
       sourceFingerprint: retrySourceFingerprint(source), ...await retryScopeFingerprints(lockedDb, issue, agent),
+      executionProfileFingerprint: preDispatchProfileDrift ? authorizedProfile : readCapturedExecutionProfile(source.runnerProfileJson)?.fingerprint ?? null,
       requiresExplicitResume: true, recoveryActionId };
     await tx.update(heartbeatRuns).set({ resultJson: { ...object(source.resultJson), retryDisposition: disposition }, updatedAt: new Date() })
       .where(and(eq(heartbeatRuns.companyId, source.companyId), eq(heartbeatRuns.id, source.id)));
@@ -183,7 +201,7 @@ export async function validateSuppressedRetryResume(db: Db, input: {
     return { source, disposition, supersession: prior };
   }
   const scope = await retryScopeFingerprints(db, issue, agent);
-  if (!input.retrySupersession && (disposition.issueRevision !== issue.updatedAt.toISOString() || disposition.sourceFingerprint !== retrySourceFingerprint(source) ||
+  if (!input.retrySupersession && (!disposition.executionProfileFingerprint || disposition.executionProfileFingerprint !== scope.executionProfileFingerprint || disposition.issueRevision !== issue.updatedAt.toISOString() || disposition.sourceFingerprint !== retrySourceFingerprint(source) ||
     disposition.workspaceFingerprint !== scope.workspaceFingerprint || disposition.scopeFingerprint !== scope.scopeFingerprint)
     )
     throw conflict("The source or task scope changed. Review and authorize a new remaining-work decision before resuming.", { code: "retry_resume_scope_changed" });
@@ -193,7 +211,7 @@ export async function validateSuppressedRetryResume(db: Db, input: {
     throw conflict("The previous physical execution has not stopped.", { code: "retry_resume_owner_active" });
   const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, source.id)));
   if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed") ||
-    (source.startedAt && !source.processPid && !source.processGroupId))
+    (source.startedAt && !source.processPid && !source.processGroupId && disposition.code !== "execution_profile_changed"))
     throw conflict("The previous execution requires verified stop and cleanup evidence.", { code: "retry_resume_stop_unverified" });
   const activeAction = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId), inArray(issueRecoveryActions.status, ["active", "escalated"]))).for("update");
@@ -225,9 +243,14 @@ export async function consumeSuppressedRetryResume(db: Db, source: typeof heartb
     // Lock registered DB material/config/policy versions until commit. This is
     // not a filesystem lease; dispatch still revalidates before provider work.
     const currentScope = await retryScopeFingerprints(db, currentIssue, currentAgent, true);
-    if (currentScope.scopeFingerprint !== supersession.scopeFingerprint || currentScope.workspaceFingerprint !== supersession.workspaceFingerprint)
+    if (currentScope.scopeFingerprint !== supersession.scopeFingerprint || currentScope.workspaceFingerprint !== supersession.workspaceFingerprint || currentScope.executionProfileFingerprint !== supersession.executionProfileFingerprint)
       throw conflict("The scope changed before the decision committed. Refresh and authorize the current remaining work.", { code: "retry_supersession_stale" });
   }
+  const authorizedProfile = supersession?.executionProfileFingerprint ?? disposition.executionProfileFingerprint;
+  if (!authorizedProfile) throw conflict("The source has no qualified execution profile. Authorize new remaining work.");
+  await db.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
+    retryExecutionProfileAuthorization: { version: 1, sourceRunId: source.id, fingerprint: authorizedProfile },
+  })}::jsonb` }).where(and(eq(heartbeatRuns.companyId, source.companyId), eq(heartbeatRuns.id, successorRunId)));
   const resumed: ExecutionRetryDisposition = { ...disposition, state: supersession ? "superseded" : "resumed", resumedByUserId: actorId, successorRunId,
     ...(supersession ? { supersessionRequestId: supersession.requestId } : {}) };
   await db.update(heartbeatRuns).set({ resultJson: { ...object(source.resultJson), retryDisposition: resumed }, updatedAt: new Date() })

@@ -8,7 +8,7 @@ export function createAdapterExecutionControl() {
   const settled = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { id: randomUUID(), controller, settled, finish, steering: null as AdapterLiveSteeringControl | null };
+  return { id: randomUUID(), controller, settled, finish, stopRequestId: null as string | null, terminationGraceMs: undefined as number | undefined, guardedStop: null as ((requestId: string) => Promise<Record<string, unknown>>) | null, steering: null as AdapterLiveSteeringControl | null };
 }
 
 export const adapterExecutionControls = new Map<
