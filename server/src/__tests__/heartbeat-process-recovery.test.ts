@@ -5,7 +5,8 @@ import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getIssueResourceBlock } from "../services/issue-resource-limits.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -7629,7 +7630,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
-  it.each(["single", "duplicate", "startup", "proof_failure", "forced", "late_result"] as const)("stops an actual guarded Codex fake CLI through the public cancellation route (%s)", async kind => {
+  it.each(["single", "duplicate", "startup", "proof_failure", "forced", "late_result", "migrated_success", "migrated_timeout", "migrated_child"] as const)("stops an actual guarded Codex fake CLI through the public cancellation route (%s)", async kind => {
     const actualProcess = await vi.importActual<typeof import("../adapters/process/execute.js")>("../adapters/process/execute.js");
     const { companyId, agentId, runId } = await seedRunFixture({ adapterType: "codex_local", agentStatus: "idle", runStatus: "queued" });
     const onInterrupt = kind === "forced" ? "" : kind === "duplicate"
@@ -7638,6 +7639,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       args: ["-e", `const fs=require('node:fs');process.on('SIGINT',()=>{fs.appendFileSync('signals','x');fs.writeFileSync('interrupted','yes');${onInterrupt}});console.log('guarded-fixture-ready');setInterval(()=>fs.appendFileSync('effects','x'),20)`],
       graceSec: kind === "duplicate" ? 3 : 1 } }).where(eq(agents.id, agentId));
     await useSupportedLifecycleWorkspace(runId);
+    let restoreMigrationHost: (() => void) | undefined;
+    if (kind.startsWith("migrated_")) {
+      const host = await import("../services/legacy-workspace-host.js");
+      const actualHost = host.readLegacyWorkspaceHost;
+      const priorBoot = randomUUID(); let prior = true;
+      const hostSpy = vi.spyOn(host, "readLegacyWorkspaceHost").mockImplementation(async connection => {
+        const observed = await actualHost(connection); return prior ? { ...observed, bootId: priorBoot } : observed;
+      });
+      restoreMigrationHost = () => hostSpy.mockRestore();
+      const observed = await actualHost(db), cwd = resolveDefaultAgentWorkspaceDir(agentId);
+      const oldId = randomUUID(), controllerBootId = randomUUID(), started = new Date(0), pid = 2147480000;
+      await db.insert(heartbeatRuns).values({ id: oldId, companyId, agentId, runtimeMode: "legacy",
+        status: kind === "migrated_success" ? "succeeded" : "timed_out", finishedAt: new Date(1),
+        controllerBootId, processPid: pid, processGroupId: pid, processStartedAt: started, contextSnapshot: { paperclipWorkspace: { cwd } } });
+      await db.insert(environmentLeases).values({ companyId, heartbeatRunId: oldId, provider: "local", status: "released", releasedAt: new Date(2) });
+      const { appendHeartbeatRunEvent } = await import("../services/heartbeat-run-events.js");
+      const payload = { controllerBootId, processPid: pid, processGroupId: pid, processStartedAt: started.toISOString(), localProcess: true,
+        localNamespace: createHash("sha256").update(`${priorBoot}\n${observed.pidNamespace}`).digest("hex") };
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: oldId, eventType: "legacy.process_identity_recorded", stream: "system", payload });
+      await appendHeartbeatRunEvent(db, { companyId, agentId, runId: oldId, eventType: "legacy.local_process_stopped", stream: "system", payload });
+      const oldRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, oldId));
+      const oldEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, oldId));
+      const { legacyWorkspaceClosureService } = await import("../services/legacy-workspace-closure.js");
+      const closure = legacyWorkspaceClosureService(db), inspection = await closure.inspect({ companyId, cwd });
+      const hold = await closure.prepare({ companyId, cwd, expectedDigest: inspection.digest });
+      const selector = { companyId, cwd, holdId: hold.id, generation: hold.generation };
+      let oldChild: ChildProcess | undefined;
+      try {
+        if (kind === "migrated_child") {
+          oldChild = spawn(process.execPath, ["-e", "const fs=require('node:fs');fs.writeFileSync('legacy-child-ready','yes');setTimeout(()=>fs.writeFileSync('legacy-child-effect','yes'),120);setInterval(()=>{},1000)"], { cwd, stdio: "ignore", detached: true });
+          await vi.waitFor(async () => expect(await fs.readFile(path.join(cwd, "legacy-child-effect"), "utf8")).toBe("yes"));
+        }
+        await expect(closure.close(selector)).rejects.toMatchObject({ code: "host_epoch_unchanged" });
+        if (oldChild) { const stopped = once(oldChild, "close"); oldChild.kill("SIGTERM"); await stopped; }
+        // Models only the historical epoch transition. Public HTTP execution,
+        // SIGINT, actual namespace drain and the same source path stay real.
+        prior = false;
+        expect((await closure.close(selector)).state).toBe("legacy_migration_closed");
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, oldId))).toEqual(oldRun);
+        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, oldId))).toEqual(oldEvents);
+      } finally {
+        if (oldChild && oldChild.exitCode === null && oldChild.signalCode === null) { const stopped = once(oldChild, "close"); oldChild.kill("SIGTERM"); await stopped; }
+      }
+    }
     let ready = false, payloadBound = false;
     let releaseBootstrap!: () => void;
     const bootstrap = new Promise<void>(resolve => { releaseBootstrap = resolve; });
@@ -7734,6 +7779,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         }
       }
       expect(adapterExecutionControls.has(runId)).toBe(false);
+      if (kind.startsWith("migrated_")) {
+        const originalRoot = before.canonicalRoot;
+        const current = await heartbeat.getRun(runId);
+        const issueId = current!.contextSnapshot!.issueId as string;
+        let secondReady = false;
+        mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
+          const context = input as Parameters<typeof actualProcess.execute>[0];
+          return actualProcess.execute({ ...context, onLog: async (stream, text) => {
+            await context.onLog(stream, text); if (text.includes("guarded-fixture-ready")) secondReady = true;
+          } });
+        }) as typeof mockAdapterExecute);
+        const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "Explicitly dispatch the second migrated lifecycle probe." }).returning();
+        const next = await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
+          payload: { issueId, commentId: comment.id }, contextSnapshot: { issueId, commentId: comment.id, wakeReason: "issue_commented" } });
+        expect(next?.id).toBeTruthy(); expect(next?.id).not.toBe(runId);
+        await heartbeat.resumeQueuedRuns();
+        await vi.waitFor(() => expect(secondReady).toBe(true), { timeout: 5_000 });
+        const [nextOwner] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.runId, next!.id));
+        expect(nextOwner.canonicalRoot).toBe(originalRoot);
+        expect(nextOwner.state).toBe("active");
+        const secondResponse = await request(app).post(`/api/heartbeat-runs/${next!.id}/cancel`).send({});
+        expect(secondResponse.status).toBe(200);
+        expect(await workspaceNamespaceDrained(nextOwner.launchIdentity as WorkspaceLaunchIdentity)).toBe(true);
+        await heartbeat.waitForRunExecutionDrain(next!.id);
+        expect((await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, nextOwner.id)))[0].state).toBe("released");
+      }
     } finally {
       releaseBootstrap();
       await heartbeat.cancelRun(runId).catch(() => undefined);
@@ -7742,6 +7813,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         if (stat && stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] === identity.namespaceStart) process.kill(identity.namespacePid, "SIGKILL");
       }
       await heartbeat.waitForRunExecutionDrain(runId);
+      restoreMigrationHost?.();
     }
   });
 

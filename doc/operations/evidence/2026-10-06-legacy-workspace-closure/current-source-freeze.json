@@ -1,0 +1,21 @@
+{
+  "base": "4e710a604",
+  "frozenFiles": {
+    "server/src/services/legacy-workspace-closure.ts": "ecb2da311628fa6f19022cc8c26b0e6a17e5440aef413d09e5ed2a8f88f232eb",
+    "server/src/services/legacy-workspace-host.ts": "81b1132c5ec5302a9a6a983032371c76cb1eb20a0fd15c99ca4e3a0d6d7ec288",
+    "server/src/services/workspace-physical-identity.ts": "3e6bafcc108771b7e42f397b87f622d79462fdeafd123ab0748190bf022c46c9",
+    "server/src/services/workspace-owner-provenance.ts": "6cbc4e48c1eac25c20ea1dde85026f82beb92e2ff39a5b266754699c1fa7ed40",
+    "server/src/services/workspace-write-ownership.ts": "0ac1714a0ec29453e87b1d5da994ff283b529439887159f62774437e72447915",
+    "server/src/services/heartbeat.ts": "613fc5b0cd941477ea5de33dab50018c022ae484ac08cea639e446b4ab5c4e6a",
+    "scripts/workspace-legacy-closure.ts": "6f24792ec8985eefac68078316e244712f0c993ac96d29ae2579f8727ad5b574",
+    "server/src/__tests__/legacy-workspace-closure.test.ts": "87d7f8b22dd832f0e703266d986e5805b1b5149d08a78eac1d3645e3a8b35fed",
+    "server/src/__tests__/legacy-workspace-closure-cli.test.ts": "98de169998bbbf2a6493d0cb3827ee1766f5751c8608ee40387824a72f421f29",
+    "server/src/__tests__/heartbeat-process-recovery.test.ts": "e1705cfcfc2d34102a3112c51413783cf04c169f1d53928e6ecb5c99b67a076c"
+  },
+  "fullSession": 42901,
+  "artifactRunner": "run-artifact-gates.py",
+  "fullCoverageRunner": "run-full-coverage.py",
+  "review": "security-final-review.md",
+  "noWSLRestartAuthorized": true,
+  "sourceChangesOnlyByRoot": true
+}

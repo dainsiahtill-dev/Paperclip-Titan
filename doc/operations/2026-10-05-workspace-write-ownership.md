@@ -67,6 +67,16 @@ matching or unverifiable roots also block protected admission. A new, disjoint
 task-owned root is the supported escape from uncertain historical ownership;
 there is no automatic TTL reclaim or force-unlock endpoint.
 
+An explicit local upgrade-maintenance entry can capture an exact legacy cohort
+and source hold, then close it only after a genuinely ended host kernel boot
+epoch on the same database/host/source identity. The independent host-epoch proof
+does not upgrade an old group-stop record into a namespace receipt. Genuine
+already-recorded guarded namespace drain remains durable across boots; older
+guarded rows require authenticated process-ledger linkage when they lack the new
+binding stamp. New source/identity/ledger drift refuses reuse. See
+`2026-10-06-legacy-workspace-upgrade-governance.md`; real WSL maintenance requires
+a separately approved window and does not automatically retry business tasks.
+
 Writable local stdio is a separate HTTP lifetime. It registers an unprotected
 observation before spawn and refuses to join a protected owner. Read-only
 governed stdio retains its existing read-only boundary. Long-lived local runtime

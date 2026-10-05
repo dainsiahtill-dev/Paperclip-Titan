@@ -1,0 +1,21 @@
+{
+  "checks": {
+    "typecheck": {
+      "exitCode": 0,
+      "completed": true,
+      "log": "typecheck.log"
+    },
+    "build": {
+      "exitCode": 0,
+      "completed": true,
+      "log": "build.log"
+    },
+    "token-gates": {
+      "exitCode": 0,
+      "completed": true,
+      "log": "token-gates.log"
+    }
+  },
+  "startedAt": 1791241032.8010635,
+  "finishedAt": 1791241203.0487468
+}

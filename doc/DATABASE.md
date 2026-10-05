@@ -404,6 +404,18 @@ may remain. No TTL or terminal-status reclaim is defined. See
 `operations/2026-10-05-workspace-write-ownership.md` for supported adapters,
 unprotected observations and verified-drain requirements.
 
+Legacy workspace upgrade maintenance uses the existing text state/history fields:
+`legacy_migration_hold` and `legacy_migration_closed` are operator records with a
+new maintenance UUID, never an old heartbeat writer identity. Their immutable
+prepare/close journal binds the original physical source, exact run/lease/ledger
+digests, local database identity and kernel boot facts. Closing appends a separate
+`host_boot_epoch_closed` proof and formally releases the hold in one realm-locked
+transaction; it neither creates a namespace receipt nor modifies old runs or
+leases. Ordinary writer tracking requires source and process provenance, not run
+ID membership. No new table or schema migration is needed. See
+`operations/2026-10-06-legacy-workspace-upgrade-governance.md` for the maintenance
+entry and outstanding real-host acceptance.
+
 Legacy run claims atomically record `controller_boot_id`, a database-clock
 `controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
 The lease renews independently of output. A different container must not infer

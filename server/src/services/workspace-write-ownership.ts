@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, heartbeatRuns, projectWorkspaces, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard, type WorkspaceStopObservation } from "@paperclipai/adapter-utils/workspace-process-guard";
+import { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
+import { legacyWorkspaceCandidateClosed } from "./legacy-workspace-closure.js";
+import { workspaceRunHasTrackedOwner } from "./workspace-owner-provenance.js";
+export { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
 
 type Owner = typeof workspaceWriteOwners.$inferSelect;
 export type WorkspaceOwnerHandle = Pick<Owner, "id" | "companyId" | "runId" | "generation">;
@@ -16,20 +19,6 @@ const sameResource = (a: Resource, b: Resource) => a.root === b.root && a.resour
 const rootsConflict = (a: Resource, b: Resource) => a.resourceKey === b.resourceKey || overlaps(a.root, b.root) || overlaps(b.root, a.root);
 const ownerResources = (owner: Owner) => [{ root: owner.canonicalRoot, resourceKey: owner.resourceKey }, ...privateResources(owner), ...serviceResources(owner)];
 const resourceConflict = (owner: Owner, root: Resource) => ownerResources(owner).some(held => rootsConflict(held, root));
-
-export async function physicalWorkspaceIdentity(cwd: string) {
-  if (process.platform !== "linux") throw new Error("workspace_write_ownership_unsupported_host");
-  const root = await fs.realpath(cwd);
-  const stat = await fs.stat(root);
-  if (!stat.isDirectory() || root === "/") throw new Error("workspace_write_ownership_invalid_root");
-  // One local storage realm; company/project/PID namespace never partition it.
-  const machine = (await fs.readFile("/etc/machine-id", "utf8")).trim();
-  if (!/^[a-f0-9]{32}$/.test(machine)) throw new Error("workspace_write_ownership_unverified_realm");
-  const realm = createHash("sha256").update(`linux-local:${machine}`).digest("hex");
-  const device = String(stat.dev), inode = String(stat.ino);
-  const resourceKey = createHash("sha256").update(`${realm}:${device}:${inode}`).digest("hex");
-  return { root, device, inode, realm, resourceKey };
-}
 
 export function workspaceWriteOwnershipService(db: Db) {
   type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -57,15 +46,15 @@ export function workspaceWriteOwnershipService(db: Db) {
     }
     return true;
   }
-  async function transition(handle: WorkspaceOwnerHandle, event: string, change: (owner: Owner) => Partial<Owner> | null) {
+  async function transition(handle: WorkspaceOwnerHandle, event: string, change: (owner: Owner, tx: Tx) => Partial<Owner> | null | Promise<Partial<Owner> | null>) {
     return db.transaction(async tx => {
       const owner = (await tx.select().from(workspaceWriteOwners).where(selector(handle)).for("update"))[0];
       if (!owner) throw new Error("workspace_write_owner_generation_mismatch");
-      const update = change(owner);
+      const update = await change(owner, tx);
       if (!update) throw new Error("workspace_write_owner_transition_rejected");
       const at = new Date();
       const [row] = await tx.update(workspaceWriteOwners).set({ ...update, updatedAt: at,
-        history: [...owner.history, { event, at: at.toISOString(), generation: owner.generation, launchId: update.launchId ?? owner.launchId }],
+        history: [...(update.history ?? owner.history), { event, at: at.toISOString(), generation: owner.generation, launchId: update.launchId ?? owner.launchId }],
       }).where(selector(handle)).returning();
       return row!;
     });
@@ -123,18 +112,19 @@ export function workspaceWriteOwnershipService(db: Db) {
             .innerJoin(heartbeatRuns, eq(environmentLeases.heartbeatRunId, heartbeatRuns.id))
             .leftJoin(executionWorkspaces, eq(environmentLeases.executionWorkspaceId, executionWorkspaces.id))
             .where(and(eq(environmentLeases.provider, "local"), ne(heartbeatRuns.id, input.runId)));
-          const proven = await tx.select({ runId: workspaceWriteOwners.runId }).from(workspaceWriteOwners)
+          const proven = await tx.select().from(workspaceWriteOwners)
             .where(eq(workspaceWriteOwners.realm, identity.realm));
-          const tracked = new Set(proven.map(row => row.runId));
           for (const candidate of local) {
-            if (tracked.has(candidate.run.id) || (!candidate.run.processPid && candidate.run.runtimeMode !== "native")) continue;
+            if (!candidate.run.processPid && !candidate.run.processGroupId && !candidate.run.processStartedAt && candidate.run.runtimeMode !== "native") continue;
             const snapshot = candidate.run.contextSnapshot as Record<string, unknown> | null;
             const workspace = snapshot?.paperclipWorkspace as Record<string, unknown> | undefined;
             const raw = candidate.cwd ?? (typeof workspace?.cwd === "string" ? workspace.cwd : null);
             // Missing path/deleted root cannot prove disjointness. Logical
             // terminal, parent PID absence, and expired leases are irrelevant.
+            const prior = raw ? await physicalWorkspaceIdentity(raw).catch(() => null) : null;
+            if (await workspaceRunHasTrackedOwner(tx as unknown as Db, candidate.run, prior, proven, raw ?? undefined)) continue;
             if (!raw) return { outcome: "busy" as const };
-            const prior = await physicalWorkspaceIdentity(raw).catch(() => null);
+            if (prior && await legacyWorkspaceCandidateClosed(tx as unknown as Db, candidate.run, prior, proven)) continue;
             if (!prior || prior.resourceKey === identity.resourceKey || overlaps(prior.root, identity.root) || overlaps(identity.root, prior.root)) return { outcome: "busy" as const };
           }
         }
@@ -186,11 +176,19 @@ export function workspaceWriteOwnershipService(db: Db) {
     async bindLaunch(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {
       await transition(handle, "launch_bound", owner => ["launching", "stopping"].includes(owner.state) && owner.launchId === identity.launchId ? { state: owner.state === "stopping" ? "stopping" : "active", launchIdentity: identity } : null);
     },
-    async bindPayload(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity) {
-      await transition(handle, "payload_bound", owner => ["active", "stopping"].includes(owner.state) && owner.launchId === identity.launchId &&
+    async bindPayload(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity, expectedAgentId?: string) {
+      await transition(handle, "payload_bound", async (owner, tx) => {
+        if (!(["active", "stopping"].includes(owner.state) && owner.launchId === identity.launchId &&
         identity.payloadPid && identity.payloadStart && identity.payloadMountNamespace && owner.launchIdentity &&
-        Object.entries(owner.launchIdentity).every(([key, value]) => (identity as unknown as Record<string, unknown>)[key] === value)
-        ? { launchIdentity: identity } : null);
+        Object.entries(owner.launchIdentity).every(([key, value]) => (identity as unknown as Record<string, unknown>)[key] === value))) return null;
+        const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)).for("share");
+        const matchesRun = run && run.companyId === owner.companyId && run.processPid === identity.pid && run.processGroupId === identity.processGroupId && run.processStartedAt;
+        if (expectedAgentId && (!matchesRun || run.agentId !== expectedAgentId)) return null;
+        const history = matchesRun ? [...owner.history, { event: "run_process_bound", generation: owner.generation, launchId: owner.launchId,
+          binding: { companyId: run.companyId, agentId: run.agentId, runId: run.id, processPid: run.processPid,
+            processGroupId: run.processGroupId, processStartedAt: run.processStartedAt!.toISOString() } }] : owner.history;
+        return { launchIdentity: identity, history };
+      });
     },
     async cancelBeforeSpawn(handle: WorkspaceOwnerHandle, launchId: string) {
       await transition(handle, "cancelled_before_spawn", owner => ["launching", "stopping"].includes(owner.state) && owner.launchId === launchId && !owner.launchIdentity
@@ -229,19 +227,23 @@ export function workspaceWriteOwnershipService(db: Db) {
       await transition(handle, "unknown", owner => owner.launchId === launchId ? { state: "unknown" } : null);
     },
     async recordDrain(handle: WorkspaceOwnerHandle, identity: WorkspaceLaunchIdentity, stop?: WorkspaceStopObservation) {
-      if (!await workspaceNamespaceDrained(identity)) throw new Error("workspace_write_namespace_drain_unverified");
-      await transition(handle, "namespace_drained", owner => ["active", "stopping"].includes(owner.state) && owner.launchId === identity.launchId
-        && Object.entries(identity).every(([key, value]) => owner.launchIdentity?.[key] === value)
-        ? { state: "reserved", stopReceipt: { ...identity, generation: owner.generation, ...(stop ? { stop } : {}), observedAt: new Date().toISOString() } } : null);
+      await transition(handle, "namespace_drained", async owner => {
+        if (owner.launchId !== identity.launchId) return null;
+        if (!owner.launchIdentity || !Object.entries(identity).every(([key, value]) => owner.launchIdentity?.[key] === value))
+          throw new Error("workspace_write_namespace_drain_unverified");
+        if (!["active", "stopping"].includes(owner.state)) return null;
+        if (!await workspaceNamespaceDrained(identity)) throw new Error("workspace_write_namespace_drain_unverified");
+        return { state: "reserved", stopReceipt: { ...identity, generation: owner.generation, ...(stop ? { stop } : {}), observedAt: new Date().toISOString() } };
+      });
     },
     async releaseIfStopped(handle: WorkspaceOwnerHandle) {
       await transition(handle, "released", owner => owner.state === "reserved" && (!owner.launchId || owner.stopReceipt?.launchId === owner.launchId)
         ? { state: "released", releasedAt: new Date() } : null);
     },
-    guard(owner: Owner, signal?: AbortSignal, privateRoots?: string[], stopPolicy?: WorkspaceProcessGuard["stopPolicy"]): WorkspaceProcessGuard {
+    guard(owner: Owner, signal?: AbortSignal, privateRoots?: string[], stopPolicy?: WorkspaceProcessGuard["stopPolicy"], expectedAgentId?: string): WorkspaceProcessGuard {
       return { root: owner.canonicalRoot, device: owner.device, inode: owner.inode, signal, privateRoots, stopPolicy,
         beforeLaunch: async () => { await service.reservePrivateRoots(owner, privateRoots ?? []); return service.beforeLaunch(owner); }, bindLaunch: identity => service.bindLaunch(owner, identity),
-        bindPayload: identity => service.bindPayload(owner, identity),
+        bindPayload: identity => service.bindPayload(owner, identity, expectedAgentId),
         cancelBeforeSpawn: launchId => service.cancelBeforeSpawn(owner, launchId),
         recordDrain: (identity, stop) => service.recordDrain(owner, identity, stop), markUnknown: launchId => service.markUnknown(owner, launchId),
         markStopping: launchId => service.markStopping(owner, launchId),

@@ -24802,7 +24802,7 @@ export function heartbeatService(
                     signal: agent.adapterType === "codex_local" ? "SIGINT" : "SIGTERM",
                     requestId: executionControl.stopRequestId ?? executionControl.id,
                     graceMs: cancellationTerminationGraceMs(asNumber(runtimeConfig.graceSec, 15), executionControl.terminationGraceMs),
-                  })) : undefined;
+                  }), agent.id) : undefined;
                   const workspaceProcessGuard = baseWorkspaceProcessGuard ? { ...baseWorkspaceProcessGuard, beforeLaunch: async () => {
                     // Activation is a monotonic host fact, independent of adapter
                     // JSON or optional ACP readiness callbacks. No child exists yet.
