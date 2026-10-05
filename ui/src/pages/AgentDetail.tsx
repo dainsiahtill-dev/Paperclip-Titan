@@ -963,7 +963,12 @@ export function AgentDetail() {
   useEffect(() => {
     if (!agent) return;
     if (!urlRunId && urlTab === "channels") {
-      if (!chatConnectorsLoaded) return;
+      if (!chatConnectorsLoaded) {
+        if (routeAgentRef !== canonicalAgentRef) {
+          navigate(agentDetailHref(canonicalAgentRef, "channels"), { replace: true });
+        }
+        return;
+      }
       if (!chatConnectorsEnabled) {
         navigate(agentDetailHref(canonicalAgentRef, "overview"), { replace: true });
         return;

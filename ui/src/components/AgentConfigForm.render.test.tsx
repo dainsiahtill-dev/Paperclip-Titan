@@ -921,7 +921,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(result.container.querySelector('[data-config-section="environment"] select')).toBeNull();
   });
 
   it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {

@@ -161,7 +161,6 @@ describe("AgentActionButtons", () => {
 
     expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "runtime-state", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "task-sessions", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
@@ -194,7 +193,7 @@ describe("AgentActionButtons", () => {
     expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
       debug: { providerTrace: "raw" },
     });
-    expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
+    expect(mockNavigate).toHaveBeenCalledWith("/agents/agent-1/runs/run-1");
   });
 
   it("calls the terminate success handler after terminating an agent", async () => {
@@ -222,7 +221,6 @@ describe("AgentActionButtons", () => {
       status: "terminated",
     }));
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
   });
 

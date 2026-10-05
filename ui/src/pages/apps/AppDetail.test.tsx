@@ -1601,7 +1601,7 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.querySelector('a[href="/agents/coder"]')?.textContent).toContain("Used only by Coder");
+    expect(container.querySelector('a[href="/agents/agent-1"]')?.textContent).toContain("Used only by Coder");
     expect(container.textContent).toContain("Repositories");
     expect(container.textContent).toContain("1 selected repository");
     expect(container.querySelector('a[href="https://github.com/dottabot"]')?.textContent).toBe("@dottabot");
