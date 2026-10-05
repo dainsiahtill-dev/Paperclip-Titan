@@ -224,6 +224,22 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents saved-agent basic preflight with board authorization and its actual result", () => {
+    const spec = buildOpenApiSpec();
+    const operation = spec.paths["/api/agents/{id}/basic-preflight"].post;
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    const body = operation.requestBody.content["application/json"].schema;
+    expect(body).toMatchObject({ type: "object", properties: {}, additionalProperties: false });
+    const result = operation.responses["200"].content["application/json"].schema;
+    expect(result.required).toEqual(expect.arrayContaining(["status", "testedAt", "profileDigest", "profile", "checks", "modelInvoked"]));
+    expect(result.properties.status.enum).toEqual(["pass", "unverified", "fail"]);
+    expect(result.properties.modelInvoked).toMatchObject({ type: "boolean", enum: [false] });
+    expect(result.properties.profile.required).toEqual(["source", "adapterType", "cwd", "projectId", "target", "sandbox", "model", "effort"]);
+    for (const key of ["cwd", "projectId", "sandbox", "model", "effort"]) expect(result.properties.profile.properties[key].nullable).toBe(true);
+    expect(result.properties.checks.items.properties.status.enum).toEqual(["configured", "resolved", "readable", "connected", "unverified", "error"]);
+    for (const status of ["400", "401", "403", "404", "500"]) expect(operation.responses[status]).toBeDefined();
+  });
   it("documents bounded revision pages and delivery authority inputs", () => {
     const spec = buildOpenApiSpec();
     const revision = spec.paths["/api/issues/{id}/documents/{key}/revisions/{revisionId}"].get;

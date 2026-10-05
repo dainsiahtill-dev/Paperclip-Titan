@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -91,6 +94,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  const privateCwds = new Set<string>();
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
@@ -132,6 +136,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(companyMemberships);
     await db.delete(companySkills);
     await db.delete(companies);
+    for (const cwd of privateCwds) await rm(cwd, { recursive: true, force: true });
+    privateCwds.clear();
   });
 
   afterAll(async () => {
@@ -232,6 +238,8 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     assignee?: "agent" | null;
   } = {}) {
     const workspaceState = opts.workspaceState ?? "none";
+    const cwd = await mkdtemp(path.join(tmpdir(), "liveness-private-"));
+    privateCwds.add(cwd);
     const companyId = randomUUID();
     const agentId = randomUUID();
     const ownerUserId = randomUUID();
@@ -262,7 +270,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       role: "engineer",
       status: "idle",
       adapterType: "test_adapter",
-      adapterConfig: {},
+      adapterConfig: { cwd },
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
@@ -299,6 +307,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         companyId,
         projectId: workspaceState === "none" ? null : projectId,
         title: "Synthetic blocked dependent",
+        ...(workspaceState === "none" ? { assigneeAdapterOverrides: { useProjectWorkspace: false } } : {}),
         status: "blocked",
         priority: "medium",
         assigneeAgentId: opts.assignee === null ? null : agentId,

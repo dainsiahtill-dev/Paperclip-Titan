@@ -408,7 +408,7 @@ async function createQuarantinedContinuationSummary(
   return document!;
 }
 
-async function seedLowTrustFixture(db: Db) {
+async function seedLowTrustFixture(db: Db, options: { pausedParentReceiver?: boolean; rootOwner?: "cto" | "standard" } = {}) {
   const nonce = randomUUID().slice(0, 8);
   const canary = (label: string) => `LT_REDTEAM_${nonce}_${label}`;
   const canaries = {
@@ -480,6 +480,7 @@ async function seedLowTrustFixture(db: Db) {
       companyId: company!.id,
       name: "CTO",
       role: "cto",
+      status: options.pausedParentReceiver ? "paused" : "idle",
       adapterType: "process",
       adapterConfig: { token: canaries.agentConfig },
       runtimeConfig: { env: { SECRET_MARKER: canaries.agentConfig } },
@@ -508,7 +509,8 @@ async function seedLowTrustFixture(db: Db) {
       title: "Review root",
       status: "in_progress",
       priority: "medium",
-      assigneeAgentId: cto!.id,
+      assigneeAgentId: options.rootOwner === "standard" ? standard!.id : cto!.id,
+      ...(options.rootOwner === "standard" ? { assigneeAdapterOverrides: { useProjectWorkspace: false } } : {}),
       responsibleUserId: "board-user",
     })
     .returning();
@@ -622,7 +624,7 @@ async function seedLowTrustFixture(db: Db) {
       companyId: company!.id,
       agentId: standard!.id,
       status: "running",
-      contextSnapshot: { issueId: assignedReview!.id },
+      contextSnapshot: { issueId: options.rootOwner === "standard" ? reviewRoot!.id : assignedReview!.id },
     })
     .returning();
   const [standardReportRun] = await db
@@ -630,7 +632,9 @@ async function seedLowTrustFixture(db: Db) {
     .values({
       companyId: company!.id,
       agentId: standard!.id,
-      status: "running",
+      // This separate authorization fixture has no provider work. The wake
+      // case must not manufacture an unrelated active slot for this employee.
+      status: options.rootOwner === "standard" ? "succeeded" : "running",
       contextSnapshot: { issueId: standardChild!.id },
     })
     .returning();
@@ -1052,7 +1056,7 @@ describeEmbeddedPostgres(
     });
 
     it("relays blocked and cancelled stops once without laundering child prose", async () => {
-      const fixture = await seedLowTrustFixture(db);
+      const fixture = await seedLowTrustFixture(db, { pausedParentReceiver: true });
       const app = createApp(db, boardActor(fixture));
       const unblockDescriptor = {
         owner: "board",
@@ -1135,7 +1139,11 @@ describeEmbeddedPostgres(
             eq(issueComments.authorType, "system"),
           ),
         );
-      expect(relayComments).toHaveLength(2);
+      const parentActivity = await db.select({ action: activityLog.action, details: activityLog.details })
+        .from(activityLog).where(and(eq(activityLog.companyId, fixture.company.id), eq(activityLog.entityId, fixture.issues.reviewRoot.id)));
+      expect(relayComments, JSON.stringify({ comments: relayComments, activity: parentActivity })).toHaveLength(2);
+      expect(parentActivity.some((entry) => (entry.details as { source?: string })?.source === "recovery.reconcile_configuration_incomplete")).toBe(false);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, fixture.company.id), eq(heartbeatRuns.agentId, fixture.agents.cto.id)))).toEqual([]);
       expect(relayComments.map((comment) => comment.body)).toEqual(
         expect.arrayContaining([
           expect.stringContaining(`transitioned to \`blocked\``),
@@ -1798,7 +1806,7 @@ describeEmbeddedPostgres(
     });
 
     it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
-      const fixture = await seedLowTrustFixture(db);
+      const fixture = await seedLowTrustFixture(db, { rootOwner: "standard" });
       const lowTrustApp = createApp(db, agentActor(fixture));
       const standardApp = createApp(
         db,
@@ -1973,6 +1981,10 @@ describeEmbeddedPostgres(
         });
 
         expect(run).not.toBeNull();
+        const unrelatedReportSlots = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, fixture.runs.standardReport.id), eq(heartbeatRuns.status, "running")));
+        expect(unrelatedReportSlots, JSON.stringify({ queuedRunId: run!.id, queuedStatus: run!.status,
+          fixtureReportRunId: fixture.runs.standardReport.id, unrelatedReportSlots })).toEqual([]);
         await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
         const payload = gateway.getAgentPayloads()[0] ?? {};
         // The gateway rejects unknown root params, so the wake context rides in the

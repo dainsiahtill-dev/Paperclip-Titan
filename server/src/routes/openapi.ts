@@ -1309,6 +1309,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/agents/{id}/basic-preflight",
   "PUT /api/projects/{id}/delivery-policy",
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
@@ -3908,6 +3909,40 @@ registry.registerPath({
     query: z.object({ offset: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(32000).default(16000) }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+const agentBasicPreflightResultSchema = z.object({
+  status: z.enum(["pass", "unverified", "fail"]),
+  testedAt: z.string().datetime(),
+  profileDigest: z.string(),
+  profile: z.object({
+    source: z.enum(["saved_agent", "frozen_run"]),
+    adapterType: z.string(),
+    cwd: z.string().nullable(),
+    projectId: z.string().nullable(),
+    target: z.string(),
+    sandbox: z.string().nullable(),
+    model: z.string().nullable(),
+    effort: z.string().nullable(),
+  }).strict(),
+  checks: z.array(z.object({
+    code: z.string(),
+    status: z.enum(["configured", "resolved", "readable", "connected", "unverified", "error"]),
+    message: z.string(),
+    detail: z.string().optional(),
+    fingerprint: z.string().optional(),
+  }).strict()),
+  modelInvoked: z.literal(false),
+}).strict();
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/basic-preflight",
+  tags: ["agents"],
+  summary: "Check saved agent readiness without invoking a model",
+  description: "Requires a board actor with company agent-management access and permission to update this agent's configuration. Accepts only an empty object and inspects saved configuration. It does not prepare employee authentication, acquire environment leases, install resources, or invoke a model. A failed or unverified check is reported in the HTTP200 result.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(z.object({}).strict()) },
+  responses: { 200: r.ok(agentBasicPreflightResultSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 500: r.serverError },
 });
 
 registry.registerPath({

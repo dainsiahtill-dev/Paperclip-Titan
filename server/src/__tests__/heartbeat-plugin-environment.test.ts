@@ -64,6 +64,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     const started = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
     stopDb = started.stop;
     db = createDb(started.connectionString);
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -119,6 +120,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.insert(projects).values({
       id: projectId,
       companyId,
+      executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" },
       name: "Plugin Environment Heartbeat",
       status: "active",
       createdAt: new Date(),
@@ -217,7 +219,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       config: { template: "base" },
       agentId,
       runId: run!.id,
-      workspaceMode: "shared_workspace",
+      workspaceMode: "adapter_managed",
       // Pins the HEARTBEAT-path lease call forwarding the AGENT's adapter type
       // (per-run adapter / mixed-harness envs). environment-runtime.ts has two
       // drivers calling environmentAcquireLease; regressions here previously
@@ -365,6 +367,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         id: projectAId,
         companyId: companyAId,
         name: "Company A Project",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" },
         status: "active",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -373,6 +376,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         id: projectBId,
         companyId: companyBId,
         name: "Company B Project",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" },
         status: "active",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -526,6 +530,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.insert(projects).values({
       id: projectId,
       companyId,
+      executionWorkspacePolicy: { enabled: true, defaultMode: "adapter_default" },
       name: "Plugin Environment Issue",
       status: "active",
       createdAt: new Date(),
@@ -623,8 +628,8 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       companyId,
       projectId,
       projectWorkspaceId: workspaceId,
-      mode: "shared_workspace",
-      strategyType: "project_primary",
+      mode: "adapter_managed",
+      strategyType: "adapter_managed",
       name: "Stale workspace",
       status: "active",
       cwd: workspaceRoot,
@@ -650,7 +655,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       assigneeAgentId: agentId,
       executionWorkspaceId: staleExecutionWorkspaceId,
       executionWorkspaceSettings: {
-        mode: "shared_workspace",
+        mode: "agent_default",
       },
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -674,12 +679,12 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       companyId,
       environmentId: newEnvironmentId,
       executionWorkspaceId: expect.any(String),
-      executionWorkspaceSettings: { mode: "shared_workspace" },
+      executionWorkspaceSettings: { mode: "agent_default" },
       issueId,
       config: { template: "new" },
       agentId,
       runId: run!.id,
-      workspaceMode: "shared_workspace",
+      workspaceMode: "adapter_managed",
       adapterType: "codex_local",
     });
   }, 15_000);
