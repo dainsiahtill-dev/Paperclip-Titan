@@ -1,0 +1,22 @@
+{
+  "samples": 10,
+  "passed": 10,
+  "coldMedianMs": 1505.725493,
+  "reloadMedianMs": 966.1878930000003,
+  "builtAssetResponses": 205,
+  "sourceResponses": 0,
+  "browser": "Windows Edge 154.0.4258.53",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "locale": "zh-CN",
+  "readiness": "All 26 exact employee names plus enabled list/org controls",
+  "limits": {
+    "navigationMs": 30000,
+    "usableMs": 90000,
+    "screenshotMs": 15000
+  },
+  "pageErrors": 0,
+  "httpErrors": 0
+}

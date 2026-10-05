@@ -1,0 +1,53 @@
+{
+  "status": "ok",
+  "version": "2026.916.1+144.git.909e9ac55",
+  "serverVersion": "2026.916.1+144.git.909e9ac55",
+  "commit": "909e9ac55cddb2c4b4ea66cbc7d9d55523875b67",
+  "deploymentMode": "local_trusted",
+  "deploymentExposure": "private",
+  "localAiLoginSupported": true,
+  "authReady": true,
+  "bootstrapStatus": "ready",
+  "bootstrapInviteActive": false,
+  "features": {
+    "companyDeletionEnabled": true
+  },
+  "serverInfo": {
+    "processStartedAt": "2026-10-05T18:28:57.407Z",
+    "git": {
+      "available": true,
+      "fullSha": "909e9ac55cddb2c4b4ea66cbc7d9d55523875b67",
+      "shortSha": "909e9ac55",
+      "branchName": "main",
+      "subject": "test(codex): record final guarded payload identity",
+      "committedAt": "2026-10-05T18:04:09.000Z",
+      "localChanges": {
+        "available": true,
+        "hasLocalChanges": false,
+        "stagedFileCount": 0,
+        "unstagedFileCount": 0,
+        "untrackedFileCount": 0
+      }
+    }
+  },
+  "startupRecovery": {
+    "phase": "ready",
+    "updatedAt": "2026-10-05T18:29:02.818Z"
+  },
+  "nativeRecovery": {},
+  "databaseBackup": {
+    "enabled": true,
+    "status": "ok",
+    "backupDir": "/home/dains/.paperclip/instances/default/data/backups",
+    "maxAgeHours": 26,
+    "latestBackup": {
+      "name": "paperclip-20261006-020258.sql.gz",
+      "path": "/home/dains/.paperclip/instances/default/data/backups/paperclip-20261006-020258.sql.gz",
+      "mtime": "2026-10-05T18:09:16.240Z",
+      "ageHours": 0.3,
+      "sizeBytes": 208696768
+    },
+    "lastFailure": null,
+    "warnings": []
+  }
+}

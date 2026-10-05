@@ -1,0 +1,55 @@
+{
+  "companyIdsPreserved": true,
+  "employeeCounts": [
+    12,
+    26
+  ],
+  "employeeSettingsExact": true,
+  "comparedFields": [
+    "name",
+    "title",
+    "role",
+    "reportsTo",
+    "adapterType",
+    "adapterConfig",
+    "runtimeConfig",
+    "permissions",
+    "budgetMonthlyCents",
+    "status"
+  ],
+  "portOwners": [
+    "LISTEN 0      511         127.0.0.1:3100       0.0.0.0:*    users:((\"MainThread\",pid=87799,fd=34))",
+    "LISTEN 0      200         127.0.0.1:54329      0.0.0.0:*    users:((\"postgres\",pid=88010,fd=8))   "
+  ],
+  "hotRestartReport": {
+    "version": 1,
+    "requestedAt": "2026-10-05T18:20:45.658Z",
+    "completedAt": "2026-10-05T18:29:02.380Z",
+    "drainRequired": false,
+    "drainReason": null,
+    "previousServerPid": 87032,
+    "newServerPid": 87799,
+    "previousServerVersion": "2026.916.1+123.git.362e1d13f",
+    "newServerVersion": "2026.916.1+144.git.909e9ac55",
+    "adoptedRunIds": [],
+    "finalizedWhileDownRunIds": [],
+    "lostRunIds": [],
+    "skippedRunIds": [],
+    "runs": []
+  },
+  "configUnchanged": true,
+  "serverIdentity": {
+    "pid": 87799,
+    "start": "25420396",
+    "cwd": "/home/dains/Documents/paperclip",
+    "exe": "/home/dains/.paperclip/runtime/node-v24.21.0/bin/node",
+    "runtimeBinding": {
+      "PAPERCLIP_HOME": "/home/dains/.paperclip",
+      "PAPERCLIP_INSTANCE_ID": "default",
+      "PAPERCLIP_CONFIG": "/home/dains/.paperclip/instances/default/config.json",
+      "PAPERCLIP_UI_DEV_MIDDLEWARE": "false",
+      "PAPERCLIP_UI_DIST_PATH": "/home/dains/Documents/paperclip/ui/dist",
+      "SERVE_UI": "true"
+    }
+  }
+}

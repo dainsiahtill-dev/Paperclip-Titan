@@ -1,0 +1,9 @@
+{
+  "codeHead": "909e9ac55cddb2c4b4ea66cbc7d9d55523875b67",
+  "tests": 28,
+  "files": 3,
+  "exitCode": 0,
+  "command": "pnpm exec vitest run --project @paperclipai/shared packages/shared/src/agent-safety-presets.test.ts packages/shared/src/agent-readiness.test.ts packages/shared/src/validators/delivery-engineering.test.ts --exclude **/dist/** --maxWorkers 1",
+  "uiIdentityVerifyExitCode": 0,
+  "pluginBuildDependencyVerifyExitCode": 0
+}
