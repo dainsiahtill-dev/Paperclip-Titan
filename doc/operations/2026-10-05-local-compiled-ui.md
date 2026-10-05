@@ -57,7 +57,10 @@ Closed new-entity dialogs and onboarding do not load editor/configuration module
 once requested, dialogs stay mounted after closing so drafts and exit/focus effects
 survive. Hierarchy loading and request failure have visible feedback and retry. Failed
 company-list bootstrap has its own retry gate inside the existing access gate;
-a genuine empty company list retains existing onboarding behavior.
+a genuine empty company list retains existing onboarding behavior. Route-driven
+onboarding waits while the company list is pending or unavailable, including
+a wizard already loaded earlier; explicit manual opening and Cloud route policy
+retain their existing behavior.
 
 ## Reproducible private browser verification
 

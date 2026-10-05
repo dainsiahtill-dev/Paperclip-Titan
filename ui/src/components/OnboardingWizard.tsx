@@ -480,7 +480,7 @@ function OnboardingWizardInner({
     onboardingRouteDismissed: routeDismissed,
     setOnboardingRouteDismissed: setRouteDismissed,
   } = useDialog();
-  const { companies, setSelectedCompanyId, loading: companiesLoading } = useCompany();
+  const { companies, setSelectedCompanyId, loading: companiesLoading, companyListUnavailable } = useCompany();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -511,7 +511,7 @@ function OnboardingWizardInner({
   // nothing but a slower open. Companies still gate it — the resolver needs
   // them to match the prefix at all.
   const routeOnboardingOptions =
-    companyPrefix && companiesLoading
+    companiesLoading || companyListUnavailable
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,

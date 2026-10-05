@@ -1,6 +1,22 @@
 // @vitest-environment jsdom
 import fs from "node:fs";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+const installedListeners: Array<{ type: string; listener: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = [];
+let restoreAddListener = () => {};
+beforeEach(() => {
+ const originalAdd = window.addEventListener.bind(window);
+ const spy = vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+  installedListeners.push({ type, listener, options });
+  originalAdd(type, listener, options);
+ });
+ restoreAddListener = () => spy.mockRestore();
+});
+afterEach(() => {
+ for (const { type, listener, options } of installedListeners.splice(0)) window.removeEventListener(type, listener, options);
+ restoreAddListener();
+ document.body.innerHTML = "";
+});
+
 it("shows entry-load recovery before React can mount an error boundary", async () => {
  const html=fs.readFileSync("ui/index.html","utf8");
  document.body.innerHTML=html.match(/<body>([\s\S]*?)<\/body>/)![1];

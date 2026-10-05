@@ -36,10 +36,12 @@ const mockDialog = vi.hoisted(() => ({
   setOnboardingRouteDismissed: vi.fn(),
 }));
 
+const mockLocation = vi.hoisted(() => ({ pathname: "/" }));
 const mockCompany = vi.hoisted(() => ({
   companies: [] as Array<{ id: string; name: string; issuePrefix: string }>,
   setSelectedCompanyId: vi.fn(),
   loading: false,
+  companyListUnavailable: false,
   error: null as Error | null,
 }));
 
@@ -166,7 +168,7 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/", search: "", hash: "", state: null }),
+  useLocation: () => ({ pathname: mockLocation.pathname, search: "", hash: "", state: null }),
   useNavigate: () => vi.fn(),
   useParams: () => ({}),
 }));
@@ -339,6 +341,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
     mockCompany.loading = false;
+    mockCompany.companyListUnavailable = false;
+    mockLocation.pathname = "/";
     mockCompany.error = null;
     mockCompaniesApi.list.mockResolvedValue([]);
     mockAdapterRegistry.list = [];
@@ -395,6 +399,19 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     vi.clearAllMocks();
   });
 
+
+  it.each(["/onboarding", "/POL/onboarding"])("hides an already mounted route wizard on failed %s while retaining a retryable route", async pathname => {
+    mockDialog.onboardingOpen=false;mockLocation.pathname=pathname;
+    const {root,queryClient}=render();
+    const draw=()=>act(async()=>root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+    try {
+      await draw();await flushReact();await vi.waitFor(()=>expect(document.querySelector("input")).not.toBeNull());
+      mockCompany.companyListUnavailable=true;await draw();await flushReact();
+      expect(document.querySelector("input")).toBeNull();
+      mockCompany.companyListUnavailable=false;await draw();await flushReact();
+      await vi.waitFor(()=>expect(document.querySelector("input")).not.toBeNull());
+    }finally{await act(async()=>root.unmount());}
+  });
   describe("step 1 leads straight to the agent — there is no mission step 2", () => {
     // One path now: Name your organization → Name your agent → Connect → Get
     // started. The Build / Grow front door and both mission screens are gone,

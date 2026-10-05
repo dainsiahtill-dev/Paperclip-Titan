@@ -7,6 +7,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizardVariant } from "./OnboardingWizardVariant";
 
+const companyAvailability = vi.hoisted(() => ({ loading: false, companyListUnavailable: false }));
+vi.mock("../context/CompanyContext", () => ({ useCompany: () => companyAvailability }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -23,14 +25,15 @@ describe("OnboardingWizardVariant (PAP-138)", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
-  function renderVariant() {
+  function renderVariant(path = "/onboarding") {
     root = createRoot(container);
     flushSync(() => {
-      root!.render(<MemoryRouter initialEntries={["/onboarding"]}><DialogProvider><OnboardingWizardVariant /></DialogProvider></MemoryRouter>);
+      root!.render(<MemoryRouter initialEntries={[path]}><DialogProvider><OnboardingWizardVariant /></DialogProvider></MemoryRouter>);
     });
   }
 
   beforeEach(() => {
+    companyAvailability.loading=false;companyAvailability.companyListUnavailable=false;
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -58,6 +61,22 @@ describe("OnboardingWizardVariant (PAP-138)", () => {
     expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
     flushSync(() => container.querySelector("button")!.click());
     await vi.waitFor(() => expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull());
+  });
+
+  it.each(["/onboarding", "/POL/onboarding"])("defers route-driven %s while company data is pending", async path => {
+    companyAvailability.loading=true;
+    renderVariant(path);
+    await import("./OnboardingWizard");
+    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+  });
+  it("preserves explicit opening while the company request is unavailable", async () => {
+    companyAvailability.companyListUnavailable=true;
+    function Trigger() { const { openOnboarding } = useDialogActions(); return <button onClick={() => openOnboarding()}>Open explicitly</button>; }
+    root=createRoot(container);
+    flushSync(()=>root!.render(<MemoryRouter initialEntries={["/onboarding"]}><DialogProvider><Trigger /><OnboardingWizardVariant /></DialogProvider></MemoryRouter>));
+    expect(container.querySelector('[data-testid="wizard-capsule"]')).toBeNull();
+    flushSync(()=>container.querySelector("button")!.click());
+    await vi.waitFor(()=>expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull());
   });
 
 });
