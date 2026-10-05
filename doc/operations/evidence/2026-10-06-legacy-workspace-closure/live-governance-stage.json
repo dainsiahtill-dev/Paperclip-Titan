@@ -1,0 +1,13 @@
+{
+  "holdId": "1afe989c-2798-4b2b-ae50-92f9287224a3",
+  "generation": "6fae6a43-b1c1-47ca-9fb5-ef91ce2ed645",
+  "state": "legacy_migration_hold",
+  "namespaceReceipt": null,
+  "preparedBootId": "cc2434dc-c800-4670-83aa-7e9c96ddc764",
+  "sameBootClosureRefused": true,
+  "oldRunsLeasesAndEventsByteSemanticsUnchanged": true,
+  "legacyRunIds": [
+    "3f459cc2-6c16-42e9-9c9a-5aae7ab259a9",
+    "8f72065e-8722-469f-9b6b-d21174c73a68"
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "health": {
+    "status": "ok",
+    "version": "2026.916.1+146.git.5503b61fa",
+    "serverVersion": "2026.916.1+146.git.5503b61fa",
+    "commit": "5503b61faaf624b680d6e073959731f57d09280b",
+    "deploymentMode": "local_trusted",
+    "deploymentExposure": "private",
+    "localAiLoginSupported": true,
+    "authReady": true,
+    "bootstrapStatus": "ready",
+    "bootstrapInviteActive": false,
+    "features": {
+      "companyDeletionEnabled": true
+    },
+    "serverInfo": {
+      "processStartedAt": "2026-10-05T23:03:40.848Z",
+      "git": {
+        "available": true,
+        "fullSha": "5503b61faaf624b680d6e073959731f57d09280b",
+        "shortSha": "5503b61fa",
+        "branchName": "main",
+        "subject": "fix: govern legacy workspace epoch closure",
+        "committedAt": "2026-10-05T23:00:49.000Z",
+        "localChanges": {
+          "available": true,
+          "hasLocalChanges": false,
+          "stagedFileCount": 0,
+          "unstagedFileCount": 0,
+          "untrackedFileCount": 0
+        }
+      }
+    },
+    "startupRecovery": {
+      "phase": "ready",
+      "updatedAt": "2026-10-05T23:03:45.077Z"
+    },
+    "nativeRecovery": {},
+    "databaseBackup": {
+      "enabled": true,
+      "status": "ok",
+      "backupDir": "/home/dains/.paperclip/instances/default/data/backups",
+      "maxAgeHours": 26,
+      "latestBackup": {
+        "name": "paperclip-20261006-062902.sql.gz",
+        "path": "/home/dains/.paperclip/instances/default/data/backups/paperclip-20261006-062902.sql.gz",
+        "mtime": "2026-10-05T22:29:55.525Z",
+        "ageHours": 0.6,
+        "sizeBytes": 208718073
+      },
+      "lastFailure": null,
+      "warnings": []
+    }
+  },
+  "serverIdentity": {
+    "pid": 47665,
+    "start": "27068837",
+    "cwd": "/home/dains/Documents/paperclip",
+    "exe": "/home/dains/.paperclip/runtime/node-v24.21.0/bin/node"
+  },
+  "companiesPreserved": true,
+  "employeesPreserved": 38,
+  "comparedFields": [
+    "name",
+    "role",
+    "title",
+    "reportsTo",
+    "adapterType",
+    "adapterConfig",
+    "runtimeConfig",
+    "permissions",
+    "budgetMonthlyCents",
+    "status"
+  ],
+  "configurationPreserved": true,
+  "hotRestartReport": {
+    "version": 1,
+    "requestedAt": "2026-10-05T23:01:28.768Z",
+    "completedAt": "2026-10-05T23:03:44.581Z",
+    "drainRequired": false,
+    "drainReason": null,
+    "previousServerPid": 87799,
+    "newServerPid": 47665,
+    "previousServerVersion": "2026.916.1+144.git.909e9ac55",
+    "newServerVersion": "2026.916.1+146.git.5503b61fa",
+    "adoptedRunIds": [],
+    "finalizedWhileDownRunIds": [],
+    "lostRunIds": [],
+    "skippedRunIds": [],
+    "runs": []
+  }
+}

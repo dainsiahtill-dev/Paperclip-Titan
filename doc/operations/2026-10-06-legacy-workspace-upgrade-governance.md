@@ -63,7 +63,7 @@ rtk proxy /home/dains/.paperclip/runtime/node-v24.21.0/bin/node cli/node_modules
 
 `prepare` 使用同样的 config/company/cwd，另传本次 inspect 的 `--expected-digest`；追加迁移 hold，不改变旧 run/lease/事件，也不启动任务。`close` 使用同样的作用域及该 hold 的 `--hold-id`、`--generation`；同一 kernel boot 时明确返回 `host_epoch_unchanged` 并保留 hold。没有 `--force`、`--boot-id` 或 namespace 证明参数。
 
-当前只读 inspect 已识别恰好两条现场旧执行及原目录物理身份，原记录和默认服务未变化。尚未向默认实例应用 prepare/close。
+当前只读 inspect 已识别恰好两条现场旧执行及原目录物理身份，原记录和默认服务未变化。默认实例已应用 prepare；同一 boot 的 close 已明确拒绝。历史 run/lease/event 摘要核对未变，hold 保持未释放，namespace receipt 为 null；尚未进行真正 epoch closure。
 
 ## 维护操作顺序与影响
 

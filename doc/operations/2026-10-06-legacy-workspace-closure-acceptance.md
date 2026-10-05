@@ -28,3 +28,14 @@ After real Paperclip acceptance, the Polaris team resumes the exact remaining un
 Compact evidence is under `doc/operations/evidence/2026-10-06-legacy-workspace-closure`. Protected original logs, full command manifests, failure attempts and readonly runtime snapshots stay registered at `/home/dains/.paperclip/diagnostics/workspace-busy-20261006/implementation`. Final full artifact gates, commit and runtime-loaded version will be recorded after they complete.
 
 Final required artifact gates returned zero: `pnpm -r typecheck`, production `pnpm build`, and `pnpm check:token-gates`. Frozen implementation bytes still match the reviewed source. Build completed before the code commit, so its compiled server stamp names base 4e710a604; the managed deployment uses source CLI/server and must verify its loaded new commit separately.
+
+
+## Deployed and prepared live state
+
+Implementation commit `5503b61faaf624b680d6e073959731f57d09280b` is committed on main. Default source service has been updated under its managed supervisor and is ready on 3100, loaded version `2026.916.1+146.git.5503b61fa`. Source/API owner PID 47665 was checked against main cwd and Node24. Both company IDs and all 38 employees, models, runtime settings, permissions, budgets and statuses matched the protected preflight. Config bytes are identical; restart report contains no lost/skipped runs.
+
+New stopped-API/stopped-PG cold runtime backup: `/home/dains/.paperclip/backups/legacy-workspace-closure-20261005T230108Z`, 9,183 file hashes verified. It includes database, authentication/secret scope, storage and runtime/log data; no Polaris source, code workspace copies or duplicated historical automatic backups were archived.
+
+The formal live preparation is now applied for the original Polaris root and the exact two legacy executions: hold `1afe989c-2798-4b2b-ae50-92f9287224a3`, generation `6fae6a43-b1c1-47ca-9fb5-ef91ce2ed645`, captured kernel boot `cc2434dc-c800-4670-83aa-7e9c96ddc764`. The hold remains `legacy_migration_hold`, unreleased, with null namespace receipt. A real same-boot close attempt returned `host_epoch_unchanged` and made no closure. Exact historical run, lease and event digests were rechecked and unchanged. This preparation blocks new managed writing admission; it does not pause/kill external Polaris/PM/CE processes or retry POL-6.
+
+Real kernel maintenance still requires explicit confirmation of an interruption window. After the genuine boot change, use the same config/company/original-directory plus the recorded hold and generation with `close`; mismatches retain the hold. Confirm production admission and the saved business recovery list before handing POL-6 back to Polaris. The live `workspace_busy` incident is therefore still pending real governance closure.
