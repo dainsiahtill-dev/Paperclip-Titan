@@ -7,7 +7,7 @@ import type { PhysicalWorkspaceIdentity } from "./workspace-physical-identity.js
 
 type Owner = typeof workspaceWriteOwners.$inferSelect;
 type Run = typeof heartbeatRuns.$inferSelect;
-type TrackedRun = Pick<Run, "id" | "companyId" | "agentId" | "runtimeMode" | "controllerBootId" | "processPid" | "processGroupId" | "processStartedAt">;
+type TrackedRun = Pick<Run, "id" | "companyId" | "agentId" | "status" | "errorCode" | "runtimeMode" | "controllerBootId" | "processPid" | "processGroupId" | "processStartedAt">;
 export const LEGACY_WORKSPACE_MIGRATION_KIND = "LEGACY_WORKSPACE_MIGRATION";
 
 /** Stored host evidence must describe a complete, distinct kernel lifetime.
@@ -41,7 +41,7 @@ function durableDrain(owner: Owner, identity: WorkspaceLaunchIdentity) {
     && owner.history.some(event => event.event === "released" && event.generation === owner.generation && event.launchId === owner.launchId);
 }
 
-async function priorGuardBinding(tx: Pick<Db, "select">, owner: Owner, run: TrackedRun, identity: WorkspaceLaunchIdentity, stamped: boolean) {
+async function priorGuardBinding(tx: Pick<Db, "select">, owner: Owner, run: TrackedRun, identity: WorkspaceLaunchIdentity, stamped: boolean, verifiedOriginalController?: string) {
   const launch = owner.history.filter(event => event.event === "launch_bound" && event.generation === owner.generation && event.launchId === owner.launchId).at(-1);
   const sealed = owner.history.filter(event => ["payload_bound", "namespace_drained"].includes(String(event.event)) && event.generation === owner.generation && event.launchId === owner.launchId);
   const end = sealed.find(event => event.event === "payload_bound") ?? sealed.at(-1);
@@ -53,7 +53,7 @@ async function priorGuardBinding(tx: Pick<Db, "select">, owner: Owner, run: Trac
   const namespace = createHash("sha256").update(`${identity.bootId}\n${identity.observerNamespace}`).digest("hex");
   return Boolean(event && (stamped || (event.createdAt.getTime() >= first && event.createdAt.getTime() <= last))
     && event.payload?.localProcess === true && event.payload.localNamespace === namespace
-    && event.payload.controllerBootId === run.controllerBootId
+    && event.payload.controllerBootId === (verifiedOriginalController ?? run.controllerBootId)
     && event.payload.processPid === run.processPid && event.payload.processGroupId === run.processGroupId
     && event.payload.processStartedAt === run.processStartedAt!.toISOString());
 }
@@ -68,13 +68,21 @@ export async function workspaceRunHasTrackedOwner(tx: Pick<Db, "select">, run: T
     const identity = owner.launchIdentity as WorkspaceLaunchIdentity | null;
     if (!identity || !owner.launchId || identity.launchId !== owner.launchId) continue;
     const drained = durableDrain(owner, identity);
+    const receipt = owner.stopReceipt;
+    const original = receipt?.originalControllerBootId;
+    const verifiedOriginalController = drained && run.status === "failed" && run.errorCode === "process_lost"
+      && receipt?.verification === "local_operator" && typeof receipt.inputDigest === "string" && /^[a-f0-9]{64}$/.test(receipt.inputDigest)
+      && typeof original === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(original)
+      && owner.history.some(event => event.event === "namespace_drained" && event.generation === owner.generation && event.launchId === owner.launchId
+        && event.verification === "local_operator" && event.inputDigest === receipt.inputDigest && event.originalControllerBootId === original)
+      ? original : undefined;
     // A removed original directory cannot resurrect its verified stopped writer.
     // Live/unknown lifetimes still require current physical source identity.
     if (!source && (!drained || !rawCwd || path.resolve(rawCwd) !== owner.canonicalRoot)) continue;
     const binding = owner.history.filter(event => event.event === "run_process_bound" && event.launchId === owner.launchId && event.generation === owner.generation).at(-1)?.binding as Record<string, unknown> | undefined;
     const bound = binding && binding.companyId === run.companyId && binding.agentId === run.agentId && binding.runId === run.id
       && binding.processPid === run.processPid && binding.processGroupId === run.processGroupId && binding.processStartedAt === run.processStartedAt?.toISOString();
-    if ((!bound && !drained) || !await priorGuardBinding(tx, owner, run, identity, Boolean(bound))) continue;
+    if ((!bound && !drained) || !await priorGuardBinding(tx, owner, run, identity, Boolean(bound), verifiedOriginalController)) continue;
     if (!owner.releasedAt && ["active", "stopping", "unknown", "reserved"].includes(owner.state)) return true;
     // This is an already committed exact namespace-drain receipt, not a new
     // observation in the current boot and never a legacy process-group receipt.

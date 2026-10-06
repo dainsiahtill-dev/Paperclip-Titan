@@ -1,0 +1,34 @@
+{
+  "retainedRed": [
+    {
+      "passed": 11,
+      "failed": 1,
+      "case": "terminal active owner"
+    },
+    {
+      "passed": 13,
+      "failed": 1,
+      "case": "reaper controller changed"
+    },
+    {
+      "passed": 16,
+      "failed": 1,
+      "case": "next protected claim after release"
+    }
+  ],
+  "green": {
+    "passed": 52,
+    "failed": 0,
+    "skipped": 0
+  },
+  "serverTypecheckExitCode": 0,
+  "serverBuildExitCode": 0,
+  "sourceFreeze": {
+    "server/src/services/workspace-namespace-closure.ts": "ec24b727b015774a15d5896d2abee5f921661aa047e6f34f68ed88aa4a3f6165",
+    "server/src/services/workspace-owner-provenance.ts": "f76a961f972ad784014a8cb90b52da16addd6c689f13f53c332743fd9fe809bd",
+    "server/src/services/legacy-workspace-closure.ts": "b4517ea46cef773d3a86b749fbc6e3f49dce047c64bf63fe8ff2f9506ebe913b",
+    "server/src/__tests__/workspace-namespace-closure.test.ts": "a23e54b701a2f648c1ef224b4a3616371c2eb0e825a096e756ef7cf7a2c1dd60",
+    "scripts/workspace-legacy-closure.ts": "92e1e5617d57a557f3946e519805c1b98e7056e6808f0afd9cb0f5727efdb743"
+  },
+  "actualReconciliation": "pending formal operation"
+}

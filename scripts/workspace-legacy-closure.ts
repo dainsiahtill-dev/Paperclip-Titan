@@ -12,7 +12,7 @@ inspect is read-only. prepare creates an audited maintenance hold.
 close requires an actual changed host kernel epoch and unchanged precise identities.
 No command restarts WSL, signals processes, changes run states, deletes records, or wakes tasks.
 Boot/namespace proof cannot be supplied as command-line arguments.
-namespace-close verifies an exact unknown guarded namespace, appends a real drain
+namespace-close verifies an exact guarded namespace owner of a terminal run, appends a real drain
 receipt and formally releases it. Old failed runs and their ledgers remain unchanged.
 `;
 

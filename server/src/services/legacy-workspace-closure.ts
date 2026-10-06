@@ -81,6 +81,7 @@ async function cohort(tx: Db, source: PhysicalWorkspaceIdentity, companyId: stri
     ...owner.history.flatMap(event => Array.isArray(event.roots) ? event.roots.flatMap(root => typeof root === "object" && root && "root" in root && typeof root.root === "string" ? [root.root] : []) : [])].some(root => overlap(root, source.root)));
   if (conflicts.length) throw legacyClosureError("workspace_held");
   const candidates = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId, runtimeMode: heartbeatRuns.runtimeMode, controllerBootId: heartbeatRuns.controllerBootId,
+    status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode,
     processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId, processStartedAt: heartbeatRuns.processStartedAt, cwd: executionWorkspaces.cwd,
     snapshotCwd: sql<string | null>`${heartbeatRuns.contextSnapshot}->'paperclipWorkspace'->>'cwd'` })
     .from(environmentLeases).innerJoin(heartbeatRuns, eq(environmentLeases.heartbeatRunId, heartbeatRuns.id))
