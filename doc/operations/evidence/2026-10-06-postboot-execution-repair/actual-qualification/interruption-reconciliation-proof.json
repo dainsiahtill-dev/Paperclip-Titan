@@ -1,0 +1,37 @@
+{
+  "operatorError": "service stop batched after active preflight result",
+  "interruptedRunId": "c99c422c-bf2f-44fd-a623-bb86cd673ec6",
+  "sourceRetained": [
+    {
+      "id": "c99c422c-bf2f-44fd-a623-bb86cd673ec6",
+      "status": "failed",
+      "error": "Process lost -- child pid 36361 is no longer running; retrying once",
+      "digest": "f7c296b3a858e47b7cb8652125c9095433a224043e8df9e80bcf305261dd9ad0"
+    }
+  ],
+  "sourceRunEventsLeasesUnchangedByClosure": true,
+  "ownerId": "beb264b4-abe7-44d5-a4b8-de1870a77889",
+  "ownerState": "released",
+  "stopReceipt": {
+    "pid": 36361,
+    "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+    "launchId": "9141330e-b8d8-47ed-a797-e45f13836c5e",
+    "namespace": "pid:[4026532198]",
+    "startedAt": "2026-10-06T05:18:44.145Z",
+    "generation": "e70a0181-b7af-413c-9bee-058868eed91e",
+    "observedAt": "2026-10-06T05:47:33.906Z",
+    "payloadPid": 36363,
+    "inputDigest": "c28c3c74a033dc8b1e532d429036c8bc5c6d076d8face14c4d1161d2db86800b",
+    "namespacePid": 36362,
+    "payloadStart": "1929017",
+    "verification": "local_operator",
+    "namespaceStart": "1929009",
+    "processGroupId": 36361,
+    "observerNamespace": "pid:[4026532182]",
+    "payloadMountNamespace": "mnt:[4026532194]",
+    "observerMountNamespace": "mnt:[4026532179]",
+    "originalControllerBootId": "4d99ed6b-f145-4c4e-90e3-e0f67a6bb7bb"
+  },
+  "oldCheckpointPreserved": true,
+  "businessWorkNotAutomaticallyResumed": true
+}

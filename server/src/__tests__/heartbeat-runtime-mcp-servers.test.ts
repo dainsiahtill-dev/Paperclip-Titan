@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -25,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
+import { writeManagedCodexMcpConfig } from "../../../packages/adapters/codex-local/src/server/codex-home.js";
 
 import { toolAccessService } from "../services/tool-access.js";
 
@@ -148,6 +152,11 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(JSON.stringify(first)).not.toContain(uninstalledConnection!.id);
     expect(second).toHaveLength(1);
     expect(second[0]!.connectionId).toBe(first[0]!.connectionId);
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "pc-generated-mcp-policy-"));
+    try {
+      await writeManagedCodexMcpConfig({ codexHome: home, apiBaseUrl: "https://paperclip.example.test", gateways: first.map(server => ({ name: server.name, endpointPath: server.url, bearerToken: server.token })) });
+      expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toContain('default_tools_approval_mode = "approve"');
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
 
     const gateways = await db.select().from(toolMcpGateways);
     expect(gateways).toHaveLength(1);

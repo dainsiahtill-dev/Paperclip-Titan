@@ -1,0 +1,30 @@
+{
+  "priorMappingDidNotApplyToActualRoute": true,
+  "actualRoutes": [
+    "/mcp/gateways/gw_<32hex>",
+    "/mcp/runtime-tools",
+    "/api/mcp/project-tools",
+    "/api/tool-gateway/gateways/<id>/mcp"
+  ],
+  "boundary": "generated same-origin exact broker routes; no URL userinfo; unmanaged/foreign unchanged",
+  "retainedRed": {
+    "passed": 56,
+    "failed": 1
+  },
+  "green": {
+    "numPassedTests": 66,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "success": true
+  },
+  "nativeStrictConfigParser": {
+    "policyFieldAccepted": true,
+    "unknownControlRejected": true,
+    "modelInvoked": false
+  },
+  "sourceFreeze": {
+    "packages/adapters/codex-local/src/server/codex-home.ts": "3c0cf2c9b8d963e8f4889ad810f29246f71d99c973dfdadec0fc88518543d38e",
+    "packages/adapters/codex-local/src/server/codex-home.test.ts": "f285a5eb5319b989ba95c78c853d7969f7fdb426cc47a5860c9497a5352d2f81",
+    "server/src/__tests__/heartbeat-runtime-mcp-servers.test.ts": "bd5a130925f45987e734bd5cd323c938efcb62965fb3a6b925d6565abf633981"
+  }
+}

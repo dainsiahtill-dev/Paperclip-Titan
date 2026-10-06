@@ -1,0 +1,30 @@
+{
+  "sourceRunId": "c99c422c-bf2f-44fd-a623-bb86cd673ec6",
+  "gatewayMetadataOnly": [
+    {
+      "name": "paperclip-projects",
+      "origin": "http://127.0.0.1:3100",
+      "path": "/api/mcp/project-tools",
+      "clientApproval": null
+    },
+    {
+      "name": "paperclip-connections",
+      "origin": "http://127.0.0.1:3100",
+      "path": "/mcp/runtime-tools",
+      "clientApproval": null
+    },
+    {
+      "name": "paperclip-assigned",
+      "origin": "http://127.0.0.1:3100",
+      "path": "/mcp/gateways/gw_a6953e24530f42959a3ae717cabd7b86",
+      "clientApproval": null
+    },
+    {
+      "name": "native-b84e6742",
+      "origin": "http://127.0.0.1:3100",
+      "path": "/mcp/gateways/gw_a6953e24530f42959a3ae717cabd7b86",
+      "clientApproval": null
+    }
+  ],
+  "noCredentialsIncluded": true
+}

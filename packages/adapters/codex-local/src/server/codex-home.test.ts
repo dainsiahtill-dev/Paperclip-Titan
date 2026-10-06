@@ -1035,7 +1035,7 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
-  it.each(["https://other.example/api/tool-gateway/gateways/external/mcp", "/other/mcp"])("retains client approval for a gateway outside Paperclip's governed endpoint: %s", async endpointPath => {
+  it.each(["https://other.example/api/tool-gateway/gateways/external/mcp", "/other/mcp", "https://other.example/mcp/gateways/gw_0123456789abcdef0123456789abcdef", "/mcp/gateways/not-a-public-id"])("retains client approval for a gateway outside Paperclip's governed endpoint: %s", async endpointPath => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-approval-"));
     try {
       await fs.writeFile(path.join(root, "config.toml"), 'approval_policy = "never"\n\n[mcp_servers.unmanaged]\nurl = "https://other.example/mcp"\ndefault_tools_approval_mode = "prompt"\n');
@@ -1044,6 +1044,14 @@ describe("evaluateCodexCredentialReadiness", () => {
       expect(config).toContain('approval_policy = "never"');
       expect(config).toContain('default_tools_approval_mode = "prompt"');
       expect(config).not.toContain('default_tools_approval_mode = "approve"');
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["/mcp/gateways/gw_0123456789abcdef0123456789abcdef", "/mcp/runtime-tools", "/api/mcp/project-tools"])("approves the actual owned runtime broker route: %s", async endpointPath => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-runtime-gateway-"));
+    try {
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways: [{ name: "paperclip-assigned", endpointPath, bearerToken: "test-token" }] });
+      expect(await fs.readFile(path.join(root, "config.toml"), "utf8")).toContain('default_tools_approval_mode = "approve"');
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

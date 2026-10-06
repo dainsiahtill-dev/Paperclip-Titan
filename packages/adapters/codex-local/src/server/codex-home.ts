@@ -357,7 +357,9 @@ function buildManagedMcpBlock(input: {
     }
     const gatewayUrl = new URL(gateway.endpointPath, input.apiBaseUrl);
     const governed = gatewayUrl.origin === new URL(input.apiBaseUrl).origin
-      && gatewayUrl.pathname.startsWith("/api/tool-gateway/")
+      && (/^\/api\/tool-gateway\/gateways\/[^/]+\/mcp$/.test(gatewayUrl.pathname)
+        || /^\/mcp\/gateways\/gw_[a-f0-9]{32}$/.test(gatewayUrl.pathname)
+        || ["/mcp/runtime-tools", "/api/mcp/project-tools"].includes(gatewayUrl.pathname))
       && !gatewayUrl.username && !gatewayUrl.password;
     const url = gatewayUrl.toString();
     lines.push(
