@@ -7064,6 +7064,94 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairWakeups).toHaveLength(0);
   });
 
+  it.each(["done", "cancelled"])("cancels a queued comment for a %s task before invoking its adapter", async status => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedRunFixture({
+      runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued",
+      contextSnapshot: { commentId: randomUUID(), wakeReason: "issue_reopened_via_comment" },
+    });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    await db.update(heartbeatRuns).set({ startedAt: null }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: "issue_terminal_status", startedAt: null });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0]?.status).toBe("skipped");
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("idle");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status, executionRunId: null });
+  });
+
+  it.each(["done", "cancelled"])("skips admission of an obsolete comment after the task becomes %s", async status => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "interrupted" });
+    await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, finishedAt: new Date(), resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status, checkoutRunId: null, executionRunId: null }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_reopened_via_comment",
+      contextSnapshot: { issueId, commentId: randomUUID() }, payload: { issueId }, requestedByActorType: "system" })).toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_terminal_status")));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ status: "skipped", runId: null });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it.each(["done", "cancelled"])("cancels ordinary work when the task becomes %s at the provider boundary", async status => {
+    const { agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    const heartbeat = heartbeatService(db, {
+      beforeResolvedInteractionContinuationDispatchCheck: async () => { await db.update(issues).set({ status }).where(eq(issues.id, issueId)); },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("idle");
+  });
+
+  it.each([false, true])("cancels reassigned owner work at the provider boundary (comment: %s)", async comment => {
+    const commentId = randomUUID();
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued",
+      contextSnapshot: comment ? { commentId, wakeReason: "issue_commented" } : {} });
+    if (comment) await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+      authorType: "user", authorUserId: "responsible-user", body: "Continue the assigned work" });
+    const nextAgentId = randomUUID();
+    await db.insert(agents).values({ id: nextAgentId, companyId, name: "New owner", role: "engineer", status: "idle", adapterType: "codex_local" });
+    const heartbeat = heartbeatService(db, {
+      beforeResolvedInteractionContinuationDispatchCheck: async () => { await db.update(issues).set({ assigneeAgentId: nextAgentId }).where(eq(issues.id, issueId)); },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("idle");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.assigneeAgentId).toBe(nextAgentId);
+  });
+
+  it("dispatches valid second work after skipping a completed task's comment", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued",
+      contextSnapshot: { commentId: randomUUID(), wakeReason: "issue_reopened_via_comment" } });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const nextIssueId = randomUUID();
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, runtimeMode: "legacy", invocationSource: "assignment",
+      status: "queued", contextSnapshot: { issueId: nextIssueId, wakeReason: "issue_assigned" } });
+    await db.insert(issues).values({ id: nextIssueId, companyId, title: "Valid next work", status: "in_progress",
+      assigneeAgentId: agentId, executionRunId: nextRunId, responsibleUserId: "responsible-user" });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, nextIssueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Next work completed", provider: "test", model: "test-model" };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: "issue_terminal_status" });
+    expect(await heartbeat.getRun(nextRunId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(issues).where(eq(issues.id, nextIssueId)))[0]?.status).toBe("done");
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("idle");
+  });
+
   it("stops controller renewal and releases execution controls when teardown deadline cleanup throws", async () => {
     const { runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
     mockAdapterExecute.mockImplementationOnce(async () => {

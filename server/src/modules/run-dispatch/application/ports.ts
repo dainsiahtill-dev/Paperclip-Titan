@@ -39,9 +39,13 @@ export type CancelStaleQueuedRunInput = {
   companyId: string;
   now: Date;
   expectedStatus: "queued" | "running";
+  /** An owner-scoped continuation cannot inherit non-assignee notification authority. */
+  requireTaskAssignee?: boolean;
 };
 
 export type DispatchResolvedInteractionInput<T> = CancelStaleQueuedRunInput & {
+  /** Ordinary/non-assignee wakes use the same gate without claiming a continuation lock. */
+  enforceExecutionLock?: boolean;
   dispatch: (markDispatchStarted: () => void) => Promise<T>;
 };
 

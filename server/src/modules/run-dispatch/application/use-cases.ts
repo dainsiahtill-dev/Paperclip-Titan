@@ -53,6 +53,7 @@ export function createCancelStaleQueuedRun(deps: { writer: RunDispatchWriter }) 
     runId: string;
     companyId: string;
     expectedStatus: "queued" | "running";
+    requireTaskAssignee?: boolean;
     now?: Date;
   }) => deps.writer.cancelStaleQueuedRun({ ...input, now: input.now ?? new Date() });
 }
@@ -62,6 +63,8 @@ export function createDispatchResolvedInteractionIfCurrent(deps: { writer: RunDi
     runId: string;
     companyId: string;
     expectedStatus: "queued" | "running";
+    enforceExecutionLock?: boolean;
+    requireTaskAssignee?: boolean;
     dispatch: (markDispatchStarted: () => void) => Promise<T>;
     now?: Date;
   }) => deps.writer.dispatchResolvedInteractionIfCurrent({

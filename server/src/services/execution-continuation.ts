@@ -22,6 +22,12 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+export class ContinuationTaskInvalidatedError extends Error {
+  constructor(readonly code: "continuation_task_not_found" | "continuation_task_terminal" | "continuation_task_ownership_changed") {
+    super(code);
+    this.name = "ContinuationTaskInvalidatedError";
+  }
+}
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -88,12 +94,11 @@ export async function buildExecutionContinuation(input: {
     .select()
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
-  if (
-    !issue ||
-    issue.assigneeAgentId !== input.agentId ||
-    ["done", "cancelled"].includes(issue.status)
-  )
-    throw new Error("continuation_task_ownership_changed");
+  if (!issue) throw new ContinuationTaskInvalidatedError("continuation_task_not_found");
+  if (["done", "cancelled"].includes(issue.status))
+    throw new ContinuationTaskInvalidatedError("continuation_task_terminal");
+  if (issue.assigneeAgentId !== input.agentId)
+    throw new ContinuationTaskInvalidatedError("continuation_task_ownership_changed");
   const rows = await db
     .select()
     .from(issueComments)

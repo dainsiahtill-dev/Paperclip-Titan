@@ -387,7 +387,7 @@ describe("decideQueuedRunStaleness", () => {
     it.each(["done", "cancelled", "todo", "backlog", "blocked"])("rejects a task in %s", (issueStatus) => {
       expect(decideQueuedRunStaleness({ ...connectionFacts(), issueStatus }, NOW)).toMatchObject({
         stale: true,
-        errorCode: "issue_not_in_progress",
+        errorCode: ["done", "cancelled"].includes(issueStatus) ? "issue_terminal_status" : "issue_not_in_progress",
       });
     });
 
@@ -420,7 +420,7 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
-  it("allows a comment wake to bypass the ownership, terminal-status, and review-participant checks", () => {
+  it("allows an active review comment wake to bypass ownership and review-participant checks", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueAssigneeAgentId: "agent-1",

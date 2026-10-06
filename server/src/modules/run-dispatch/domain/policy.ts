@@ -314,6 +314,7 @@ export function decideScheduledRetryGate(
     };
   }
 
+
   if (facts.retryReasonKind === "disposition_repair" && facts.dispositionRepair) {
     const repair = facts.dispositionRepair;
     const superseded =
@@ -500,6 +501,16 @@ export function decideQueuedRunStaleness(
   facts: QueuedRunFacts,
   _now: Date,
 ): StalenessDecision {
+  // A saved comment is context, not authority to restart completed work.
+  // Explicit session controls retain their existing terminal-task semantics.
+  if (facts.issueFound && ["done", "cancelled"].includes(facts.issueStatus ?? "") && !facts.resumeIntent) {
+    return {
+      stale: true,
+      errorCode: "issue_terminal_status",
+      reason: `Cancelled because issue reached terminal status (${facts.issueStatus}) before the queued run could start`,
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
+    };
+  }
   if (!facts.issueFound) {
     return {
       stale: true,
@@ -613,7 +624,7 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    terminalBypass: facts.resumeIntent,
   });
   if (statusOutcome === "terminal") {
     return {

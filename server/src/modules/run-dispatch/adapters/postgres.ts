@@ -958,7 +958,7 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
-  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
+  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date, requireTaskAssignee = false) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
@@ -979,7 +979,13 @@ export function createPostgresRunDispatchAdapter(
       now,
       tx,
     );
-    return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
+    const decision = decideQueuedRunStaleness(facts, now);
+    if (!decision.stale && requireTaskAssignee && facts.issueAssigneeAgentId !== run.agentId) {
+      return { issueId, facts, decision: { stale: true as const, errorCode: "issue_assignee_changed" as const,
+        reason: "Cancelled because the task continuation's assignee changed before provider dispatch",
+        details: { issueId, previousAssigneeAgentId: run.agentId, currentAssigneeAgentId: facts.issueAssigneeAgentId } } };
+    }
+    return { issueId, facts, decision };
   }
 
   async function cancelStaleQueuedRun(
@@ -987,7 +993,7 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
+      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now, input.requireTaskAssignee);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
@@ -1028,9 +1034,10 @@ export function createPostgresRunDispatchAdapter(
         tx,
         run,
         input.now,
+        input.requireTaskAssignee,
       );
       const decision =
-        !initialDecision.stale && issueId
+        !initialDecision.stale && issueId && input.enforceExecutionLock !== false
           ? await tx
               .select({ executionRunId: issues.executionRunId })
               .from(issues)

@@ -541,6 +541,50 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it("invalidates an owner-scoped continuation when a comment exemption outlives the assignment", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const nextAgentId = randomUUID();
+      await seedAgent({ id: nextAgentId, companyId, name: "Next owner" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: nextAgentId });
+      const runId = await seedRun({ companyId, agentId, contextSnapshot: {
+        issueId, commentId: randomUUID(), wakeReason: "issue_commented",
+      } });
+      const adapter = createPostgresRunDispatchAdapter(db);
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
+        .toMatchObject({ outcome: "not_stale" });
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date(), requireTaskAssignee: true }))
+        .toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.assigneeAgentId).toBe(nextAgentId);
+    });
+
+    it.each(["done", "cancelled"])("skips an obsolete comment wake after the task becomes %s without failing its employee", async (status) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status, assigneeAgentId: agentId });
+      const wakeupRequestId = randomUUID();
+      await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId,
+        source: "automation", reason: "issue_reopened_via_comment", status: "pending", payload: { issueId } });
+      const runId = await seedRun({ companyId, agentId, wakeupRequestId, contextSnapshot: {
+        issueId, commentId: randomUUID(), wakeReason: "issue_reopened_via_comment", source: "issue.comment.reopen",
+      } });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      const adapter = createPostgresRunDispatchAdapter(db);
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
+        .toMatchObject({ outcome: "cancelled", errorCode: "issue_terminal_status" });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(run).toMatchObject({ status: "cancelled", startedAt: null, processPid: null,
+        resultJson: { stopReason: "issue_terminal_status", timeoutFired: false, effectiveTimeoutSec: 0 } });
+      expect(wake.status).toBe("skipped");
+      expect(agent.status).toBe("active");
+      expect(issue).toMatchObject({ status, executionRunId: null });
+      expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
+        .toEqual({ outcome: "lost_race" });
+    });
+
     it.each([
       { label: "chat source", source: "chat:slack", expected: "chat:slack" },
       {

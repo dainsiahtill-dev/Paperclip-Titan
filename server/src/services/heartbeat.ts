@@ -42,7 +42,7 @@ import {
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
-import { buildExecutionContinuation } from "./execution-continuation.js";
+import { buildExecutionContinuation, ContinuationTaskInvalidatedError } from "./execution-continuation.js";
 import { consumeSuppressedRetryResume, listVerifiedRetryHolds, persistRetrySuppression, readVerifiedRetryDisposition, readVerifiedRetrySupersession, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
 import { assertReconciliationBindingScope, reconciliationDeliveryFingerprint, reconciliationIntentFingerprint, retainReconciliationWorkspaceBinding } from "./reconciliation-delivery.js";
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
@@ -20503,6 +20503,16 @@ export function heartbeatService(
       }
 
       const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      if (dispatchIssueId && !runOptions.nativeLeaseOwner && !runOptions.nativeRestartRecovery) {
+        const staleness = await runDispatch.cancelStaleQueuedRun({
+          runId: run.id, companyId: run.companyId, expectedStatus: "running",
+        });
+        if (staleness.outcome === "cancelled") {
+          applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+          return;
+        }
+        if (staleness.outcome === "lost_race") return;
+      }
       const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
         && typeof run.contextSnapshot?.conversationSessionGeneration === "number";
       if (dispatchIssueId && isConversation(await getIssueExecutionContext(run.companyId, dispatchIssueId))
@@ -21055,7 +21065,8 @@ export function heartbeatService(
         delete context.paperclipSkillTest;
       }
       const executionContinuation =
-        issueRef && !isConversation(issueContext) && issueContext?.assigneeAgentId === agent.id
+        issueRef && !isConversation(issueContext) && issueContext?.assigneeAgentId === agent.id &&
+          !["done", "cancelled"].includes(issueContext.status)
           ? await buildExecutionContinuation({
               db,
               companyId: agent.companyId,
@@ -22723,11 +22734,12 @@ export function heartbeatService(
           ))
         )
           return { dispatched: false };
-        if (
-          !issueId ||
-          (!isResolvedInteractionContinuationWakeContext(context) &&
-            run.scheduledRetryReason !== "native_safe_replacement")
-        ) {
+        const requiresContinuationLock = isResolvedInteractionContinuationWakeContext(context) ||
+          run.scheduledRetryReason === "native_safe_replacement";
+        // Same-run recovery may still own a live runner. Its existing adoption
+        // and physical-stop protocol governs it, not a fresh-dispatch cancel.
+        if (!issueId || (!requiresContinuationLock &&
+            (runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery))) {
           await assertRetryProfile();
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
@@ -22745,6 +22757,8 @@ export function heartbeatService(
           runId: run.id,
           companyId: run.companyId,
           expectedStatus: "running",
+          enforceExecutionLock: requiresContinuationLock,
+          requireTaskAssignee: Boolean(executionContinuation),
           // Synchronous handoff under the ownership lock; the gate commits
           // without awaiting the adapter's asynchronous bootstrap or finalizer.
           dispatch,
@@ -26262,6 +26276,18 @@ export function heartbeatService(
         });
       }
     } catch (outerErr) {
+      if (!legacyAdapterEntered && !nativeDispatchStarted && !runOptions.nativeLeaseOwner &&
+          !runOptions.nativeRestartRecovery && outerErr instanceof ContinuationTaskInvalidatedError) {
+        const stale = await runDispatch.cancelStaleQueuedRun({
+          runId: run.id, companyId: run.companyId, expectedStatus: "running",
+          requireTaskAssignee: true,
+        });
+        if (stale.outcome === "cancelled") {
+          applyRunDispatchPostCommitEffects(stale.postCommitEffects);
+          return;
+        }
+        if (stale.outcome === "lost_race") return;
+      }
       if (
         nativeOwnershipHeld ||
         outerErr instanceof NativeRunnerOwnershipUnverifiedError
@@ -26696,6 +26722,10 @@ export function heartbeatService(
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
+      if (latestRun?.status === "cancelled" && !legacyAdapterEntered && !nativeDispatchStarted &&
+          latestRun.resultJson?.timeoutSource === "stale_queued_run_gate") {
+        await finalizeAgentStatus(run.agentId, "cancelled");
+      }
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
@@ -27587,6 +27617,24 @@ export function heartbeatService(
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+            return { kind: "skipped" as const };
+          }
+
+          if (!executionReconciliationWake && ["done", "cancelled"].includes(issue.status) &&
+              enrichedContextSnapshot.resumeIntent !== true && enrichedContextSnapshot.followUpRequested !== true) {
+            const error = `Wake skipped because the task is ${issue.status}; reopen it before requesting more work.`;
+            if (executionWaitRequestId) {
+              await tx.update(agentWakeupRequests).set({ status: "skipped", reason: "issue_terminal_status",
+                error, finishedAt: new Date(), updatedAt: new Date() }).where(and(
+                eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+            } else {
+              await tx.insert(agentWakeupRequests).values({ ...durableReceiptFields,
+                companyId: agent.companyId, agentId, source, triggerDetail, reason: "issue_terminal_status",
+                payload, status: "skipped", error, requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date() });
+            }
             return { kind: "skipped" as const };
           }
 

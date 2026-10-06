@@ -411,7 +411,7 @@ const support = await getEmbeddedPostgresTestSupport();
           summary: null,
           exposeLowTrustRaw: false,
         }),
-      ).rejects.toThrow("continuation_task_ownership_changed");
+      ).rejects.toThrow("continuation_task_not_found");
       await expect(
         buildExecutionContinuation({
           db,
@@ -423,6 +423,11 @@ const support = await getEmbeddedPostgresTestSupport();
           exposeLowTrustRaw: false,
         }),
       ).rejects.toThrow("continuation_task_ownership_changed");
+    });
+    it.each(["done", "cancelled"])("reports a %s task separately from an ownership change", async status => {
+      await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+      await expect(buildExecutionContinuation({ db, companyId, issueId, agentId,
+        context: {}, summary: null, exposeLowTrustRaw: false })).rejects.toThrow("continuation_task_terminal");
     });
   },
 );
