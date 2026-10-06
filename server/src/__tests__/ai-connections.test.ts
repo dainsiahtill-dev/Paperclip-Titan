@@ -15,7 +15,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible, enforceAgentSafetyPreset } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -73,6 +73,14 @@ describe("managed AI connections", () => {
       } else {
         expect(await readFile(path.join(subEnv.CODEX_HOME, "auth.json"), "utf8")).toBe(token);
         expect(JSON.parse(await readFile(path.join(apiEnvValues.CODEX_HOME, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "fixture-api" });
+        // POL-10: the real managed-subscription projection clears inherited
+        // CODEX_API_KEY; its host-generated reset must still admit audit.
+        const audit = enforceAgentSafetyPreset("codex_local", { safetyPreset: "audit" }, {
+          ...subRun.config, engine: "cli", sandboxMode: "read-only",
+        });
+        expect(audit.sandboxMode).toBe("read-only");
+        expect(audit.model).toBe("unchanged-model");
+        expect((audit.env as Record<string, string>).CODEX_API_KEY).toBe("");
       }
       expect(subEnv.HOME).not.toBe(apiEnvValues.HOME);
       expect(subRun.identity).not.toBe(apiRun.identity);

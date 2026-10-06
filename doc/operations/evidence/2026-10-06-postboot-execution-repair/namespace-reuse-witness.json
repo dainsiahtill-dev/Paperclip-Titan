@@ -1,0 +1,32 @@
+{
+  "attempts": 6,
+  "found": {
+    "attempt": 5,
+    "previous": {
+      "launchId": "4249ed41-c7df-4fd4-bb01-1212e96ae88b",
+      "pid": 30466,
+      "processGroupId": 30466,
+      "startedAt": "2026-10-06T00:52:28.889Z",
+      "namespacePid": 30470,
+      "namespace": "pid:[4026532204]",
+      "namespaceStart": "331479",
+      "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+      "observerNamespace": "pid:[4026532182]",
+      "observerMountNamespace": "mnt:[4026532179]"
+    },
+    "current": {
+      "launchId": "ba0b0e41-0f09-4baf-ad31-7a0ca88b948f",
+      "pid": 30527,
+      "processGroupId": 30527,
+      "startedAt": "2026-10-06T00:52:29.120Z",
+      "namespacePid": 30529,
+      "namespace": "pid:[4026532204]",
+      "namespaceStart": "331502",
+      "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+      "observerNamespace": "pid:[4026532182]",
+      "observerMountNamespace": "mnt:[4026532179]"
+    },
+    "previousInit": null,
+    "oldNamespaceReportedDrained": false
+  }
+}

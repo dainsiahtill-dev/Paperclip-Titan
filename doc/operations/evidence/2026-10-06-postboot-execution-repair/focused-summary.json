@@ -1,0 +1,9 @@
+{
+  "kind": "focused_suite",
+  "command": "pnpm exec vitest run guarded-process / ownership / legacy-closure / safety-presets / Codex readonly effects / Codex args",
+  "success": true,
+  "passed": 111,
+  "failed": 0,
+  "skipped": 0,
+  "fullSuiteQualification": false
+}

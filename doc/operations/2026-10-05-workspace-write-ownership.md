@@ -15,13 +15,21 @@ Cross-company conflicts return an opaque busy result.
 
 Before every supported spawn, the host reserves a launch generation. The guard
 pins source and authorized private runtime directory FDs, starts Bubblewrap with
-a PID namespace and no nested user namespaces, and captures its exact boot,
-namespace-init PID/start identity and namespace inode. The provider stays behind
+a PID namespace and dropped capabilities, and captures its exact boot,
+namespace-init PID/start identity and namespace inode. Codex tools may create
+descendant user/PID/mount namespaces. An inherited native-ABI seccomp filter
+blocks namespace reassociation, custodian-directed signals and process injection.
+The host installs private procfs and a read-only PID-1 mask after all mounts,
+rejects raw host-proc declarations and never relies on Yama for that protection.
+The provider stays behind
 both a Bubblewrap block FD and an explicit nonce ACK on stdin. After namespace
 ownership and run process metadata commit, the outer gate opens only far enough
 to start the fixed host bootstrap. The host validates its unique direct-child
 PID/start, PID/mount namespace, fixed script and current launch nonce, then binds
 that payload identity to the same ownership generation before the inner ACK.
+The fixed bootstrap first enters its own session; its PID, PGID and SID must
+match and differ from the custodian's session. This preserves ordinary tool
+process-group cancellation, including GNU timeout, without exposing PID 1.
 No adapter output supplies this identity. EOF is not ACK. A controller
 death before ACK cannot execute an argv writer. Loader and shell startup hooks
 are removed before the outer sandbox process starts. The remaining provider
@@ -36,7 +44,14 @@ If needed, the host then kills the exact namespace init and wrapper. Before the
 inner ACK, cancellation never grants permission to execute the provider.
 
 A same-host observer must verify the matching namespace is drained before
-recording a stop receipt. Stop acknowledgement references the current run,
+recording a stop receipt. A host-only namespace FD retains the exact kernel
+object from before ACK through durable recording so inode reuse cannot confuse
+the live observation. The FD never reaches the payload and closes on every exit.
+Stop confirmation consumes the complete matching identity, generation, launch
+and host `namespace_drained` journal under a row lock; a later unrelated namespace
+reusing the inode cannot invalidate that committed evidence. Missing or malformed
+evidence remains unverified. An old process-group stop is not this evidence.
+Stop acknowledgement references the current run,
 request, ownership generation and latest launch. Duplicate requests join the
 same cancellation settlement and share a failure; delayed adapter results
 cannot overwrite it as success. Missing identity or failed drain persistence

@@ -40,4 +40,16 @@ describe("agent safety presets", () => {
   it("does not add control-plane permissions", () => {
     expect(applyAgentSafetyPreset("process", {}, { safetyPreset: "manager" }).runtimeConfig).toEqual({ safetyPreset: "manager", heartbeat: { maxConcurrentRuns: 1 } });
   });
+  it("allows the managed subscription credential reset without dropping the read-only profile", () => {
+    const config = { engine: "cli", env: { CODEX_HOME: "/managed/provider", CODEX_API_KEY: "" } };
+    expect(enforceAgentSafetyPreset("codex_local", { safetyPreset: "audit" }, config)).toMatchObject({
+      sandboxMode: "read-only", dangerouslyBypassSandbox: false, env: config.env,
+    });
+  });
+  it.each(["secret", null, false, undefined])("does not confuse a nonblank or malformed credential override with a reset: %j", (value) => {
+    expect(() => enforceAgentSafetyPreset("codex_local", { safetyPreset: "audit" }, { engine: "cli", env: { CODEX_API_KEY: value } })).toThrow(/Audit/);
+  });
+  it.each(["PATH", "NODE_OPTIONS", "CODEX_CONFIG", "LD_PRELOAD", "BASH_ENV"])("rejects even blank executable override %s", (key) => {
+    expect(() => enforceAgentSafetyPreset("codex_local", { safetyPreset: "audit" }, { engine: "cli", env: { [key]: "" } })).toThrow(/Audit/);
+  });
 });

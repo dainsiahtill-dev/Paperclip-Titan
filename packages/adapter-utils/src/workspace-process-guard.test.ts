@@ -112,3 +112,125 @@ it("host read-only source interval refuses write-and-restore while allowing temp
   expect(f.drains).toHaveLength(1);
   expect(await fs.readFile(path.join(f.root, "source"), "utf8")).toBe("original");
 });
+
+it("executes the real Codex sandbox tool under workspace protection without inference", async () => {
+  const f = await fixture();
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "pc-tool-home-")); directories.push(home);
+  f.guard.privateRoots = [home];
+  await fs.writeFile(path.join(f.root, "source"), "original");
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("codex-tool", "codex", [
+    "sandbox", "--permission-profile", ":workspace", "-C", f.root, "--", "/usr/bin/python3", "-c",
+    "from pathlib import Path; assert Path('source').read_text() == 'original'; assert 2 + 2 == 4; Path('report').write_text('tiny_test_passed', encoding='utf8'); print('tiny_test_passed')",
+  ], { cwd: f.root, env: { CODEX_HOME: home }, timeoutSec: 15, graceSec: 1, onLog: async () => {} }));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toContain("tiny_test_passed");
+  expect(await fs.readFile(path.join(f.root, "report"), "utf8")).toBe("tiny_test_passed");
+  expect(f.drains).toHaveLength(1);
+});
+
+it("keeps actual Codex audit tools read-only inside the protected namespace", async () => {
+  const f = await fixture(); f.guard.sourceAccess = "ro";
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "pc-tool-home-")); directories.push(home);
+  f.guard.privateRoots = [home];
+  await fs.writeFile(path.join(f.root, "source"), "original");
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("codex-audit-tool", "codex", [
+    "sandbox", "--permission-profile", ":read-only", "-C", f.root, "--", "/usr/bin/python3", "-c",
+    "from pathlib import Path; import sys; assert Path('source').read_text() == 'original'\ntry: Path('source').write_text('changed', encoding='utf8')\nexcept OSError as error: print('write_denied', error.errno); sys.exit(0)\nsys.exit(42)",
+  ], { cwd: f.root, env: { CODEX_HOME: home, CODEX_API_KEY: "" }, timeoutSec: 15, graceSec: 1, onLog: async () => {} }));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toMatch(/write_denied (1|13|30)/);
+  expect(await fs.readFile(path.join(f.root, "source"), "utf8")).toBe("original");
+  expect(f.drains).toHaveLength(1);
+});
+
+it("prevents a descendant user namespace from killing the outer custodian or reassociating namespaces", async () => {
+  const f = await fixture();
+  const script = [
+    "import ctypes, errno, os, signal",
+    "libc = ctypes.CDLL(None, use_errno=True)",
+    "assert libc.unshare(0x10000000) == 0", // Real nested user namespace
+    "checks = [lambda: libc.kill(1, 9), lambda: libc.kill(-1, 0),",
+    "lambda: libc.syscall(424, -1, 9, 0, 0), lambda: libc.syscall(438, -1, 1, 0),",
+    "lambda: libc.setns(-1, 0), lambda: libc.ptrace(0, 0, 0, 0),",
+    "lambda: libc.process_vm_writev(1, 0, 0, 0, 0, 0)]",
+    "for check in checks:",
+    " ctypes.set_errno(0); assert check() == -1; assert ctypes.get_errno() == errno.EPERM",
+    "assert libc.setpgid(0, 1) == -1", // Cannot join the custodian session
+    "os.kill(0, 0)",
+    "for target in ['/proc/1/mem', '/proc/1/task/1/mem', '/proc/self/root/proc/1/mem', '/proc/thread-self/root/proc/1/mem']:",
+    " try: fd = os.open(target, os.O_RDWR)",
+    " except FileNotFoundError: pass",
+    " else: os.close(fd); raise AssertionError('custodian memory exposed')",
+    "pid = os.fork()",
+    "if pid == 0: signal.pause(); os._exit(0)",
+    "os.kill(pid, signal.SIGTERM); os.waitpid(pid, 0)",
+    "print('custodian_protected_and_child_signals_work')",
+  ].join("\n");
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("custodian", "/usr/bin/python3", ["-c", script], {
+    cwd: f.root, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+  }));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toContain("custodian_protected_and_child_signals_work");
+  expect(f.drains).toHaveLength(1);
+});
+
+it("Stop drains real nested Codex tool descendants and a second protected task writes successfully", async () => {
+  const f = await fixture();
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "pc-tool-home-")); directories.push(home);
+  f.guard.privateRoots = [home];
+  const tool = "import os, subprocess, sys, time\nfrom pathlib import Path\np = subprocess.Popen(['/bin/sh', '-c', 'sleep 0.5; printf unsafe > late'], start_new_session=True)\nprint('nested-tool-ready', flush=True)\np.wait()";
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("nested-stop", "codex", [
+    "sandbox", "--permission-profile", ":workspace", "-C", f.root, "--", "/usr/bin/python3", "-c", tool,
+  ], { cwd: f.root, env: { CODEX_HOME: home }, timeoutSec: 5, graceSec: 1,
+    onLog: async (_stream, text) => { if (text.includes("nested-tool-ready")) f.controller.abort(); },
+  }));
+  expect(result.stdout).toContain("nested-tool-ready");
+  expect(f.drains).toHaveLength(1);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  expect(await fs.readFile(path.join(f.root, "late"), "utf8").catch(() => null)).toBeNull();
+  const next = { ...f.guard, signal: new AbortController().signal, beforeLaunch: async () => "launch-2" };
+  const second = await processUtils.withWorkspaceProcessGuard(next, () => processUtils.runChildProcess("second", "/bin/sh", ["-c", "printf safe > second"], {
+    cwd: f.root, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {},
+  }));
+  expect(second.exitCode, second.stderr).toBe(0);
+  expect(await fs.readFile(path.join(f.root, "second"), "utf8")).toBe("safe");
+  expect(f.drains).toHaveLength(2);
+});
+
+it("GNU timeout cancels a tool's whole process group while the employee stays alive", async () => {
+  const f = await fixture();
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("tool-timeout", "/bin/sh", ["-c",
+    "timeout 0.15 sh -c '(sleep 0.45; printf unsafe > late) & wait'; code=$?; sleep 0.65; test ! -e late || exit 42; printf timeout_exit=%s $code",
+  ], { cwd: f.root, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {} }));
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(result.stdout).toBe("timeout_exit=124");
+  expect(await fs.readFile(path.join(f.root, "late"), "utf8").catch(() => null)).toBeNull();
+  expect(f.drains).toHaveLength(1);
+});
+
+it.each(["/proc", "/proc/sys", "/"])("rejects a raw host proc mount before claiming a protected process: %s", async procPath => {
+  const f = await fixture();
+  await expect(processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("proc-alias", "/bin/true", [], {
+    cwd: f.root, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {},
+    localProcessSandbox: { workspaceDir: f.root, extraPaths: [{ path: procPath, access: "ro" }] },
+  }))).rejects.toThrow("raw host proc");
+  expect(f.launches).toHaveLength(0);
+});
+
+it("pins the exact namespace object until the host durably records its drain", async () => {
+  const f = await fixture(); let pinned: string | undefined;
+  f.guard.recordDrain = async identity => {
+    for (const fd of await fs.readdir("/proc/self/fd")) {
+      if (await fs.readlink(`/proc/self/fd/${fd}`).catch(() => null) === identity.namespace) { pinned = fd; break; }
+    }
+    expect(pinned).toBeTruthy();
+    const ns = await fs.stat(`/proc/self/fd/${pinned}`);
+    expect(identity.namespace).toBe(`pid:[${ns.ino}]`);
+    f.drains.push(identity);
+  };
+  const result = await processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("pinned-drain", "/bin/true", [], {
+    cwd: f.root, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {},
+  }));
+  expect(result.exitCode).toBe(0);
+  expect(await fs.readlink(`/proc/self/fd/${pinned}`).catch(() => null)).not.toBe(f.drains[0]!.namespace);
+});

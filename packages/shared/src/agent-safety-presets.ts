@@ -33,6 +33,9 @@ export function enforceAgentSafetyPreset(adapterType: string, savedRuntimeConfig
     }
   }
   for (const key of Object.keys(record(effectiveConfig.env))) {
+    // Managed subscription runs clear inherited API credentials explicitly.
+    // This exact empty credential reset cannot redirect the executable/home.
+    if (key === "CODEX_API_KEY" && record(effectiveConfig.env)[key] === "") continue;
     if (/^(PATH|LD_.*|DYLD_.*|NODE_OPTIONS|CODEX_(?!HOME$).*|BASH_ENV|ENV|SHELL|PYTHONPATH|PYTHONHOME)$/i.test(key)) fail("executable/home environment overrides are unsupported");
   }
   return { ...effectiveConfig, sandboxMode: "read-only", dangerouslyBypassApprovalsAndSandbox: false, dangerouslyBypassSandbox: false };

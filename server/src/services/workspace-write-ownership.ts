@@ -5,7 +5,7 @@ import { environmentLeases, executionWorkspaces, heartbeatRuns, projectWorkspace
 import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard, type WorkspaceStopObservation } from "@paperclipai/adapter-utils/workspace-process-guard";
 import { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
 import { legacyWorkspaceCandidateClosed } from "./legacy-workspace-closure.js";
-import { workspaceRunHasTrackedOwner } from "./workspace-owner-provenance.js";
+import { workspaceRunHasTrackedOwner, validWorkspaceNamespaceIdentity } from "./workspace-owner-provenance.js";
 export { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
 
 type Owner = typeof workspaceWriteOwners.$inferSelect;
@@ -211,8 +211,12 @@ export function workspaceWriteOwnershipService(db: Db) {
         if (!owner || owner.state !== "reserved") throw new Error("workspace_write_stop_unverified");
         if (!owner.launchId) return { requestId, ownerId: owner.id, generation: owner.generation, launchId: null, proof: "not_launched" as const };
         const identity = owner.launchIdentity as WorkspaceLaunchIdentity | null;
-        if (!identity || owner.stopReceipt?.generation !== owner.generation || owner.stopReceipt?.launchId !== owner.launchId ||
-          !Object.entries(identity).every(([key, value]) => owner.stopReceipt?.[key] === value) || !await workspaceNamespaceDrained(identity))
+        // recordDrain already verified the exact live kernel object before
+        // committing this journal/receipt. Its inode can later be reused by an
+        // unrelated task; a new scan must not invalidate durable host evidence.
+        if (!identity || !validWorkspaceNamespaceIdentity(identity, owner.launchId) || owner.stopReceipt?.generation !== owner.generation || owner.stopReceipt?.launchId !== owner.launchId ||
+          !Object.entries(identity).every(([key, value]) => owner.stopReceipt?.[key] === value) ||
+          !owner.history.some(entry => entry.event === "namespace_drained" && entry.generation === owner.generation && entry.launchId === owner.launchId))
           throw new Error("workspace_write_stop_unverified");
         const observedStop = owner.stopReceipt?.stop as WorkspaceStopObservation | undefined;
         return { requestId, ownerId: owner.id, generation: owner.generation, launchId: owner.launchId, proof: "namespace_drained" as const,

@@ -4,8 +4,10 @@ import fs, { constants } from "node:fs/promises";
 import path from "node:path";
 import { readFileSync, readlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import type { Duplex } from "node:stream";
 import { buildLocalProcessSandboxSpawnTarget } from "./local-process-sandbox.js";
+import { workspaceCustodianSeccomp } from "./workspace-custodian-seccomp.js";
 import { ensurePathInEnv, resolveCommandForLogs, sanitizeInheritedPaperclipEnv, type runChildProcess, type RunProcessResult } from "./server-utils.js";
 
 export type WorkspaceLaunchIdentity = {
@@ -79,6 +81,9 @@ export async function runGuardedWorkspaceProcess(
   let target: Awaited<ReturnType<typeof buildLocalProcessSandboxSpawnTarget>> | undefined;
   let launchId: string | undefined;
   let spawned = false;
+  let filterDirectory: string | undefined;
+  let filter: Awaited<ReturnType<typeof fs.open>> | undefined;
+  let namespacePin: Awaited<ReturnType<typeof fs.open>> | undefined;
   const privateAnchors: Array<{ root: string; handle: Awaited<ReturnType<typeof fs.open>> }> = [];
   try {
     const stat = await anchor.stat();
@@ -110,7 +115,15 @@ export async function runGuardedWorkspaceProcess(
     }
     if (sandbox?.pathAliases?.length) throw new Error("Protected workspace path aliases require pinned mount support");
     for (const extra of [...(sandbox?.managedPaths ?? []), ...(sandbox?.extraPaths ?? [])]) {
-      if (extra.access !== "rw") continue;
+      if (extra.access !== "rw") {
+        const candidate = await fs.realpath(extra.path).catch(() => null);
+        if (candidate) {
+          const contains = (a: string, b: string) => { const rel = path.relative(a, b); return !rel || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)); };
+          if (contains(candidate, "/proc") || contains("/proc", candidate))
+            throw new Error("Protected workspace disallows raw host proc mounts");
+        }
+        continue;
+      }
       const candidate = await fs.realpath(extra.path);
       if (candidate !== root && !privateAnchors.some(entry => entry.root === candidate)) throw new Error("Protected workspace disallows additional writable roots");
     }
@@ -125,9 +138,16 @@ export async function runGuardedWorkspaceProcess(
     for (const [index, entry] of privateAnchors.entries()) {
       const position = target.args.findIndex((value, offset) => value === "--bind" && target!.args[offset + 1] === entry.root && target!.args[offset + 2] === entry.root);
       if (position < 0) throw new Error("Protected runtime mount missing");
-      target.args.splice(position, 3, "--bind-fd", String(index + 6), entry.root);
+      target.args.splice(position, 3, "--bind-fd", String(index + 7), entry.root);
     }
-    target.args.unshift("--unshare-user", "--disable-userns", "--cap-drop", "ALL", "--block-fd", "3", "--json-status-fd", "5");
+    const filterBytes = workspaceCustodianSeccomp();
+    filterDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "pc-custodian-"));
+    const filterPath = path.join(filterDirectory, "policy.bpf");
+    await fs.writeFile(filterPath, filterBytes, { mode: 0o600 });
+    filter = await fs.open(filterPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // Descendant user namespaces are required by Codex's real tool sandbox.
+    // Keep the PID lifetime boundary protected by an inherited kernel filter.
+    target.args.unshift("--unshare-user", "--cap-drop", "ALL", "--seccomp", "6", "--block-fd", "3", "--json-status-fd", "5");
     // bwrap --block-fd also wakes on EOF. A dead controller must not turn
     // that EOF into permission to exec an argv-driven writer. The inner gate
     // accepts one explicit host nonce; it consumes only its line, preserving
@@ -136,14 +156,21 @@ export async function runGuardedWorkspaceProcess(
     const bootstrapScript = 'IFS= read -r ack && [ "$ack" = "$1" ] || exit 125; shift; exec "$@"';
     const payload = target.args.indexOf("--");
     if (payload < 0) throw new Error("Protected process payload boundary missing");
-    target.args.splice(payload + 1, 0, "/bin/sh", "-c", bootstrapScript, "paperclip-launch-gate", acknowledgement);
+    // Install the private procfs LAST, so an extra RO /proc or ancestor mount
+    // cannot expose host processes or cover the custodian's memory mask.
+    // Child userns cannot mount a new procfs for this ancestor PID namespace
+    // or remove its locked proc child mount; no Yama setting is assumed.
+    target.args.splice(payload, 0, "--proc", "/proc", "--tmpfs", "/proc/1", "--remount-ro", "/proc/1");
+    // Give the ACK shell its own session before any provider code can run.
+    // This keeps kill(0)/killpg tool cancellation away from the outer PID 1.
+    target.args.splice(target.args.indexOf("--") + 1, 0, "/usr/bin/setsid", "/bin/sh", "-c", bootstrapScript, "paperclip-launch-gate", acknowledgement);
     launchId = await guard.beforeLaunch();
     signal?.throwIfAborted();
     const observer = { bootId: (await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
       namespace: await fs.readlink("/proc/self/ns/pid"), mountNamespace: await fs.readlink("/proc/self/ns/mnt") };
     const startedAt = new Date().toISOString();
     const child = spawn(target.command, target.args, { cwd, env: { ...env, ...target.env },
-      detached: true, stdio: ["pipe", "pipe", "pipe", "pipe", anchor.fd, "pipe", ...privateAnchors.map(entry => entry.handle.fd)] });
+      detached: true, stdio: ["pipe", "pipe", "pipe", "pipe", anchor.fd, "pipe", filter.fd, ...privateAnchors.map(entry => entry.handle.fd)] });
     spawned = true;
     const gate = child.stdio[3] as Duplex;
     const status = (child.stdio as unknown as Duplex[])[5]!;
@@ -207,6 +234,10 @@ export async function runGuardedWorkspaceProcess(
             const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
             if (Number(fields[1]) !== namespace.namespacePid || await fs.readlink(`/proc/${pid}/ns/pid`) !== namespace.namespace)
               throw new Error("Protected bootstrap payload binding changed");
+            const initStat = await fs.readFile(`/proc/${namespace.namespacePid}/stat`, "utf8");
+            const initFields = initStat.slice(initStat.lastIndexOf(")") + 2).split(" ");
+            if (Number(fields[2]) !== pid || Number(fields[3]) !== pid || fields[3] === initFields[3])
+              throw new Error("Protected bootstrap payload session is not isolated");
             return { ...namespace, payloadPid: pid, payloadStart: fields[19]!, payloadMountNamespace: await fs.readlink(`/proc/${pid}/ns/mnt`) };
           }
         }
@@ -274,6 +305,15 @@ export async function runGuardedWorkspaceProcess(
             namespaceStart: await processStart(namespacePid!), bootId: (await fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim(),
             observerNamespace: await fs.readlink("/proc/self/ns/pid"), observerMountNamespace: await fs.readlink("/proc/self/ns/mnt") };
           if (identity.namespace === await fs.readlink("/proc/self/ns/pid")) throw new Error("Protected process namespace was not isolated");
+          // Retain this exact kernel namespace object through durable drain.
+          // Otherwise nsfs may reuse its inode for a different live task while
+          // the host is still scanning /proc. This FD never reaches the child.
+          namespacePin = await fs.open(`/proc/${identity.namespacePid}/ns/pid`, constants.O_RDONLY);
+          const pinnedNamespace = await namespacePin.stat();
+          if (`pid:[${pinnedNamespace.ino}]` !== identity.namespace ||
+            await fs.readlink(`/proc/self/fd/${namespacePin.fd}`) !== identity.namespace ||
+            await processStart(identity.namespacePid) !== identity.namespaceStart)
+            throw new Error("Protected namespace pin identity changed");
           await guard.bindLaunch(identity);
           await opts.onSpawn?.({ pid: child.pid!, processGroupId: child.pid!, startedAt });
           processBound = true;
@@ -316,5 +356,11 @@ export async function runGuardedWorkspaceProcess(
       await guard.cancelBeforeSpawn(launchId);
     else if (launchId) await guard.markUnknown(launchId);
     throw error;
-  } finally { await anchor.close(); await Promise.all(privateAnchors.map(entry => entry.handle.close())); await target?.cleanup?.(); }
+  } finally {
+    await anchor.close(); await Promise.all(privateAnchors.map(entry => entry.handle.close()));
+    await filter?.close();
+    await namespacePin?.close();
+    if (filterDirectory) await fs.rm(filterDirectory, { recursive: true, force: true });
+    await target?.cleanup?.();
+  }
 }

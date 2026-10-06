@@ -10,6 +10,22 @@ type Run = typeof heartbeatRuns.$inferSelect;
 type TrackedRun = Pick<Run, "id" | "companyId" | "agentId" | "runtimeMode" | "controllerBootId" | "processPid" | "processGroupId" | "processStartedAt">;
 export const LEGACY_WORKSPACE_MIGRATION_KIND = "LEGACY_WORKSPACE_MIGRATION";
 
+/** Stored host evidence must describe a complete, distinct kernel lifetime.
+ * Payload fields remain optional for genuine earlier guarded receipts. */
+export function validWorkspaceNamespaceIdentity(identity: WorkspaceLaunchIdentity, launchId: string | null): boolean {
+  return Boolean(identity && typeof launchId === "string" && launchId.length > 0 && identity.launchId === launchId
+    && Number.isSafeInteger(identity.pid) && identity.pid > 1
+    && Number.isSafeInteger(identity.processGroupId) && identity.processGroupId > 1
+    && typeof identity.startedAt === "string" && Number.isFinite(Date.parse(identity.startedAt))
+    && Number.isSafeInteger(identity.namespacePid) && identity.namespacePid > 1
+    && typeof identity.namespaceStart === "string" && /^\d+$/.test(identity.namespaceStart)
+    && typeof identity.namespace === "string" && /^pid:\[\d+\]$/.test(identity.namespace)
+    && typeof identity.observerNamespace === "string" && /^pid:\[\d+\]$/.test(identity.observerNamespace)
+    && identity.namespace !== identity.observerNamespace
+    && typeof identity.observerMountNamespace === "string" && /^mnt:\[\d+\]$/.test(identity.observerMountNamespace)
+    && typeof identity.bootId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(identity.bootId));
+}
+
 export function isLegacyWorkspaceMigrationOwner(owner: Pick<Owner, "state" | "history">) {
   return owner.state.startsWith("legacy_migration_") || (Array.isArray(owner.history) && owner.history.some(event => event.kind === LEGACY_WORKSPACE_MIGRATION_KIND));
 }
@@ -19,9 +35,7 @@ export function isLegacyWorkspaceMigrationOwner(owner: Pick<Owner, "state" | "hi
  * proves physical drain or permits another writer into that held root. */
 function durableDrain(owner: Owner, identity: WorkspaceLaunchIdentity) {
   return owner.state === "released" && owner.releasedAt && owner.stopReceipt?.generation === owner.generation
-    && Number.isSafeInteger(identity.namespacePid) && identity.namespacePid > 1 && /^\d+$/.test(identity.namespaceStart)
-    && /^pid:\[\d+\]$/.test(identity.namespace) && identity.namespace !== identity.observerNamespace
-    && /^[a-f0-9-]{36}$/.test(identity.bootId)
+    && validWorkspaceNamespaceIdentity(identity, owner.launchId)
     && Object.entries(identity).every(([key, value]) => owner.stopReceipt?.[key] === value)
     && owner.history.some(event => event.event === "namespace_drained" && event.generation === owner.generation && event.launchId === owner.launchId)
     && owner.history.some(event => event.event === "released" && event.generation === owner.generation && event.launchId === owner.launchId);

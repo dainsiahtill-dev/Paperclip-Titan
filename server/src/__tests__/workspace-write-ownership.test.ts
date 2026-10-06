@@ -6,13 +6,14 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
 import { createRequire } from "node:module";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issues, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { workspaceWriteOwnershipService } from "../services/workspace-write-ownership.js";
 import { runWorkspaceJobForControl } from "../services/workspace-runtime.js";
 import { withWorkspaceProcessGuard, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import type { WorkspaceLaunchIdentity } from "@paperclipai/adapter-utils/workspace-process-guard";
+import * as namespaceProof from "@paperclipai/adapter-utils/workspace-process-guard";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -71,6 +72,35 @@ it("rejects an old launch receipt and ownership generation", async () => {
   await expect(service.recordDrain(owner, identity)).rejects.toThrow("transition_rejected");
   await expect(service.releaseIfStopped({ ...owner, generation: randomUUID() })).rejects.toThrow("generation_mismatch");
   expect(await service.claim({ cwd, companyId: owner.companyId, runId: randomUUID() })).toEqual({ outcome: "busy" });
+});
+
+it("a durable exact drain receipt remains valid after its namespace inode is reused", async () => {
+  const { cwd, service, owner } = await claimFixture();
+  await withWorkspaceProcessGuard(service.guard(owner), () => runChildProcess("durable-drain", "/bin/true", [], {
+    cwd, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {},
+  }));
+  const [row] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, owner.id));
+  expect(row.history).toContainEqual(expect.objectContaining({ event: "namespace_drained", generation: owner.generation, launchId: row.launchId }));
+  // Real drain above; only the later observation is modeled. A newly allocated
+  // namespace sharing the old inode must not undo the committed host proof.
+  const reused = vi.spyOn(namespaceProof, "workspaceNamespaceDrained").mockResolvedValue(false);
+  try {
+    expect(await service.confirmStopped(owner, "operator-stop")).toMatchObject({ proof: "namespace_drained", launchId: row.launchId });
+    await db.update(workspaceWriteOwners).set({ history: row.history.filter(event => event.event !== "namespace_drained") }).where(eq(workspaceWriteOwners.id, owner.id));
+    await expect(service.confirmStopped(owner, "operator-stop")).rejects.toThrow("stop_unverified");
+  } finally { reused.mockRestore(); }
+});
+
+it.each([{}, { launchId: "placeholder" }])("a malformed persisted namespace identity cannot acquire durable Stop authority: %j", async malformed => {
+  const { cwd, service, owner } = await claimFixture();
+  await withWorkspaceProcessGuard(service.guard(owner), () => runChildProcess("malformed-drain", "/bin/true", [], {
+    cwd, env: {}, timeoutSec: 3, graceSec: 1, onLog: async () => {},
+  }));
+  const [row] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, owner.id));
+  const identity = "launchId" in malformed ? { launchId: row.launchId } : {};
+  await db.update(workspaceWriteOwners).set({ launchIdentity: identity,
+    stopReceipt: { ...identity, generation: owner.generation, launchId: row.launchId } }).where(eq(workspaceWriteOwners.id, owner.id));
+  await expect(service.confirmStopped(owner, "operator-stop")).rejects.toThrow("stop_unverified");
 });
 
 it("durable identity transaction failure prevents provider effects and retains an unknown hold", async () => {

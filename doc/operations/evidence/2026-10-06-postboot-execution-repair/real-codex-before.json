@@ -1,0 +1,28 @@
+{
+  "kind": "no_inference_real_codex_tool_reproduction",
+  "codexVersion": "codex-cli 0.160.1",
+  "host": {
+    "exit": 0,
+    "stdout": "tiny_test_passed\n",
+    "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/pc-postboot-t97TLa/home\"))\n"
+  },
+  "protected": {
+    "exit": 1,
+    "stdout": "",
+    "stderr": "WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/pc-postboot-t97TLa/home\"))\nbwrap: Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)\n",
+    "launches": 1,
+    "drains": 1
+  },
+  "audit": [
+    {
+      "empty": true,
+      "accepted": false,
+      "error": "Audit read-only source constraint: executable/home environment overrides are unsupported"
+    },
+    {
+      "empty": false,
+      "accepted": false,
+      "error": "Audit read-only source constraint: executable/home environment overrides are unsupported"
+    }
+  ]
+}

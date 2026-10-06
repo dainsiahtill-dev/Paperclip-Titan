@@ -1,0 +1,59 @@
+{
+  "mainAttemptExitZero": false,
+  "sourceFreezeUnchanged": true,
+  "mainPartitionsCompleted": 12,
+  "generalFiles": 677,
+  "serializedFiles": 148,
+  "serialGapFilesExecuted": 21,
+  "pendingProofs": [],
+  "preservedFailures": true,
+  "method": "official complete disjoint partitions; failed whole suites replaced by unchanged-scope full rechecks; no monolithic green claim",
+  "remainingFailures": [],
+  "auditedCoverageComplete": true,
+  "dbWhole": {
+    "passed": 148,
+    "failed": 0,
+    "pending": 0
+  },
+  "rechecks": {
+    "cross-issue-influence-whole": 0,
+    "routines-whole": 0,
+    "workspace-runtime-routes-whole": 0,
+    "serialized3-unrun": 0,
+    "serialized2-unrun": 1,
+    "chat1-whole-shard": 0,
+    "issue-feedback-whole": 0,
+    "db-whole-quiet": 0
+  },
+  "postMainRechecks": {
+    "workspace-runtime-service-authz-final": 0,
+    "tool-connection-removal-final": 0,
+    "plugin-orchestration-final": 0,
+    "execution-workspace-reopen-final": 0
+  },
+  "projects": {
+    "adapter-utils": 1,
+    "adapter-claude-local": 0,
+    "adapter-codex-local": 0,
+    "adapter-grok-local": 0,
+    "adapter-openclaw-gateway": 0,
+    "adapter-opencode-local": 0,
+    "plugin-daytona": 0,
+    "plugin-sdk": 0,
+    "create-paperclip-plugin": 0
+  },
+  "replacedFailures": {
+    "serial0-delivery": "delivery-authority whole30pass",
+    "serial0-feedback": "issue-feedback-whole0",
+    "serial2-unrun": "workspace-runtime-service-authz-final0",
+    "serial3-routines": "routines-whole0",
+    "chat1": "chat1-whole-shard0",
+    "general0": "cross-issue-influence-whole0",
+    "general1-reopen": "execution-workspace-reopen-final0",
+    "general1-cli": "cli-guidance-main-only complete39; test-only mask oldalternateworktrees",
+    "general2": "plugin-orchestration-final0",
+    "general3": "tool-connection-removal-final0",
+    "db": "complete project serial unchangedtime0",
+    "adapter-utils": "whole project1313pass2skip1failure +completegitworkspace-sync-file0"
+  }
+}

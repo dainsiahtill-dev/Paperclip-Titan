@@ -1,0 +1,11 @@
+{
+  "packages/adapter-utils/src/workspace-custodian-seccomp.ts": "71caa7c72e91ad1a32e960c0d8f90368d70c00a0082f7d1c1b80b075d2c1c39c",
+  "packages/adapter-utils/src/workspace-process-guard.ts": "c5b428b9dea44157caf45e8304fb5ce1bf55a13a0f83bd4bf30c10f382eac974",
+  "packages/adapter-utils/src/workspace-process-guard.test.ts": "3121f8adabc57b801ac3633ce1452e54994be7dd2ec545d53170f3e6f3b6b9f1",
+  "packages/shared/src/agent-safety-presets.ts": "384510ef59924d946f5ca324527685a2634ce2eff04cd0d618c1d73aecc521e7",
+  "packages/shared/src/agent-safety-presets.test.ts": "62fc01fd255ca3859095a2e5375559631db8dc36bd092a251ccc4dbbc6560cf6",
+  "server/src/__tests__/ai-connections.test.ts": "fd122dba81f5c48d525a5f8aab9526ad2971ba7df188525280e341ffe4a1b37d",
+  "server/src/services/workspace-write-ownership.ts": "1d61d605310ae66e7329eab036f568a067a487c04c5f21a2d9c64dbdbd1dfa91",
+  "server/src/__tests__/workspace-write-ownership.test.ts": "89b2ce10d9adb06b6123f67fb84af778f7d22944636338e9221ec9292d42dadb",
+  "server/src/services/workspace-owner-provenance.ts": "0bec1f902c176d8a6e5c59c518623c777c1aad5067c2c26b3e4d215ecf60bb53"
+}
