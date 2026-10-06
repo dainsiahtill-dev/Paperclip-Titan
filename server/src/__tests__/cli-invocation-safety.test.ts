@@ -339,6 +339,10 @@ const SKIP_DIRS = new Set([
 ]);
 
 const SKIP_PATH_PREFIXES = [
+  // Isolated checkouts contain another revision's guidance and historical logs.
+  // Keep primary .claude commands and source guidance in this checkout scanned.
+  ".claude/worktrees/",
+  ".worktrees/",
   "doc/logs/",
   "doc/plans/",
   "scripts/",
@@ -525,6 +529,24 @@ describe("paperclipai CLI invocation safety", () => {
       }
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes isolated root worktrees while scanning primary agent guidance", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
+    try {
+      const primary = ["doc/CLI.md", ".claude/commands/review.md", "src/.claude/worktrees/guidance.md"];
+      const isolated = [".claude/worktrees/old-checkout/doc/logs/record.md", ".worktrees/old-checkout/doc/CLI.md"];
+      for (const relPath of [...primary, ...isolated]) {
+        const file = path.join(root, relPath);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, "pnpm paperclipai issue get issue-1\n");
+      }
+      const files = listGuidanceFiles(root).sort();
+      expect(files).toEqual(primary.sort());
+      for (const relPath of files) expect(scanText(relPath, readFileSync(path.join(root, relPath), "utf8"))).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
