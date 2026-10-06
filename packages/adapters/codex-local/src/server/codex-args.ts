@@ -67,7 +67,9 @@ export function buildCodexExecArgs(
     || /^(?:(?:--config=|-c=?)\s*)?(?:sandbox_mode|profile)\s*=/.test(arg),
   );
   if (readOnly) {
-    args.push("--permission-profile", ":read-only", "-c", 'sandbox_mode="read-only"');
+    // exec/resume accept --sandbox; --permission-profile belongs to the
+    // separate sandbox debugging command in supported Codex releases.
+    args.push("--sandbox", "read-only", "-c", 'sandbox_mode="read-only"');
   }
   if (!readOnly && !bypass && !explicitSandbox) {
     args.push("-c", 'sandbox_mode="workspace-write"');

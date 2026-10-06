@@ -1,0 +1,18 @@
+{
+  "red": {
+    "failed": 2,
+    "reason": "Unsupported exec permission-profile flag"
+  },
+  "green": {
+    "passed": 69,
+    "failed": 0,
+    "skipped": 0
+  },
+  "typecheckExitCode": 0,
+  "packageBuildExitCode": 0,
+  "sourceFreeze": {
+    "packages/adapters/codex-local/src/server/codex-args.ts": "8bdf0dad5ef2c62176dd4625eb57d3b3bb5f440190bded2df09467eaf96d5abd",
+    "packages/adapters/codex-local/src/server/codex-args.test.ts": "921cc9de61466097518c9fa7390351e4a9f8705256ce766e065941322869fda9",
+    "packages/adapters/codex-local/src/server/codex-readonly-effect.test.ts": "b7b528343ed01781b26aae5634e1d0d5f4ab5ed8a567125451b1de608c5fdd9c"
+  }
+}

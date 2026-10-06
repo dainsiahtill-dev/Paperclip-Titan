@@ -16,11 +16,19 @@ suite("actual Codex read-only filesystem effect (no inference)", () => {
     const created = applyAgentSafetyPreset("codex_local", {}, { safetyPreset: "audit" });
     const effective = enforceAgentSafetyPreset("codex_local", created.runtimeConfig, { ...created.adapterConfig, cwd });
     const args = buildCodexExecArgs(effective).args;
-    const profile = args[args.indexOf("--permission-profile") + 1];
-    expect(profile).toBe(":read-only");
+    const mode = args[args.indexOf("--sandbox") + 1];
+    expect(mode).toBe("read-only");
+    const profile = `:${mode}`; // The sandbox debugging command has a separate CLI contract.
     const result = spawnSync("codex", ["sandbox", "--permission-profile", profile, "-C", cwd, "--", "/usr/bin/python3", "-c", "from pathlib import Path; import sys\ntry: Path('source.txt').write_text('changed')\nexcept OSError as error:\n print('write_denied', error.errno); sys.exit(0)\nprint('write_allowed'); sys.exit(42)"], { cwd, env: { ...process.env, CODEX_HOME: home }, encoding: "utf8", timeout: 30000 });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/write_denied (1|13|30)/);
     expect(readFileSync(target, "utf8")).toBe("original");
+  });
+  it.each([null, "00000000-0000-0000-0000-000000000000"])("accepts actual exec audit arguments without inference for session %s", resumeSessionId => {
+    const args = buildCodexExecArgs({ sandboxMode: "read-only" }, { resumeSessionId }).args;
+    const result = spawnSync("codex", [...args.slice(0, -1), "--help"], { encoding: "utf8", timeout: 10_000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toMatch(/unexpected argument/);
+    expect(result.stdout).toContain("Usage: codex exec");
   });
 });

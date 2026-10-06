@@ -62,3 +62,5 @@ New local operator commands in `scripts/workspace-legacy-closure.ts`:
 Ordinary Linux alternatives are mounted read-only so tools such as `awk` resolve normally. Namespace shutdown gets a strict, bounded one-second drain observation window; exhausting that window remains unverified. The exact cause of the earlier POL-12 drain failure has not been reproduced.
 
 Current deployment and employee qualification results will be appended after actual execution. No Polaris product implementation is repeated by this repair.
+
+Actual POL-10 continuation f8e7bdd5 passed prior audit environment admission and started a guarded process, but Codex0.160.1 rejected `--permission-profile` before inference. The debug `codex sandbox` command supports that option; `codex exec` does not. Exec now receives its supported `--sandbox read-only` option plus the existing read-only config. Real fresh/resume CLI parsing, physical debug sandbox write denial and safety/argument tests pass69/69. This failed attempt and its real cleanup remain retained; it is not a review verdict.

@@ -13,6 +13,7 @@ describe("buildCodexExecArgs", () => {
     const { args } = buildCodexExecArgs({ sandboxMode: "read-only" }, { resumeSessionId });
     expect(args).toContain('sandbox_mode="read-only"');
     expect(args).not.toContain('sandbox_mode="workspace-write"');
+    expect(args).not.toContain("--permission-profile");
   });
   it("keeps GPT-6 Luna at xhigh or above even when effort is omitted or stale", () => {
     for (const effort of [undefined, "", "medium", "high", "xhigh"]) {
