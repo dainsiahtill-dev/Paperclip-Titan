@@ -35,6 +35,7 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 import { admitQueuedRunCapacity } from "../services/run-capacity.js";
+import { isPaperclipRecoveryWakePayload } from "@paperclipai/adapter-utils/server-utils";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -2539,6 +2540,66 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
       }),
     );
+    const wake = await buildPaperclipWakePayload({
+      db, companyId, agentId: coderId,
+      contextSnapshot: { issueId: sourceIssueId, recoveryActionId: action.id,
+        wakeReason: "issue_recovery_action_restored" },
+      issueSummary: resolved.body.issue,
+    });
+    expect(wake.recovery).toBeNull();
+    expect(isPaperclipRecoveryWakePayload(wake)).toBe(false);
+    expect(wake.issue?.id).toBe(sourceIssueId);
+  });
+
+  it.each(["active", "escalated", "resolved", "cancelled"] as const)("keeps only unsettled recovery instructions in the provider wake (%s)", async status => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "stranded_assigned_issue",
+      ownerType: "agent", ownerAgentId: managerId,
+      previousOwnerAgentId: coderId, returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue", fingerprint: `wake-status:${status}`,
+      evidence: {}, nextAction: "Restore the owner path.", wakePolicy: { type: "wake_owner" },
+    });
+    await db.update(issueRecoveryActions).set({ status }).where(eq(issueRecoveryActions.id, action.id));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const wake = await buildPaperclipWakePayload({ db, companyId, agentId: coderId,
+      contextSnapshot: { issueId: sourceIssueId, recoveryActionId: action.id,
+        recoveryCause: "stranded_assigned_issue", wakeReason: "issue_recovery_action_restored" },
+      issueSummary: issue!,
+    });
+    if (status === "active" || status === "escalated") {
+      expect(wake.recovery).toMatchObject({ cause: "stranded_assigned_issue", nextAction: "Restore the owner path." });
+      expect(isPaperclipRecoveryWakePayload(wake)).toBe(true);
+    } else {
+      expect(wake.recovery).toBeNull();
+      expect(isPaperclipRecoveryWakePayload(wake)).toBe(false);
+      const recoveryOwnerWake = await buildPaperclipWakePayload({ db, companyId, agentId: managerId,
+        contextSnapshot: { issueId: sourceIssueId, recoveryActionId: action.id,
+          recoveryCause: "stranded_assigned_issue", wakeReason: "source_scoped_recovery_action" },
+        issueSummary: issue!,
+      });
+      expect(recoveryOwnerWake.recovery).toMatchObject({ cause: "stranded_assigned_issue" });
+      expect(isPaperclipRecoveryWakePayload(recoveryOwnerWake)).toBe(true);
+      const wrongOwnerWake = await buildPaperclipWakePayload({ db, companyId, agentId: managerId,
+        contextSnapshot: { issueId: sourceIssueId, recoveryActionId: action.id,
+          wakeReason: "issue_recovery_action_restored" }, issueSummary: issue!,
+      });
+      expect(isPaperclipRecoveryWakePayload(wrongOwnerWake)).toBe(true);
+      const [otherIssue] = await db.insert(issues).values({ companyId, title: "Other source task",
+        status: "todo", priority: "medium", assigneeAgentId: coderId }).returning();
+      const foreignIssueWake = await buildPaperclipWakePayload({ db, companyId, agentId: coderId,
+        contextSnapshot: { issueId: otherIssue!.id, recoveryActionId: action.id,
+          wakeReason: "issue_recovery_action_restored" }, issueSummary: otherIssue!,
+      });
+      expect(foreignIssueWake.recovery).toMatchObject({ cause: "stranded_assigned_issue" });
+      expect(isPaperclipRecoveryWakePayload(foreignIssueWake)).toBe(true);
+      await db.update(issueRecoveryActions).set({ returnOwnerAgentId: null }).where(eq(issueRecoveryActions.id, action.id));
+      const missingOwnerWake = await buildPaperclipWakePayload({ db, companyId, agentId: coderId,
+        contextSnapshot: { issueId: sourceIssueId, recoveryActionId: action.id,
+          wakeReason: "issue_recovery_action_restored" }, issueSummary: issue!,
+      });
+      expect(isPaperclipRecoveryWakePayload(missingOwnerWake)).toBe(true);
+    }
   });
 
   it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {

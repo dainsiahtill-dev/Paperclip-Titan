@@ -7989,9 +7989,15 @@ export async function buildPaperclipWakePayload(input: {
         .then((rows) => rows[0] ?? null)
     : null;
   const recoveryEvidence = parseObject(recoveryAction?.evidence);
-  const executionAlreadyReconciled =
-    recoveryAction?.status === "resolved" &&
+  const executionAlreadyReconciled = recoveryAction?.status === "resolved" &&
     Boolean(recoveryEvidence.executionReconciliation);
+  // Keep historical receipts, but do not turn a formally restored owner wake
+  // into recovery work. Queued recovery-owner wakes keep their original fence.
+  const recoveryActionSettled = executionAlreadyReconciled ||
+    (input.contextSnapshot.wakeReason === "issue_recovery_action_restored" &&
+      recoveryAction?.sourceIssueId === issueId &&
+      Boolean(recoveryAction.returnOwnerAgentId) && recoveryAction.returnOwnerAgentId === input.agentId &&
+      (recoveryAction?.status === "resolved" || recoveryAction?.status === "cancelled"));
   const originalAssigneeId =
     recoveryAction?.returnOwnerAgentId ??
     recoveryAction?.previousOwnerAgentId ??
@@ -8034,7 +8040,7 @@ export async function buildPaperclipWakePayload(input: {
     attachmentOmissions,
     externalChatProvider,
     recovery:
-      !executionAlreadyReconciled && (recoveryAction || recoveryCause)
+      !recoveryActionSettled && (recoveryAction || recoveryCause)
         ? {
             cause: recoveryAction?.cause ?? recoveryCause,
             failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
