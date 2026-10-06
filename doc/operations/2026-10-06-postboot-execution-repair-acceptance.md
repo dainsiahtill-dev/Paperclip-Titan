@@ -36,3 +36,12 @@ Artifacts remain repository/local operator storage per user destination. Sensiti
 All twelve official disjoint partitions were attempted against unchanged implementation. The initial broad attempt was not exit-zero; its failures remain preserved. Whole-file/project rechecks passed at original timeouts, and every file/project skipped by a failed wrapper was executed. The final audit has no unrun coverage or unresolved failures; this is not a claim that a monolithic command passed. Database whole-project serial verification: 148 passed. CLI guidance main-checkout39passed under a test-only mount hiding older unrelated worktrees; no old directory was moved/deleted/copied. Production build exit0. No deadline, threshold, assertion, skip policy or dependency changed.
 
 Polaris original root remains device2096/inode244796/HEAD9bb5bd1b4. Its route implementation is already committed according to owner evidence; continue only unfinished POL-9 qualification/independent review after fresh authority. Do not redo POL-6 implementation.
+
+## Deployment addendum
+
+- Implementation main/remote: ea0cc3abcc9890beb41260d9d7ea64c13ac358e9.
+- Default3100 service sourceCLI restarted on Node24 with --no-repair and existing devUI; actualnewPID7027/startTicks739441, serverVersion2026.916.1+149.git.ea0cc3abc, startupRecoveryready/authReadytrue. Build stamp726894ccf predates commit and is not the running sourceCLI entry.
+- Bothcompanies and38employees preserve name/role/title/reporting/adapter/model/runtime/permissions/budgets/status exactly; configuration bytes unchanged. Hotrestartlost/skipped arrays empty.
+- Exactoriginal historicalruns/leases/events digests unchanged; genuinepostbootmigration remainsclosed with no fabricated namespace receipt. Noactive/queued/retry/pendingwakes remain.
+- Ordered API/PostgreSQLstop verified before coldbackup;8469files sequentially checked against stoppedinstance. Backuproot /home/dains/.paperclip/backups/postboot-execution-20261006T010107Z. It excludes oldbackupduplicates, workspaces andPolaris source. Initial random-access gzipvalidator was inefficient; only its ownedreadonlyprocess was replaced by streamverification, preserving archive anddata.
+- NoWSLrestart, provider/modelcall, business replay orPolaris product edit performed inthis repair. Actual inference-backed employee qualification remains pending fresh authorization.
