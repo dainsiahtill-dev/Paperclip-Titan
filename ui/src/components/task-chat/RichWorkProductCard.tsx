@@ -4,6 +4,8 @@ import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath } from "@/lib/issue-attachments";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { workspaceFileRefSchema } from "@paperclipai/shared";
+import { ArtifactFileChip } from "@/components/ArtifactFileChip";
 import {
   ExternalLink,
   Maximize2,
@@ -131,6 +133,10 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const openIssueGallery = useContext(IssueGalleryContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const metadata = workProduct.metadata;
+  const parsedFileRef = workspaceFileRefSchema.safeParse(metadata?.resourceRef);
+  const fileRef = parsedFileRef.success &&
+    (!parsedFileRef.data.issueId || parsedFileRef.data.issueId === workProduct.issueId)
+    ? parsedFileRef.data : null;
   const contentType = stringMeta(metadata, "contentType") ?? "";
   const isImage = isImageContentType(contentType);
   const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename"));
@@ -258,7 +264,9 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       </div>
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
-        {mediaPath ? (
+        {fileRef ? (
+          <ArtifactFileChip workspaceFileRef={fileRef} label={action} />
+        ) : mediaPath ? (
           <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline">
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
           </button>

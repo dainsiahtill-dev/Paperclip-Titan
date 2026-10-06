@@ -42,6 +42,10 @@ cannot create, replace or remove controller-observed report contracts. Native
 and remote artifact publication retain their existing authority; this observer
 requires a locally readable bound workspace and does not grant filesystem write
 access or disable a sandbox.
+Protected shared Codex workspaces retain their explicit CLI-engine requirement.
+For an employee without that setting, declare
+`assigneeAdapterOverrides.adapterConfig.engine: "cli"` on the task; auto/ACP
+lifetime is not admitted. This changes neither its model nor sandbox protection.
 
 The controller captures report hashes after acquiring the physical source lane
 and before provider dispatch. It pins company, task, source run, actual run
@@ -84,6 +88,9 @@ references. Opening a report resolves the pinned execution workspace, even after
 a newer reviewer workspace exists. Company/project/task/source bindings and
 controller-authored product evidence are enforced; caller-created product rows
 cannot grant access to another execution workspace.
+The product card opens validated, same-task workspace references in the existing
+file viewer with the exact project/execution-workspace selector. Ordinary URL and
+attachment/media actions retain their previous behavior.
 
 ## Resource semantics
 
