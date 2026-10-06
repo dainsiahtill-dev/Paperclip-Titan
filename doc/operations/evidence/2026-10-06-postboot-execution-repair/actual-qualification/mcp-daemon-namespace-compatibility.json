@@ -1,0 +1,59 @@
+{
+  "observedAt": "2026-10-06T11:50:27.996519+00:00",
+  "sameBudgetMs": 10000,
+  "confirmedCompatibility": {
+    "hostPid": 87583,
+    "namespacePidLine": "NSpid:\t87583\t2",
+    "daemonLogDelta": "[CodeGraph daemon] Reaping client with dead peer (pid 2); clients=1.\n",
+    "daemonSource": "sendClientHello publishes process.pid; peerIsDead checks it as host pid",
+    "outcome": {
+      "elapsedMs": 10121,
+      "errorCode": "stdio_timeout",
+      "errorMessage": "MCP handshake/request timed out."
+    },
+    "clientWaitAtDeadline": "folio_wait_bit_common",
+    "clientReadBytes": [
+      "rchar: 22158897",
+      "wchar: 9864",
+      "read_bytes: 40099840",
+      "write_bytes: 16384"
+    ],
+    "ownedTreeGone": true
+  },
+  "supportedDirectModeControl": {
+    "env": {
+      "CODEGRAPH_NO_DAEMON": "1"
+    },
+    "published": false,
+    "daemonLogDelta": "",
+    "outcome": {
+      "elapsedMs": 10173,
+      "errorCode": "stdio_timeout",
+      "errorMessage": "MCP handshake/request timed out."
+    },
+    "nodeCpuSecondsUpperObservation": 8.01,
+    "nodeWaitAtDeadline": "0",
+    "nodeReadBytes": [
+      "rchar: 136849639",
+      "wchar: 6925",
+      "read_bytes: 100376576",
+      "write_bytes: 8192"
+    ],
+    "ownedTreeGone": true
+  },
+  "successfulBroadControl": {
+    "elapsedMs": 8222,
+    "isError": false,
+    "contentChars": 9908
+  },
+  "remaining": "design owner-scoped confined persistent MCP lifetime or namespace-aware dependency support; retain budget and protection",
+  "nonSolutions": [
+    "not publish direct-mode-only as full fix",
+    "not disable PID sandbox",
+    "not trust namespace pid as host exit proof",
+    "not raise timeout or upgrade dependency silently"
+  ],
+  "toolInstallationUnchanged": true,
+  "PolarisSourceUnchanged": true,
+  "modelCalls": 0
+}

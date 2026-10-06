@@ -34,3 +34,30 @@ protection and semantic-error propagation remain valid bounded evidence.
 Inspect [sanitized current evidence](evidence/2026-10-06-postboot-execution-repair/actual-qualification/mcp-query-deadline-boundary.json).
 Original full responses and stage control are retained at
 `/home/dains/.paperclip/diagnostics/postboot-execution-20261006/goal-continuation/mcp-deadline-current/`.
+
+## Confirmed daemon/PID namespace compatibility
+
+A later process-tree/log correlation localizes an additional execution problem.
+CodeGraph's isolated proxy had host PID87583 and namespace PID2. Its client hello
+publishes `process.pid=2`; the existing host daemon tests that number as a host PID.
+The same observation interval logged `Reaping client with dead peer (pid 2)` while
+the actual client was alive. The client then performed local fallback work and
+reached the unchanged deadline in `folio_wait_bit_common` with additional reads.
+The installed proxy source explicitly re-serves in-flight requests locally after
+daemon loss. This is confirmed namespace/liveness incompatibility, not a WSL
+unsupported diagnosis or an invented old process-group exit proof.
+
+One supported, unpublished `CODEGRAPH_NO_DAEMON=1` control retained all sandbox
+settings and avoided any host-daemon activity, but still timed out at10.173seconds.
+Its local Node consumed approximately8.01seconds CPU and100MB disk reads by the
+last observation. Therefore direct mode alone is not a qualified replacement.
+A separate broad control completed8.222seconds; its isolated proxy used little
+CPU, consistent with a successful shared-daemon path. That success does not erase
+the observed disconnection and failures.
+
+Further correction needs an owner-scoped confined persistent MCP lifetime or
+namespace-aware dependency transport/liveness support, with real source-write
+denial, Stop/drain and next-dispatch acceptance. Host-daemon PID trust must not be
+reintroduced by disabling process isolation. No such runtime/configuration change
+has been published. Installed dependency and Polaris source remain unchanged.
+See [correlated evidence](evidence/2026-10-06-postboot-execution-repair/actual-qualification/mcp-daemon-namespace-compatibility.json).
