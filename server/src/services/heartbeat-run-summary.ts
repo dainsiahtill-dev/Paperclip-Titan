@@ -7,6 +7,13 @@ export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
 
+/** Provider output cannot publish controller-owned progress/observation authority. */
+export function stripAdapterControllerObservations(value: Record<string, unknown> | null | undefined) {
+  const result = value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
+  for (const key of ["workObservation", "reportDeliveryBaseline", "reportDeliveryObservation"]) delete result[key];
+  return result;
+}
+
 function truncateSummaryText(
   value: unknown,
   maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,

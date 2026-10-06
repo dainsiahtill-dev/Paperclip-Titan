@@ -221,6 +221,15 @@ Review tasks — security reviews, code reviews, QA verdicts — must instruct t
 
 Never instruct a low-trust delegate to comment on the parent issue. That instruction is guaranteed to be denied at the authorization boundary, and a reviewer that converts the denial into a `blocked` disposition with a prose-only owner strands the whole tree indefinitely.
 
+Board-declared local report tasks may use `executionPolicy.reportDelivery` with
+explicit relative text outputs and an existing named review stage. The controller
+observes and registers the outputs, then routes review after execution cleanup;
+the employee need not mutate Paperclip from a read-only task. A real report with
+adverse findings is report delivery, not source acceptance. Missing material is
+unverified progress, distinct from confirmed unchanged work. Both remain bounded.
+See [report handoff and progress repair](operations/2026-10-07-report-handoff-and-progress-repair.md)
+for the contract, scope and authority boundaries.
+
 ### The Courier Pattern (Lateral Coordination)
 
 The direct-parent report comment intentionally does not open lateral comment access: no writes into sibling subtrees or other agents' boundaries. The sanctioned lateral channel is the **courier pattern**: create a new issue assigned to the target agent that carries the complete instructions and context in its description (company-scoped issue-CREATE is permitted from any run). The courier issue wakes the target agent through normal assignment, keeps the coordination auditable, and avoids widening comment access into another agent's boundary. Because the target agent's run may not be able to read your issues, the courier description must be self-contained — do not rely on links back into your own subtree for essential instructions.

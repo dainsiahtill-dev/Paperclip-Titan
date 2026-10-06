@@ -441,7 +441,16 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+const reportDeliverySchema = z.object({
+  version: z.literal(1),
+  files: z.array(z.string().min(1).max(500).refine(value =>
+    !value.startsWith("/") && !value.includes("\\") && !/[\u0000-\u001f\u007f]/.test(value) &&
+    !value.split("/").some(part => !part || part === "." || part === "..") && /\.(md|json|txt)$/.test(value),
+  "Report requires a safe workspace-relative text path")).min(1).max(8),
+}).strict().refine(value => new Set(value.files).size === value.files.length, "Report paths must be unique");
+
 export const issueExecutionPolicySchema = z.object({
+  reportDelivery: reportDeliverySchema.nullable().optional(),
   resourceLimits: issueResourceLimitsSchema.nullable().optional(),
   deliveryPolicy: deliveryPolicySchema.nullable().optional(),
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
@@ -458,6 +467,10 @@ export const issueExecutionPolicySchema = z.object({
     .optional()
     .nullable()
     .default(null),
+}).superRefine((value, ctx) => {
+  if (value.reportDelivery && (value.stages[0]?.type !== "review" || !value.stages[0].participants.length)) {
+    ctx.addIssue({ code: "custom", path: ["reportDelivery"], message: "Report delivery requires an explicit first review stage with a named participant" });
+  }
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

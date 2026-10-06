@@ -625,6 +625,12 @@ async function materializeDecisionEffect(input: {
     };
   }
   if (effect.kind === "notify_owner") {
+    if (effect.reason === "governed_gate_pending" && record(input.issue.executionPolicy).reportDelivery &&
+        record(input.issue.executionState).status === "pending") {
+      // Declared report review owns its receiver and durable wake after physical cleanup.
+      return { effectKind: effect.kind, targetType: "execution_stage", targetId: String(record(input.issue.executionState).currentStageId),
+        payload: { reason: "report_review_receiver_owns_next_action" } };
+    }
     const wakeId = await enqueueWake({
       tx: input.tx,
       companyId: input.companyId,
@@ -1511,6 +1517,7 @@ export async function commitNativeStatusDecision(input: {
   priorStatus: string;
   priorStatusVersion: number;
   priorDecisionId: string | null;
+  requireReportBinding?: { executionRunId: string | null; executionState: unknown; assigneeAgentId: string | null; assigneeUserId: string | null };
   decision: NativeStatusDecision;
   failpoint?: NativeStatusCommitFailpoint;
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
@@ -1595,6 +1602,11 @@ export async function commitNativeStatusDecision(input: {
       Number(issue.statusVersion) !== input.priorStatusVersion ||
       issue.lastStatusDecisionId !== input.priorDecisionId
     ) {
+      throw new NativeStatusRaceError();
+    }
+    if (input.requireReportBinding && (issue.executionRunId !== input.requireReportBinding.executionRunId ||
+        issue.assigneeAgentId !== input.requireReportBinding.assigneeAgentId || issue.assigneeUserId !== input.requireReportBinding.assigneeUserId ||
+        JSON.stringify(issue.executionState) !== JSON.stringify(input.requireReportBinding.executionState))) {
       throw new NativeStatusRaceError();
     }
     if (input.requireExternalChatResponseWaitAuthorization) {

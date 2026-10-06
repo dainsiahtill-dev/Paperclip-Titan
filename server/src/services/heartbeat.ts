@@ -209,6 +209,8 @@ import { documentService } from "./documents.js";
 import { getTaskPlanContext } from "./task-plan-context.js";
 import { projectTaskPlan } from "./task-plan-projection.js";
 import { compareMaterialProgress, readIssueMaterialProgress, type MaterialProgressSnapshot } from "./issue-material-progress.js";
+import { captureReportDeliveryBaseline, sealReportDeliveryOutputs, submitReportDelivery } from "./report-delivery.js";
+import { verifiedCompletedTaskMention } from "./completed-task-notification.js";
 import { deliveryAuthorityService, resolveDeliveryDefinition } from "./delivery-authority.js";
 import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies, readTrustedLegacyUsageCheckpoint } from "./issue-resource-limits.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
@@ -340,6 +342,7 @@ import {
   hasAcceptedSemanticResult,
   isExternalChatPresentationContext,
   mergeHeartbeatRunResultJson,
+  stripAdapterControllerObservations,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
@@ -18438,6 +18441,7 @@ export function heartbeatService(
             title: issues.title,
             description: issues.description,
             assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
             responsibleUserId: issues.responsibleUserId,
           })
           .from(issues)
@@ -18575,7 +18579,7 @@ export function heartbeatService(
         progress: materialProgress.state === "unknown" ? "awaiting_verification" : materialProgress.state,
         progressKind: materialProgress.kind === "document" ? "artifact" : materialProgress.kind,
         sourceVersion: materialSnapshot?.fingerprint ?? null,
-        nextOwnerId: issue?.assigneeAgentId ?? issue?.responsibleUserId ?? null,
+        nextOwnerId: issue?.assigneeAgentId ?? issue?.assigneeUserId ?? issue?.responsibleUserId ?? null,
       },
       issue,
       resultJson: resultJson ?? run.resultJson ?? null,
@@ -19901,6 +19905,29 @@ export function heartbeatService(
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const reports = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.status, "succeeded"),
+      sql`${heartbeatRuns.contextSnapshot}->'reportDeliveryBaseline'->>'version' = '1'`,
+      sql`exists (select 1 from issues report_issue where report_issue.company_id = ${heartbeatRuns.companyId}
+        and report_issue.id::text = ${heartbeatRuns.contextSnapshot}->>'issueId')`,
+      sql`not exists (select 1 from activity_log report_terminal where report_terminal.company_id = ${heartbeatRuns.companyId}
+        and report_terminal.run_id = ${heartbeatRuns.id} and report_terminal.actor_type = 'system'
+        and report_terminal.actor_id = 'report-delivery-observer' and report_terminal.action = 'issue.report_delivery_observed'
+        and report_terminal.details->>'terminal' = 'true')`,
+      sql`not exists (select 1 from activity_log report_log where report_log.company_id = ${heartbeatRuns.companyId}
+        and report_log.run_id = ${heartbeatRuns.id} and report_log.actor_type = 'system'
+        and report_log.actor_id = 'report-delivery-observer' and report_log.action = 'issue.report_delivery_submitted')`))
+      .orderBy(sql`(select max(report_check.created_at) from activity_log report_check where report_check.company_id = ${heartbeatRuns.companyId}
+        and report_check.run_id = ${heartbeatRuns.id} and report_check.actor_type = 'system'
+        and report_check.actor_id = 'report-delivery-observer' and report_check.action = 'issue.report_delivery_observed') asc nulls first`,
+        asc(heartbeatRuns.finishedAt)).limit(100);
+    for (const report of reports) {
+      if (activeRunExecutions.has(report.id)) continue;
+      const reportIssueId = readNonEmptyString(parseObject(report.contextSnapshot).issueId);
+      if (!reportIssueId) continue;
+      const submitted = await submitReportDelivery(db, { companyId: report.companyId, issueId: reportIssueId, runId: report.id }).catch(() => null);
+      if (submitted?.state === "submitted") await classifyAndPersistRunLiveness(report);
+    }
+    await dispatchPendingNativeStatusWakeups();
     await resumeOrdinaryCommentWakeRequests();
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
@@ -21220,7 +21247,7 @@ export function heartbeatService(
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
       }
-      const taskMarkdownCompact = buildPaperclipTaskMarkdown({
+      let taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         deliveryAssessment,
@@ -23567,6 +23594,33 @@ export function heartbeatService(
           });
           if (guardedWriter) physicalWorkspaceOwner = claim.owner;
         }
+        const activeReportReview = parseIssueExecutionState(issueContext?.executionState);
+        const isReportReviewParticipant = activeReportReview?.status === "pending" &&
+          activeReportReview.currentParticipant?.type === "agent" && activeReportReview.currentParticipant.agentId === agent.id;
+        if (issueRef && !isConversation(issueContext) && !isReportReviewParticipant && issueContext?.status === "in_progress" &&
+            issueContext.assigneeAgentId === agent.id && parseObject(issueContext.executionPolicy).reportDelivery) {
+          if (executionTarget?.kind === "remote") throw new ConfigurationIncompleteFailure(
+            "Declared report observation requires a locally readable bound workspace; remote runs must use their existing artifact publication path.",
+            { configurationIncomplete: { reason: "report_delivery_workspace_not_available", issueId: issueRef.id } });
+          // New attempts observe only after acquiring their physical lane.
+          // Same-run adoption preserves the original baseline and cannot grant a fresh attempt.
+          if (!runOptions.nativeLeaseOwner && !runOptions.nativeRestartRecovery) {
+            delete context.reportDeliveryBaseline;
+            await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, run.id));
+            try {
+              context.reportDeliveryBaseline = await captureReportDeliveryBaseline(db, { companyId: run.companyId, issueId: issueRef.id, runId: run.id });
+            } catch (error) {
+              logger.warn({ err: error, runId: run.id }, "Report baseline observation failed before provider dispatch");
+              throw new ConfigurationIncompleteFailure("Report output baseline cannot be verified. Repair the declared output paths and workspace before starting another run.",
+                { configurationIncomplete: { reason: "report_delivery_baseline_unverified", issueId: issueRef.id } });
+            }
+            await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, run.id));
+          }
+          const files = parseObject(issueContext?.executionPolicy).reportDelivery as { files?: unknown };
+          const instruction = `\n\nDeclared report outputs (JSON data): ${JSON.stringify(files.files)}. Write the requested reports in the bound workspace. The controller will verify changed files and submit them to the existing reviewer. Submission does not certify the inspected source; do not change the review criteria or claim approval.\n`;
+          taskMarkdown += instruction;
+          taskMarkdownCompact += instruction;
+        } else delete context.reportDeliveryBaseline;
         if (nativeRuntimeResolution.kind === "native") {
           if (!issueRef) {
             throw new Error("native_runtime_ineligible: issue is required");
@@ -25010,6 +25064,12 @@ export function heartbeatService(
               ),
             );
           await recordWorkspaceFinalize("succeeded");
+          if (issueId && context.reportDeliveryBaseline && !adapterResult.timedOut && adapterResult.exitCode === 0 &&
+              !executionControl.controller.signal.aborted) {
+            await sealReportDeliveryOutputs(db, { companyId: run.companyId, issueId, runId: run.id }).catch(error => {
+              logger.warn({ err: error, runId: run.id }, "Report outputs remain unverified at the settled workspace boundary");
+            });
+          }
           if (adapterResult.nativeFinalization) {
             adapterResult.nativeFinalization.workspaceFinalizeStatus =
               "succeeded";
@@ -25483,7 +25543,7 @@ export function heartbeatService(
                 ...(adapterResult.nativeFinalization || outcome === "cancelled"
                   ? parseObject(latestRun?.resultJson)
                   : {}),
-                ...parseObject(adapterResult.resultJson),
+                ...stripAdapterControllerObservations(adapterResult.resultJson),
                 ...(adapterResult.executionRecovery
                   ? { executionRecovery: adapterResult.executionRecovery }
                   : {}),
@@ -25807,15 +25867,16 @@ export function heartbeatService(
             resolvedPresentationDecision,
           );
           const conversationSettled = await settleConversationTurn(db, livenessRun);
+          const declaredReportPending = livenessRun.status === "succeeded" && Boolean(parseObject(livenessRun.contextSnapshot).reportDeliveryBaseline);
           await releaseIssueExecutionAndPromote(livenessRun, {
-            suppressImmediateRecovery: conversationSettled ||
+            suppressImmediateRecovery: conversationSettled || declaredReportPending ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
               ) !== null ||
               parseObject(livenessRun.contextSnapshot)
                 .resumeSessionGoalHeartbeat === true,
           });
-          if (!conversationSettled) {
+          if (!conversationSettled && !declaredReportPending) {
           await handleRunLivenessContinuation(livenessRun);
           await handleIssueReviewPathDisposition(livenessRun);
           await handleSuccessfulRunHandoff(
@@ -26701,6 +26762,18 @@ export function heartbeatService(
               ${JSON.stringify({ startupPreparationSettledAt: new Date().toISOString() })}::jsonb`,
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
         }
+        if (latestRun?.status === "succeeded" && !nativeOwnershipHeld && parseObject(latestRun.contextSnapshot).reportDeliveryBaseline) {
+          const reportIssueId = readNonEmptyString(parseObject(latestRun.contextSnapshot).issueId);
+          if (reportIssueId) {
+            try {
+              const submitted = await submitReportDelivery(db, { companyId: latestRun.companyId, issueId: reportIssueId, runId: latestRun.id });
+              latestRun = (await classifyAndPersistRunLiveness(latestRun)) ?? latestRun;
+              if (submitted.state !== "submitted") await releaseIssueExecutionAndPromote(latestRun);
+            } catch (error) {
+              logger.warn({ err: error, runId: run.id }, "Report submission remains unverified after cleanup; existing progress is preserved");
+            }
+          }
+        }
       } finally {
         if (physicalWorkspaceOwner) await physicalOwnership.releaseIfStopped(physicalWorkspaceOwner).catch(error => {
           logger.warn({ runId: run.id, err: error }, "Physical workspace ownership retained until exact namespace drain");
@@ -26722,6 +26795,7 @@ export function heartbeatService(
       }
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
+      if (parseObject(latestRun?.contextSnapshot).reportDeliveryBaseline) await dispatchPendingNativeStatusWakeups({ companyId: run.companyId });
       if (latestRun?.status === "cancelled" && !legacyAdapterEntered && !nativeDispatchStarted &&
           latestRun.resultJson?.timeoutSource === "stale_queued_run_gate") {
         await finalizeAgentStatus(run.agentId, "cancelled");
@@ -27620,8 +27694,48 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
-          if (!executionReconciliationWake && ["done", "cancelled"].includes(issue.status) &&
+          const issueStateGuard = opts.issueStateGuard;
+          if (
+            issueStateGuard &&
+            (!issueStateGuard.statuses.includes(issue.status) ||
+              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+          ) {
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields,
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_state_guard_mismatch",
+              payload: {
+                ...(payload ?? {}),
+                heartbeatSkip: {
+                  reason:
+                    "Issue status or assignee changed before the wake could be queued.",
+                  issueId: issue.id,
+                  expectedStatuses: issueStateGuard.statuses,
+                  actualStatus: issue.status,
+                  expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
+                  actualAssigneeAgentId: issue.assigneeAgentId,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
+
+          const completedTaskNotification = await verifiedCompletedTaskMention(tx as unknown as Db, {
+            companyId: issue.companyId, issueId: issue.id, targetAgentId: agentId, assigneeAgentId: issue.assigneeAgentId,
+            status: issue.status, commentId: wakeCommentId ?? null, wakeReason: reason,
+            actorType: opts.requestedByActorType ?? null, actorId: opts.requestedByActorId ?? null,
+          });
+          if (!executionReconciliationWake && !completedTaskNotification && ["done", "cancelled"].includes(issue.status) &&
               enrichedContextSnapshot.resumeIntent !== true && enrichedContextSnapshot.followUpRequested !== true) {
+            if (opts.failedRunId) throw conflict("A completed or cancelled task cannot retry a suppressed execution.", { code: "issue_terminal_status" });
             const error = `Wake skipped because the task is ${issue.status}; reopen it before requesting more work.`;
             if (executionWaitRequestId) {
               await tx.update(agentWakeupRequests).set({ status: "skipped", reason: "issue_terminal_status",
@@ -27898,40 +28012,6 @@ export function heartbeatService(
             dryRun: true,
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
-
-          const issueStateGuard = opts.issueStateGuard;
-          if (
-            issueStateGuard &&
-            (!issueStateGuard.statuses.includes(issue.status) ||
-              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
-          ) {
-            await tx.insert(agentWakeupRequests).values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_state_guard_mismatch",
-              payload: {
-                ...(payload ?? {}),
-                heartbeatSkip: {
-                  reason:
-                    "Issue status or assignee changed before the wake could be queued.",
-                  issueId: issue.id,
-                  expectedStatuses: issueStateGuard.statuses,
-                  actualStatus: issue.status,
-                  expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
-                  actualAssigneeAgentId: issue.assigneeAgentId,
-                },
-              },
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
-            });
-            return { kind: "skipped" as const };
-          }
 
           if (
             worktreeExecutionCutoff &&
@@ -29131,7 +29211,7 @@ export function heartbeatService(
             ? eq(agentWakeupRequests.companyId, input.companyId)
             : undefined,
           eq(agentWakeupRequests.requestedByActorType, "system"),
-          eq(agentWakeupRequests.requestedByActorId, "native-status-committer"),
+          inArray(agentWakeupRequests.requestedByActorId, ["native-status-committer", "report-delivery-observer"]),
           inArray(agentWakeupRequests.status, ["queued", "claimed"]),
           isNull(agentWakeupRequests.runId),
         ),
@@ -29148,7 +29228,8 @@ export function heartbeatService(
     >();
 
     for (const candidate of candidates) {
-      const dispatchActorId = `native-status-wake-dispatch:${candidate.id}`;
+      const reportIntent = candidate.requestedByActorId === "report-delivery-observer";
+      const dispatchActorId = `${reportIntent ? "report-review-wake-dispatch" : "native-status-wake-dispatch"}:${candidate.id}`;
       const existingDispatch = await db
         .select()
         .from(agentWakeupRequests)
@@ -29224,6 +29305,24 @@ export function heartbeatService(
         readNonEmptyString(payload.taskId) ??
         readNonEmptyString(wakeContext.issueId) ??
         null;
+      // Native stage intents can commit before the report observer finishes.
+      // Never wake a reviewer ahead of the declared materials or source cleanup.
+      if (!reportIntent && candidate.reason === "execution_review_requested" && issueId) {
+        const source = await db.select({ run: heartbeatRuns }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, candidate.companyId),
+          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot}->'reportDeliveryBaseline'->>'version' = '1'`)).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+        if (source[0] && !await db.select({ id: activityLog.id }).from(activityLog).where(and(
+          eq(activityLog.companyId, candidate.companyId), eq(activityLog.runId, source[0].run.id),
+          eq(activityLog.actorType, "system"), eq(activityLog.actorId, "report-delivery-observer"),
+          or(eq(activityLog.action, "issue.report_delivery_submitted"), and(eq(activityLog.action, "issue.report_delivery_observed"),
+            sql`${activityLog.details}->>'terminal' = 'true'`))))
+          .limit(1).then(rows => rows[0])) {
+          await db.update(agentWakeupRequests).set({ status: "queued", claimedAt: null, updatedAt: new Date() }).where(eq(agentWakeupRequests.id, candidate.id));
+          deferred += 1;
+          continue;
+        }
+      }
       const scopeKey = issueId
         ? `${candidate.companyId}:${candidate.agentId}:${issueId}`
         : null;
@@ -29250,6 +29349,7 @@ export function heartbeatService(
           .select({
             status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
           })
           .from(issues)
           .where(
@@ -29263,7 +29363,9 @@ export function heartbeatService(
         if (
           !targetIssue ||
           ["done", "cancelled"].includes(targetIssue.status) ||
-          targetIssue.assigneeAgentId !== candidate.agentId
+          targetIssue.assigneeAgentId !== candidate.agentId ||
+          (reportIntent && (targetIssue.status !== "in_review" ||
+            parseObject(targetIssue.executionState).currentStageId !== parseObject(wakeContext.executionStage).stageId))
         ) {
           await db
             .update(agentWakeupRequests)
@@ -29297,9 +29399,9 @@ export function heartbeatService(
             ...wakeContext,
             ...(issueId ? { issueId, taskId: issueId } : {}),
             wakeReason: candidate.reason,
-            source: "native_status_decision",
-            statusDecisionSource: "native_status_decision",
-            nativeStatusWakeIntentId: candidate.id,
+            source: reportIntent ? "issue.report_delivery" : "native_status_decision",
+            ...(reportIntent ? { reportReviewWakeIntentId: candidate.id } : {
+              statusDecisionSource: "native_status_decision", nativeStatusWakeIntentId: candidate.id }),
           },
         });
 

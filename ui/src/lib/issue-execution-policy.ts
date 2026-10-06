@@ -107,9 +107,11 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  if (stages.length === 0 && !monitor) return null;
+  const additional = Object.keys(input.existingPolicy ?? {}).some(key => !["mode", "commentRequired", "stages", "monitor"].includes(key));
+  if (stages.length === 0 && !monitor && !additional) return null;
 
   return {
+    ...input.existingPolicy,
     mode,
     commentRequired: true,
     stages,

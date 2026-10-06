@@ -9,9 +9,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,7 @@ import {
   chatPublications,
   companySecretBindings,
   companySecrets,
+  companyMemberships,
   companySkills,
   companies,
   completionContracts,
@@ -671,7 +673,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.delete(companySecretBindings);
       await db.delete(companySecrets);
       try {
-        await db.delete(companies);
+    await db.delete(companyMemberships);
+    await db.delete(companies);
         break;
       } catch (error) {
         if (attempt === 4) throw error;
@@ -7062,6 +7065,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolutionNote: "owner_not_invokable",
     });
     expect(repairWakeups).toHaveLength(0);
+  });
+
+  it("hands a report-only successful run to its configured human reviewer without recovery or another model run", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-report-"));
+    execFileSync("rtk", ["proxy", "git", "init", root], { stdio: "ignore" });
+    const projectId = randomUUID(), projectWorkspaceId = randomUUID();
+    try {
+      await db.insert(projects).values({ id: projectId, companyId, name: "Report contract" });
+      await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Original report workspace", sourceType: "local_path", cwd: root, isPrimary: true });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+      await db.update(agents).set({ adapterConfig: { cwd: root } }).where(eq(agents.id, agentId));
+      await db.update(issues).set({ projectId, projectWorkspaceId, executionPolicy: { mode: "normal", commentRequired: true,
+        resourceLimits: { maxNoProgressRuns: 1 }, reportDelivery: { version: 1, files: ["REPORT.md", "REPORT.json"] },
+        stages: [{ id: randomUUID(), type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "user", userId: "responsible-user" }] }] } }).where(eq(issues.id, issueId));
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await fs.writeFile(path.join(root, "REPORT.md"), "# Independent review\nReview complete; found a source defect.\n");
+        await fs.writeFile(path.join(root, "REPORT.json"), JSON.stringify({ status: "completed_with_findings", acceptance: "FAIL" }));
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Review finished; Root decides next action.", provider: "test", model: "test-model" };
+      });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "succeeded", livenessState: "advanced" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_review", assigneeUserId: "responsible-user",
+        executionState: { currentParticipant: { type: "user", userId: "responsible-user" }, returnAssignee: { type: "agent", agentId } } });
+      expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId))).toHaveLength(2);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+      expect(await getIssueResourceBlock(db, { companyId, issueId })).toBeNull();
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it("lets the active agent reviewer consume reports without creating a production baseline", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-report-review-"));
+    execFileSync("rtk", ["proxy", "git", "init", root], { stdio: "ignore" });
+    const projectId = randomUUID(), projectWorkspaceId = randomUUID(), stageId = randomUUID(), originalOwnerId = randomUUID();
+    try {
+      await db.insert(projects).values({ id: projectId, companyId, name: "Existing report review" });
+      await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Report workspace", sourceType: "local_path", cwd: root, isPrimary: true });
+      await db.insert(agents).values({ id: originalOwnerId, companyId, name: "Executor", role: "engineer", status: "idle", adapterType: "codex_local" });
+      await db.update(agents).set({ adapterConfig: { cwd: root } }).where(eq(agents.id, agentId));
+      await fs.writeFile(path.join(root, "REPORT.md"), "Existing submitted findings\n");
+      await db.update(issues).set({ projectId, projectWorkspaceId, status: "in_review", executionPolicy: { mode: "normal", commentRequired: true,
+        reportDelivery: { version: 1, files: ["REPORT.md"] }, stages: [{ id: stageId, type: "review", approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId }] }] }, executionState: { status: "pending", currentStageId: stageId,
+          currentStageIndex: 0, currentStageType: "review", currentParticipant: { type: "agent", agentId }, returnAssignee: { type: "agent", agentId: originalOwnerId } } }).where(eq(issues.id, issueId));
+      await db.update(issues).set({ status: "in_progress", assigneeAgentId: originalOwnerId, executionState: null }).where(eq(issues.id, issueId));
+      const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const transition = applyIssueExecutionPolicyTransition({ issue: sourceIssue, policy: normalizeIssueExecutionPolicy(sourceIssue.executionPolicy),
+        actor: { agentId: originalOwnerId }, requestedStatus: "in_review", requestedAssigneePatch: {} });
+      await db.update(issues).set(transition.patch).where(eq(issues.id, issueId));
+      mockAdapterExecute.mockImplementationOnce(async (raw: unknown) => {
+        const input = raw as AdapterExecutionContext;
+        expect(input.context.reportDeliveryBaseline).toBeUndefined();
+        expect(String(input.context.paperclipTaskMarkdown ?? "")).not.toContain("Write the requested reports in the bound workspace");
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Reviewed the submitted report", provider: "test", model: "test-model" };
+      });
+      const heartbeat = heartbeatService(db); await heartbeat.resumeQueuedRuns(); await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "succeeded" });
+      expect(await fs.readFile(path.join(root, "REPORT.md"), "utf8")).toBe("Existing submitted findings\n");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it.each(["done", "cancelled"])("cancels a queued comment for a %s task before invoking its adapter", async status => {

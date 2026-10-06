@@ -208,6 +208,31 @@ describeEmbeddedPostgres("workspace file resources", () => {
     await tempDb?.cleanup();
   });
 
+  it("opens the exact execution workspace referenced by a report instead of a later workspace", async () => {
+    const { root, projectRoot, executionRoot } = await makeWorkspace();
+    try {
+      const graph = await seedGraph(db, { projectRoot, executionRoot });
+      const [bound] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, graph.issueId));
+      await fs.writeFile(path.join(executionRoot, "REPORT.md"), "Original report bytes", "utf8");
+      const laterRoot = path.join(root, "later"); await fs.mkdir(laterRoot);
+      await fs.writeFile(path.join(laterRoot, "REPORT.md"), "Wrong later report", "utf8");
+      const [later] = await db.insert(executionWorkspaces).values({ companyId: graph.companyId, projectId: graph.projectId,
+        sourceIssueId: graph.issueId, mode: "isolated_workspace", strategyType: "git_worktree", name: "Later", cwd: laterRoot,
+        providerType: "git_worktree" }).returning();
+      await db.update(issues).set({ executionWorkspaceId: later.id }).where(eq(issues.id, graph.issueId));
+      const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+      const response = await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "execution",
+        projectId: graph.projectId, workspaceId: bound.id, path: "REPORT.md" });
+      expect(response.status).toBe(200);
+      expect(response.body.resource.workspaceId).toBe(bound.id);
+      expect(response.body.content.data).toBe("Original report bytes");
+      const available = await request(app).post(`/api/issues/${graph.issueId}/file-resources/availability`).send({
+        queries: [{ workspace: "execution", projectId: graph.projectId, workspaceId: bound.id, path: "REPORT.md" }] });
+      expect(available.status).toBe(200);
+      expect(available.body.results[0]).toMatchObject({ openable: true });
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("resolves and reads a project file without exposing absolute paths", async () => {
     const { root, projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });

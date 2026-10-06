@@ -13,6 +13,7 @@ import {
   heartbeatRuns,
   issueDocuments,
   issueRelations,
+  issueComments,
   issueRecoveryActions,
   issueThreadInteractions,
   issueTreeHolds,
@@ -54,6 +55,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -541,6 +543,21 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it.each(["matched", "wrong_actor", "deleted"])("checks completed mention authority from its exact receipt (%s)", async mode => {
+      const { companyId, agentId: ownerId } = await seedCompanyAndAgent();
+      const targetId = randomUUID(); await seedAgent({ id: targetId, companyId, name: "Mention receiver" });
+      const issueId = randomUUID(); await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: ownerId });
+      const commentId = randomUUID(), wakeId = randomUUID();
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorAgentId: ownerId, body: "@receiver inspect findings",
+        ...(mode === "deleted" ? { deletedAt: new Date() } : {}) });
+      await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId: targetId, source: "automation", reason: "issue_comment_mentioned",
+        requestedByActorType: "agent", requestedByActorId: mode === "wrong_actor" ? targetId : ownerId, status: "queued" });
+      const runId = await seedRun({ companyId, agentId: targetId, wakeupRequestId: wakeId,
+        contextSnapshot: { issueId, commentId, wakeReason: "issue_comment_mentioned" } });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() });
+      expect(result).toMatchObject(mode === "matched" ? { outcome: "not_stale" } : { outcome: "cancelled", errorCode: "issue_terminal_status" });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("done");
+    });
     it("invalidates an owner-scoped continuation when a comment exemption outlives the assignment", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const nextAgentId = randomUUID();

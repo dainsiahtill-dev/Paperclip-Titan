@@ -4,6 +4,7 @@ import {
   addIssueCommentSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
+  issueExecutionPolicySchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   stalledReviewDecisionSchema,
@@ -14,6 +15,18 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("preserves an explicit report delivery contract with an existing reviewer stage", () => {
+    const reportDelivery = { version: 1, files: ["reports/REPORT.md", "reports/REPORT.json"] };
+    expect(issueExecutionPolicySchema.parse({ reportDelivery, stages: [{ type: "review", participants: [{ type: "user", userId: "board" }] }] }).reportDelivery)
+      .toEqual(reportDelivery);
+  });
+  it.each(["/etc/passwd.md", "../REPORT.md", "reports/../REPORT.md", "reports\\REPORT.md", "reports//REPORT.md", "reports/./REPORT.md", "reports/run.sh", "reports/REPORT.md\n"])("rejects unsafe report path %s", path => {
+    expect(issueExecutionPolicySchema.safeParse({ reportDelivery: { version: 1, files: [path] },
+      stages: [{ type: "review", participants: [{ type: "user", userId: "board" }] }] }).success).toBe(false);
+  });
+  it("requires a named review stage for report delivery instead of inventing an approval", () => {
+    expect(issueExecutionPolicySchema.safeParse({ reportDelivery: { version: 1, files: ["REPORT.md"] }, stages: [] }).success).toBe(false);
+  });
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
     const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
     expect(

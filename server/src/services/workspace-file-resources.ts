@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, issueWorkProducts, projects, projectWorkspaces } from "@paperclipai/db";
 import type {
   NormalizedWorkspaceFileAvailabilityQuery,
   ResolvedWorkspaceResource,
@@ -331,6 +331,13 @@ function throwIfDenied(segments: string[]) {
   if (denialReason) {
     throw new HttpError(403, "Workspace file path is denied by policy", { code: denialReason });
   }
+}
+
+/** Reuse the existing path/secret gate for controller-observed text outputs. */
+export function validateWorkspaceTextOutputPath(input: string) {
+  const normalized = normalizeWorkspaceRelativePath(input);
+  throwIfDenied(normalized.segments);
+  return normalized.relativePath;
 }
 
 function shouldPruneSegments(segments: string[]) {
@@ -1041,6 +1048,7 @@ export function workspaceFileResourceService(db: Db) {
   async function targetProjectWorkspaceCandidate(
     issue: IssueRow,
     target: WorkspaceTargetInput,
+    selector: WorkspaceFileSelector,
   ): Promise<WorkspaceCandidate | null> {
     const projectId = target.projectId ?? null;
     const workspaceId = target.workspaceId ?? null;
@@ -1050,6 +1058,25 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (selector === "execution") {
+      const [execution] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)).limit(1);
+      if (execution) {
+        if (!project || project.companyId !== issue.companyId || execution.companyId !== issue.companyId)
+          throw new HttpError(403, "Execution workspace belongs to another company", { code: "cross_company_workspace" });
+        if (execution.projectId !== project.id || issue.projectId !== project.id)
+          throw unprocessable("Execution workspace does not belong to this task project", { code: "workspace_project_mismatch" });
+        const [product] = await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts).where(and(
+          eq(issueWorkProducts.companyId, issue.companyId), eq(issueWorkProducts.issueId, issue.id),
+          eq(issueWorkProducts.executionWorkspaceId, execution.id), isNull(issueWorkProducts.deletedAt),
+          sql`exists (select 1 from activity_log report_binding where report_binding.company_id = ${issueWorkProducts.companyId}
+            and report_binding.entity_id = ${issueWorkProducts.issueId}::text and report_binding.actor_type = 'system'
+            and report_binding.actor_id = 'report-delivery-observer' and report_binding.action = 'issue.report_delivery_submitted'
+            and report_binding.details->'workProductIds' ? ${issueWorkProducts.id}::text)`)).limit(1);
+        if (issue.executionWorkspaceId !== execution.id && execution.sourceIssueId !== issue.id && !product)
+          throw new HttpError(403, "Execution workspace is not bound to this task", { code: "workspace_issue_mismatch" });
+        return candidateFromExecutionWorkspace(execution);
+      }
+    }
     const [workspace] = await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId)).limit(1);
     if (!project || !workspace) throw notFound("Project workspace not found");
     if (project.companyId !== issue.companyId || workspace.companyId !== issue.companyId) {
@@ -1067,7 +1094,7 @@ export function workspaceFileResourceService(db: Db) {
     selector: WorkspaceFileSelector,
     target: WorkspaceTargetInput = {},
   ): Promise<WorkspaceCandidate[]> {
-    const explicitTarget = await targetProjectWorkspaceCandidate(issue, target);
+    const explicitTarget = await targetProjectWorkspaceCandidate(issue, target, selector);
     if (explicitTarget) return [explicitTarget];
 
     const candidates: WorkspaceCandidate[] = [];
@@ -1151,8 +1178,18 @@ export function workspaceFileResourceService(db: Db) {
     const targets = new Map<string, PreparedAvailabilityTarget>();
 
     for (const item of targetQueries) {
-      const targetKey = `${item.query.projectId}:${item.query.workspaceId}`;
+      const targetKey = `${item.query.workspace}:${item.query.projectId}:${item.query.workspaceId}`;
       if (targets.has(targetKey)) continue;
+      if (item.query.workspace === "execution") {
+        try {
+          const candidate = await targetProjectWorkspaceCandidate(issue, { projectId: item.query.projectId, workspaceId: item.query.workspaceId }, "execution");
+          targets.set(targetKey, candidate ? { candidate } : { error: notFound("Execution workspace not found") });
+        } catch (error) {
+          if (!(error instanceof HttpError)) throw error;
+          targets.set(targetKey, { error });
+        }
+        continue;
+      }
       const project = projectById.get(item.query.projectId!);
       const workspace = workspaceById.get(item.query.workspaceId!);
       if (!project || !workspace) {
@@ -1265,7 +1302,7 @@ export function workspaceFileResourceService(db: Db) {
             return unavailableAvailabilityResult(item.query, item.unavailableReason ?? "invalid_path");
           }
           const explicitTarget = item.query.projectId && item.query.workspaceId
-            ? explicitTargets.get(`${item.query.projectId}:${item.query.workspaceId}`)
+            ? explicitTargets.get(`${item.query.workspace}:${item.query.projectId}:${item.query.workspaceId}`)
             : null;
           if (explicitTarget?.error) throw explicitTarget.error;
 

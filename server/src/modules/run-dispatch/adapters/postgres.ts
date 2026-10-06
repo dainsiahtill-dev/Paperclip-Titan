@@ -1,5 +1,6 @@
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { verifiedCompletedTaskMention } from "../../../services/completed-task-notification.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -552,6 +553,15 @@ export function createPostgresRunDispatchAdapter(
     );
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    const [notificationWake] = issue?.status === "done" && wakeReason === "issue_comment_mentioned" ? await dbOrTx.select({
+      actorType: agentWakeupRequests.requestedByActorType, actorId: agentWakeupRequests.requestedByActorId,
+    }).from(heartbeatRuns).innerJoin(agentWakeupRequests, and(eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, heartbeatRuns.companyId), eq(agentWakeupRequests.agentId, heartbeatRuns.agentId)))
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.agentId, input.agentId))).limit(1) : [];
+    const verifiedCompletedTaskNotification = issue && notificationWake ? await verifiedCompletedTaskMention(dbOrTx, {
+      companyId: input.companyId, issueId: issue.id, targetAgentId: input.agentId, assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status, commentId: wakeCommentId, wakeReason, actorType: notificationWake.actorType, actorId: notificationWake.actorId,
+    }) : false;
     const retryReason =
       readNonEmptyString(context.retryReason) ?? input.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
@@ -626,6 +636,7 @@ export function createPostgresRunDispatchAdapter(
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
+      verifiedCompletedTaskNotification,
       wakeCommentIdPresent: Boolean(wakeCommentId),
       continuationParkApplies,
       continuationParksExecutor,

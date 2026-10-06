@@ -24,6 +24,7 @@ import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
   type NativeGovernanceGate,
+  type NativeStatusDecision,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -48,6 +49,7 @@ import {
   restoreNativeChatReviewPresentationInTransaction,
 } from "./native-chat-review-presentation.js";
 import { logger } from "../../middleware/logger.js";
+import { prepareNativeReportReview } from "../report-delivery.js";
 import {
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   resolveHeartbeatRunResponse,
@@ -1104,6 +1106,10 @@ export async function finalizeNativeRun(input: {
   // One follow-up may repair an incomplete report. Repeated incomplete results
   // require a visible recovery action instead of an unbounded wake loop.
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
+  let preparedReportReview = false;
+  if (terminalState === "succeeded" && input.workspaceFinalizeStatus === "succeeded") {
+    preparedReportReview = await prepareNativeReportReview(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id });
+  }
   let supersedesAssessmentId: string | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const authoritativeIssue = await input.db
@@ -1169,7 +1175,18 @@ export async function finalizeNativeRun(input: {
         runId: run.id,
       }),
     ]);
-    const proposedDecision = resolveNativeFinalizerStatus({
+    const reportDeclared = Boolean(record(authoritativeIssue.executionPolicy).reportDelivery || record(run.contextSnapshot).reportDeliveryBaseline);
+    const currentReportState = record(authoritativeIssue.executionState);
+    const reportReviewBound = currentReportState.status === "pending" &&
+      record(currentReportState.returnAssignee).agentId === run.agentId;
+    const reportSourceLost = reportDeclared && authoritativeIssue.executionRunId !== null && authoritativeIssue.executionRunId !== run.id;
+    const reportGuardRefused = reportDeclared && terminalState === "succeeded" &&
+      (reportSourceLost || (!reportReviewBound && (!preparedReportReview || authoritativeIssue.status !== "in_review")));
+    const proposedDecision: NativeStatusDecision = reportGuardRefused ? {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve" as const,
+      toStatus: authoritativeStatus(authoritativeIssue.status), reasonCode: "report_delivery_authority_unverified",
+      unblockDescriptor: null, effects: [{ kind: "release_run_resources" as const }],
+    } : resolveNativeFinalizerStatus({
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
@@ -1236,6 +1253,9 @@ export async function finalizeNativeRun(input: {
         priorStatus: authoritativeIssue.status,
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
+        ...(reportDeclared ? { requireReportBinding: { executionRunId: authoritativeIssue.executionRunId,
+          executionState: authoritativeIssue.executionState, assigneeAgentId: authoritativeIssue.assigneeAgentId,
+          assigneeUserId: authoritativeIssue.assigneeUserId } } : {}),
         decision,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting"

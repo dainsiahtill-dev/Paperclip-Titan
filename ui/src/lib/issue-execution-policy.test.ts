@@ -6,6 +6,14 @@ const AGENT_ID = "00000000-0000-4000-8000-000000000001";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe("buildExecutionPolicy", () => {
+  it("preserves output and resource contracts when editing review participants", () => {
+    const reportDelivery = { version: 1 as const, files: ["reports/REPORT.md"] };
+    const policy = buildExecutionPolicy({ existingPolicy: { mode: "normal", commentRequired: true,
+      stages: [], reportDelivery, resourceLimits: { maxNoProgressRuns: 1 } }, reviewerValues: ["user:local-board"], approverValues: [] });
+    expect(policy?.reportDelivery).toEqual(reportDelivery);
+    expect(policy?.resourceLimits).toEqual({ maxNoProgressRuns: 1 });
+    expect(issueExecutionPolicySchema.safeParse(policy).success).toBe(true);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

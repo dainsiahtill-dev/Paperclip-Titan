@@ -152,6 +152,7 @@ export type QueuedRunFacts = {
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
   resumeIntent: boolean;
+  verifiedCompletedTaskNotification?: boolean;
   wakeCommentIdPresent: boolean;
 
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
@@ -503,7 +504,7 @@ export function decideQueuedRunStaleness(
 ): StalenessDecision {
   // A saved comment is context, not authority to restart completed work.
   // Explicit session controls retain their existing terminal-task semantics.
-  if (facts.issueFound && ["done", "cancelled"].includes(facts.issueStatus ?? "") && !facts.resumeIntent) {
+  if (facts.issueFound && ["done", "cancelled"].includes(facts.issueStatus ?? "") && !facts.resumeIntent && !facts.verifiedCompletedTaskNotification) {
     return {
       stale: true,
       errorCode: "issue_terminal_status",
@@ -624,7 +625,7 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent,
+    terminalBypass: facts.resumeIntent || facts.verifiedCompletedTaskNotification,
   });
   if (statusOutcome === "terminal") {
     return {

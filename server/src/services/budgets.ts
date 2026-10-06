@@ -872,6 +872,10 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           resourceIssueId: resourceBlock.resourceIssueId, code: resourceBlock.code,
           reason: resourceBlock.code === "issue_token_usage_unknown"
             ? "Task token usage is unknown (issue_token_usage_unknown). Reconcile authoritative usage for the source runs before continuing."
+            : resourceBlock.code === "issue_progress_unverified"
+              ? "Task progress needs verification (issue_progress_unverified). Inspect the existing outputs and record the next owner/action before continuing; this is not proof of no progress or a request to increase the limit."
+            : resourceBlock.code === "issue_no_progress_limit"
+              ? "Task reached its verified no-progress limit (issue_no_progress_limit). Inspect the repeated unchanged outputs and choose a concrete corrective action; preserve the existing work and resource accounting."
             : `Task resource limit reached (${resourceBlock.code}). Preserve progress and ask its owner to revise the resource policy.` };
       }
       const resourceMetricBlock = async () => {

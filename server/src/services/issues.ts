@@ -9746,6 +9746,10 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      if (issueData.createdByAgentId && issueData.executionPolicy && typeof issueData.executionPolicy === "object" &&
+          (issueData.executionPolicy as Record<string, unknown>).reportDelivery) {
+        throw forbidden("Controller-observed report contracts must be declared by the board");
+      }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
@@ -10907,6 +10911,13 @@ export function issueService(db: Db) {
           }
         }
         if (actorAgentId && issueData.executionPolicy !== undefined) {
+          const reportScope = (value: unknown) => {
+            const policy = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+            return policy.reportDelivery ? { reportDelivery: policy.reportDelivery, stages: policy.stages ?? [] } : null;
+          };
+          if (JSON.stringify(reportScope(receiptExisting.executionPolicy)) !== JSON.stringify(reportScope(issueData.executionPolicy))) {
+            throw forbidden("Report output and review contracts are board-managed and cannot be changed by an agent");
+          }
           const resources = (value: unknown) => value && typeof value === "object" && !Array.isArray(value)
             ? (value as Record<string, unknown>).resourceLimits ?? null : null;
           if (JSON.stringify(resources(receiptExisting.executionPolicy)) !== JSON.stringify(resources(issueData.executionPolicy))) {

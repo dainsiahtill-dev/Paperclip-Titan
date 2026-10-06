@@ -5,12 +5,16 @@ import { issueResourceLimitsSchema, type IssueResourceLimits } from "@paperclipa
 export interface ResourceUsage {
   totalTokens: number; unknownUsageCount: number; automaticRuns: number; noProgressRuns: number;
   boundedWait?: boolean; newHumanInput?: boolean;
+  unverifiedProgressRuns?: number;
 }
 export function evaluateIssueResourceLimits(limits: IssueResourceLimits, usage: ResourceUsage) {
   if (limits.maxTokensPerIssue && usage.unknownUsageCount > 0) return { blocked: true, code: "issue_token_usage_unknown" };
   if (limits.maxTokensPerIssue && usage.totalTokens >= limits.maxTokensPerIssue) return { blocked: true, code: "issue_token_limit" };
   if (limits.maxAutomaticRuns && usage.automaticRuns >= limits.maxAutomaticRuns) return { blocked: true, code: "issue_automatic_run_limit" };
   if (limits.maxNoProgressRuns && !usage.boundedWait && !usage.newHumanInput && usage.noProgressRuns >= limits.maxNoProgressRuns) return { blocked: true, code: "issue_no_progress_limit" };
+  if (limits.maxNoProgressRuns && !usage.boundedWait && !usage.newHumanInput &&
+      usage.noProgressRuns + (usage.unverifiedProgressRuns ?? 0) >= limits.maxNoProgressRuns)
+    return { blocked: true, code: "issue_progress_unverified" };
   return { blocked: false, code: null };
 }
 
@@ -220,13 +224,16 @@ export async function getIssueResourceBlock(db: Db, input: {
               and manual_wake.trigger_detail = 'manual')
         ), false)`, input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : undefined)) : [{ count: 0 }];
     const recent = policy.limits.maxNoProgressRuns ? await db.select({ status: heartbeatRuns.status,
-      livenessState: heartbeatRuns.livenessState, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+      livenessState: heartbeatRuns.livenessState, resultJson: heartbeatRuns.resultJson, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.finishedAt)))
       .orderBy(desc(heartbeatRuns.finishedAt)).limit(policy.limits.maxNoProgressRuns) : [];
     let noProgressRuns = 0;
+    let unverifiedProgressRuns = 0;
     for (const run of recent) {
       if (run.status !== "succeeded" || ["advanced", "completed", "blocked"].includes(run.livenessState ?? "")) break;
-      noProgressRuns += 1;
+      const observation = object(object(run.resultJson).workObservation);
+      if (observation.version === 1 && observation.progress === "unchanged") noProgressRuns += 1;
+      else unverifiedProgressRuns += 1;
     }
     const lastFinished = recent[0]?.finishedAt;
     const humanComments = lastFinished ? await db.select({ id: issueComments.id }).from(issueComments)
@@ -244,7 +251,7 @@ export async function getIssueResourceBlock(db: Db, input: {
           || (typeof monitorPolicy.maxAttempts === "number" && monitorPolicy.maxAttempts > Number(monitor.attemptCount ?? 0))));
     const usage: ResourceUsage = { totalTokens: Number(tokens?.totalTokens ?? 0) + Number(unreported?.totalTokens ?? 0) + legacyTotal,
       unknownUsageCount: Number(tokens?.unknownUsageCount ?? 0) + Number(unreported?.unknownUsageCount ?? 0) + legacyUnknown + unqualifiedAcpRuns.size, automaticRuns: Number(runs?.count ?? 0),
-      noProgressRuns, boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 };
+      noProgressRuns, ...(policy.limits.maxNoProgressRuns ? { unverifiedProgressRuns } : {}), boundedWait, newHumanInput: humanComments.length > 0 || humanResponses.length > 0 };
     input.onObservedPolicy?.({ issueId: policy.issueId, limits: policy.limits, usage });
     const decision = evaluateIssueResourceLimits(policy.limits, usage);
     if (decision.blocked) return { ...decision, resourceIssueId: policy.issueId, title: policy.title };

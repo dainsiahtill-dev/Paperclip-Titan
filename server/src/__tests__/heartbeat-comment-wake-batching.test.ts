@@ -1223,10 +1223,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
   it.each([
     { caseName: "allows a non-assignee mention on completed work", targetAssignee: false, terminalStatus: "done", explicitResume: false },
+    { caseName: "allows a non-assignee mention on a completed report contract", targetAssignee: false, terminalStatus: "done", explicitResume: false },
     { caseName: "delivers explicit agent feedback after completion", targetAssignee: true, terminalStatus: "done", explicitResume: true },
     { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false },
     { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true },
-  ] as const)("$caseName", async ({ targetAssignee, terminalStatus, explicitResume }) => {
+  ] as const)("$caseName", async ({ caseName, targetAssignee, terminalStatus, explicitResume }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1382,6 +1383,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       // simulating completion by that provider, or startup correctly rejects
       // the already-closed task before this scenario reaches its follow-up.
       await waitFor(() => gateway.getAgentPayloads().length >= 1);
+      if (caseName === "allows a non-assignee mention on a completed report contract") {
+        await db.update(issues).set({ executionPolicy: { mode: "normal", commentRequired: true, reportDelivery: { version: 1, files: ["REPORT.md"] },
+          stages: [{ id: randomUUID(), type: "review", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "user", userId: "responsible-user" }] }] } }).where(eq(issues.id, issueId));
+      }
       await db
         .update(issues)
         .set({

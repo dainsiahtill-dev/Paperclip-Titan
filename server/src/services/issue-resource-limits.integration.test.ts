@@ -320,13 +320,25 @@ const support = await getEmbeddedPostgresTestSupport();
   });
   it("accepts real new human input for no-progress recovery without resetting lifetime attempts", async () => {
     const s = await seed({ maxNoProgressRuns: 2 });
-    await run(s, s.rootId, 20); await run(s, s.childId, 10);
+    const rootRunId = await run(s, s.rootId, 20), childRunId = await run(s, s.childId, 10);
+    for (const id of [rootRunId, childRunId]) await db.update(heartbeatRuns).set({ resultJson: { workObservation: {
+      version: 1, progress: "unchanged", sourceVersion: "current-material", liveness: "stopped", progressKind: "none", nextOwnerId: s.agentId,
+    } } }).where(eq(heartbeatRuns.id, id));
     const input = { companyId: s.companyId, issueId: s.childId };
     expect(await getIssueResourceBlock(db, input)).toMatchObject({ code: "issue_no_progress_limit" });
     await db.insert(issueComments).values({ companyId: s.companyId, issueId: s.rootId, authorUserId: "board", body: "New requirement", createdAt: new Date() });
     expect(await getIssueResourceBlock(db, input)).toBeNull();
     await db.update(issues).set({ executionPolicy: { mode: "normal", commentRequired: true, stages: [], resourceLimits: { maxNoProgressRuns: 2, maxAutomaticRuns: 2 } } }).where(eq(issues.id, s.rootId));
     expect(await getIssueResourceBlock(db, input)).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+  it.each([null, "awaiting_verification", "advanced"])("reports unverified progress (%s) without claiming a no-progress limit was reached", async progress => {
+    const s = await seed({ maxNoProgressRuns: 1 });
+    const id = await run(s, s.childId, 10);
+    if (progress) await db.update(heartbeatRuns).set({ resultJson: { workObservation: { version: 1, progress } } }).where(eq(heartbeatRuns.id, id));
+    const snapshots: unknown[] = [];
+    expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId, onObservedPolicy: row => { snapshots.push(row.usage); } }))
+      .toMatchObject({ code: "issue_progress_unverified" });
+    expect(snapshots[0]).toMatchObject({ noProgressRuns: 0, unverifiedProgressRuns: 1 });
   });
   it("prevents an executor from dropping resource limits through ordinary policy updates", async () => {
     const s = await seed({ maxAutomaticRuns: 2 });

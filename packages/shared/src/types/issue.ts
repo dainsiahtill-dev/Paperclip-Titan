@@ -666,6 +666,8 @@ export interface IssueExecutionMonitorPolicy {
 }
 
 export interface IssueExecutionPolicy {
+  /** Declared report outputs are observed by the controller, then submitted to the configured review stage. */
+  reportDelivery?: { version: 1; files: string[] } | null;
   deliveryPolicy?: import("./delivery.js").DeliveryPolicy | null;
   resourceLimits?: IssueResourceLimits | null;
   mode: IssueExecutionPolicyMode;

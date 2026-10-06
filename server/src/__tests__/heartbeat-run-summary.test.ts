@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  stripAdapterControllerObservations,
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
   LEGACY_WITHHELD_RUN_COMMENT,
@@ -11,6 +12,13 @@ import {
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
 } from "../services/heartbeat-run-summary.js";
+
+it("does not persist provider-supplied controller progress and report markers", () => {
+  const raw = { summary: "A real answer", workObservation: { version: 1, progress: "advanced" },
+    reportDeliveryObservation: { terminal: true }, reportDeliveryBaseline: { version: 1 }, providerData: { value: 42 } };
+  expect(stripAdapterControllerObservations(raw)).toEqual({ summary: "A real answer", providerData: { value: 42 } });
+  expect(raw.workObservation.progress).toBe("advanced");
+});
 
 describe("selectHeartbeatRunFinalAgentMessage", () => {
   const substantive = {
