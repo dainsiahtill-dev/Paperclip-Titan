@@ -984,6 +984,20 @@ ownership, active controllers, cleanup leases, pause, approval, budget, and norm
 execution gates still apply. Dependency-blocked interaction mode remains limited
 to its existing answer/triage contract.
 
+Historical recovery sweeps can leave several reconciliation records for one
+source run. Each operator decision and its delivery receipt remains inspectable.
+Under the task admission lock, equivalent decisions for the same company, task,
+source, assignee, action outcome, current task/material/workspace/profile scope
+and user direction adopt one authenticated reconciliation successor, including
+after it has finished. They do not replay completed work. Changed objectives,
+user messages or action outcomes can establish distinct work. Profile or explicit
+workspace drift alone retains the pending decision until new direction; an exact
+server-owned workspace-binding transition may update its captured effective
+scope under the same task transaction. Missing
+or changed producer authority retains the pending decision; copied context and
+caller-supplied fingerprints are not delivery evidence. Historical successors
+without the admission capture are not retroactively qualified for this reuse.
+
 The hold retirement, audit record, and new run commit together under the task
 lock. The new turn uses a fresh provider session and retains the latest user
 request, task history, completed work, and the interruption notice. It receives

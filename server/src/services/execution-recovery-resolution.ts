@@ -311,7 +311,8 @@ export async function deliverReconciledExecutions(
                 eq(heartbeatRuns.companyId, action.companyId),
                 eq(heartbeatRuns.id, run.id),
                 eq(heartbeatRuns.agentId, action.returnOwnerAgentId!),
-                sql`${heartbeatRuns.contextSnapshot}->>'recoveryActionId' = ${action.id}`,
+                // Admission may reuse a same-source successor produced by an
+                // earlier historical action. Keep that producer identity intact.
                 sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${decision.runId}`,
               ),
             );

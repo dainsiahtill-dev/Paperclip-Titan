@@ -99,7 +99,8 @@ export function retrySourceFingerprint(run: typeof heartbeatRuns.$inferSelect) {
     error: run.error, errorCode: run.errorCode, context: run.contextSnapshot, result, logSha256: run.logSha256,
     scheduledRetryAttempt: run.scheduledRetryAttempt, usage: run.usageJson });
 }
-export async function retryScopeFingerprints(db: Db, issue: typeof issues.$inferSelect | null, agent: typeof agents.$inferSelect, lock = false) {
+export async function retryScopeFingerprints(db: Db, issue: typeof issues.$inferSelect | null, agent: typeof agents.$inferSelect, lock = false,
+  options: { omitExecutionWorkspaceLifecycleStatus?: boolean } = {}) {
   const projectQuery = issue?.projectId ? db.select().from(projectWorkspaces)
     .where(and(eq(projectWorkspaces.companyId, agent.companyId), eq(projectWorkspaces.projectId, issue.projectId)))
     .orderBy(asc(projectWorkspaces.id)) : null;
@@ -117,7 +118,8 @@ export async function retryScopeFingerprints(db: Db, issue: typeof issues.$infer
     projectRows: projectRows.map(({ id, cwd, repoUrl, repoRef, defaultRef, sourceType, remoteProvider, remoteWorkspaceRef, metadata }) =>
       ({ id, cwd, repoUrl, repoRef, defaultRef, sourceType, remoteProvider, remoteWorkspaceRef, metadata })),
     execution: execution.map(({ id, cwd, repoUrl, baseRef, branchName, providerType, providerRef, mode, strategyType, status }) =>
-      ({ id, cwd, repoUrl, baseRef, branchName, providerType, providerRef, mode, strategyType, status })),
+      ({ id, cwd, repoUrl, baseRef, branchName, providerType, providerRef, mode, strategyType,
+        ...(options.omitExecutionWorkspaceLifecycleStatus ? {} : { status }) })),
     adapterType: agent.adapterType, adapterConfig: agent.adapterConfig });
   const scopeFingerprint = nativeSha256({ companyId: agent.companyId, issueId: issue?.id ?? null, agentId: agent.id,
     title: issue?.title ?? null, description: issue?.description ?? null, parentId: issue?.parentId ?? null,

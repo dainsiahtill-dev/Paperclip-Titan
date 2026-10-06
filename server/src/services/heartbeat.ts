@@ -44,6 +44,7 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { consumeSuppressedRetryResume, listVerifiedRetryHolds, persistRetrySuppression, readVerifiedRetryDisposition, readVerifiedRetrySupersession, validateSuppressedRetryResume } from "./execution-retry-disposition.js";
+import { assertReconciliationBindingScope, reconciliationDeliveryFingerprint, reconciliationIntentFingerprint, retainReconciliationWorkspaceBinding } from "./reconciliation-delivery.js";
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { renderPaperclipWakePrompt, resolvePaperclipInstanceRootForAdapter, withWorkspaceProcessGuard } from "@paperclipai/adapter-utils/server-utils";
 import { workspaceWriteOwnershipService } from "./workspace-write-ownership.js";
@@ -22226,7 +22227,54 @@ export function heartbeatService(
           };
         }
         if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(
+          if (context.reconciliationDeliveryFingerprint) await db.transaction(async bindingTx => {
+            const [bindingBefore] = context.reconciliationDeliveryFingerprint ? await bindingTx.select().from(issues).where(and(
+              eq(issues.companyId, agent.companyId), eq(issues.id, issueId),
+            )).for("update") : [];
+            if (context.reconciliationDeliveryFingerprint) {
+              if (!bindingBefore) throw new Error("reconciliation_workspace_scope_changed");
+              await assertReconciliationBindingScope(bindingTx as unknown as Db, {
+                issue: bindingBefore, runId: run.id, agentId: agent.id,
+              });
+            }
+            await issuesSvc.update(
+              issueId,
+              { ...nextIssuePatch, companyGuard: agent.companyId },
+              bindingTx,
+              undefined,
+              undefined,
+              { bindRuntimeSharedWorkspace: warmReusableExecutionWorkspace && workspace.mode === "shared_workspace" },
+            );
+            if (bindingBefore) {
+              const before = {
+                executionWorkspaceId: bindingBefore.executionWorkspaceId,
+                projectWorkspaceId: bindingBefore.projectWorkspaceId,
+                executionWorkspacePreference: bindingBefore.executionWorkspacePreference,
+                executionWorkspaceSettings: bindingBefore.executionWorkspaceSettings,
+              };
+              const next = await retainReconciliationWorkspaceBinding(bindingTx as unknown as Db, {
+                companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id,
+                before,
+                after: {
+                  ...before,
+                  ...(nextIssuePatch.executionWorkspaceId !== undefined ? { executionWorkspaceId: workspace.id } : {}),
+                  ...(nextIssuePatch.projectWorkspaceId !== undefined ? { projectWorkspaceId: resolvedProjectWorkspaceId } : {}),
+                  ...(nextIssuePatch.executionWorkspacePreference !== undefined ? { executionWorkspacePreference: "reuse_existing" } : {}),
+                  ...(nextIssuePatch.executionWorkspaceSettings !== undefined ? {
+                    executionWorkspaceSettings: nextIssuePatch.executionWorkspaceSettings as typeof bindingBefore.executionWorkspaceSettings,
+                  } : {}),
+                },
+              });
+              if (next) {
+                const [currentRun] = await bindingTx.select().from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.id, run.id),
+                ));
+                context.reconciliationDeliveryFingerprint = next;
+                context.reconciliationWorkspaceBinding = currentRun?.contextSnapshot?.reconciliationWorkspaceBinding;
+              }
+            }
+          });
+          else await issuesSvc.update(
             issueId,
             { ...nextIssuePatch, companyGuard: agent.companyId },
             db,
@@ -27659,6 +27707,77 @@ export function heartbeatService(
             }
             if (action.evidence.continuationDelivery !== "pending")
               return { kind: "skipped" as const };
+            // Historical sweeps may have recorded several operator actions for
+            // one stopped source. An action ID is audit identity, not another
+            // permission to replay that source after its successor has finished.
+            const [reconciliationIssue] = await tx.select().from(issues).where(and(
+              eq(issues.companyId, issue.companyId), eq(issues.id, issue.id),
+            ));
+            const [reconciliationAgent] = await tx.select().from(agents).where(and(
+              eq(agents.companyId, issue.companyId), eq(agents.id, agentId),
+            )).for("share");
+            if (!reconciliationIssue || !reconciliationAgent) return { kind: "skipped" as const };
+            const intentFingerprint = await reconciliationIntentFingerprint(
+              tx as unknown as Db, reconciliationIssue, agentId, decision,
+            );
+            const deliveryFingerprint = await reconciliationDeliveryFingerprint(
+              tx as unknown as Db, reconciliationIssue, reconciliationAgent, decision,
+            );
+            const [sameSourceDelivery] = await tx.select({ run: heartbeatRuns })
+              .from(heartbeatRuns)
+              .innerJoin(agentWakeupRequests, and(
+                eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+                eq(agentWakeupRequests.companyId, heartbeatRuns.companyId),
+                eq(agentWakeupRequests.agentId, heartbeatRuns.agentId),
+                eq(agentWakeupRequests.runId, heartbeatRuns.id),
+              ))
+              .where(and(
+                eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                eq(heartbeatRuns.retryOfRunId, sourceRunId),
+                sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+                sql`${heartbeatRuns.contextSnapshot}->>'source' = 'execution.reconciled'`,
+                or(
+                  sql`${heartbeatRuns.contextSnapshot}->>'reconciliationIntentFingerprint' = ${intentFingerprint}`,
+                  sql`${heartbeatRuns.contextSnapshot}->>'reconciliationIntentFingerprint' is null`,
+                ),
+                eq(agentWakeupRequests.source, "automation"),
+                eq(agentWakeupRequests.triggerDetail, "system"),
+                eq(agentWakeupRequests.reason, "issue_recovery_action_restored"),
+                eq(agentWakeupRequests.requestedByActorType, "system"),
+                eq(agentWakeupRequests.requestedByActorId, "execution-recovery"),
+                sql`${agentWakeupRequests.idempotencyKey} = 'execution-reconciliation:' || (${heartbeatRuns.contextSnapshot}->>'recoveryActionId')`,
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                sql`${agentWakeupRequests.payload}->>'recoveryActionId' = ${heartbeatRuns.contextSnapshot}->>'recoveryActionId'`,
+              ))
+              .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id)).limit(1);
+            if (sameSourceDelivery) {
+              if (sameSourceDelivery.run.contextSnapshot?.reconciliationIntentFingerprint !== intentFingerprint)
+                return { kind: "deferred" as const };
+              if (sameSourceDelivery.run.contextSnapshot?.reconciliationDeliveryFingerprint !== deliveryFingerprint)
+                return { kind: "deferred" as const };
+              const producerId = readNonEmptyString(sameSourceDelivery.run.contextSnapshot?.recoveryActionId);
+              const [producer] = producerId ? await tx.select().from(issueRecoveryActions).where(and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issue.id), eq(issueRecoveryActions.id, producerId),
+              )) : [];
+              const producerDecision = parseObject(producer?.evidence.executionReconciliation);
+              if (producer?.status === "resolved" && producer.kind === "active_run_watchdog" &&
+                  producer.returnOwnerAgentId === agentId && producerDecision.runId === sourceRunId &&
+                  producerDecision.providerStopped === true && producerDecision.actionOutcome === decision.actionOutcome &&
+                  (producerDecision.transferToAssigneeAgentId ?? null) === (decision.transferToAssigneeAgentId ?? null)) {
+                return { kind: "replayed" as const, run: sameSourceDelivery.run };
+              }
+              // A changed/deleted producer is not authority to replay its
+              // source, nor to silently consume this new operator decision.
+              return { kind: "deferred" as const };
+            }
+            enrichedContextSnapshot.reconciliationDeliveryFingerprint = deliveryFingerprint;
+            enrichedContextSnapshot.reconciliationIntentFingerprint = intentFingerprint;
+            enrichedContextSnapshot.reconciliationDeliveryDecision = {
+              runId: sourceRunId, providerStopped: true, actionOutcome: decision.actionOutcome,
+              transferToAssigneeAgentId: decision.transferToAssigneeAgentId ?? null,
+            };
             reconciledSourceRunId = sourceRunId;
           }
 
