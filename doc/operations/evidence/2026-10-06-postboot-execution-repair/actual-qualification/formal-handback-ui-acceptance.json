@@ -1,0 +1,8 @@
+{
+  "url": "http://127.0.0.1:3100/POL/issues",
+  "errors": [],
+  "company": "Polaris",
+  "activeTask": "POL-6",
+  "taskLiveVisible": true,
+  "loadedCodeCommit": "fd35ea339"
+}

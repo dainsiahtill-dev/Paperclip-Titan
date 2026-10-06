@@ -1,0 +1,186 @@
+{
+  "checkedAt": "2026-10-06T10:56:33.369661+00:00",
+  "run": "161b94e3-c0bb-4ff0-b4b7-efc668a1a56a",
+  "acceptance": "actual employee public validation; product defects remain",
+  "originalSourceRoot": "/home/dains/Documents/polaris",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "sourceEdits": false,
+  "effectCalls": 0,
+  "inputsUnchangedInRemainingCases": true,
+  "sourceHashesUnchanged": true,
+  "A": {
+    "A-mixed-used-default": {
+      "planned": true,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "patchContent": [
+        "import DefaultThing, { Foo } from \"../src/candidate.ts\";\nconsole.log(DefaultThing, Foo);\n"
+      ],
+      "candidate": "export const Foo = 1;\n",
+      "callInputsUnchanged": true
+    },
+    "A-named-positive": {
+      "planned": true,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "patchContent": [
+        "import { Foo } from \"../src/candidate.ts\";\nconsole.log(Foo);\n"
+      ],
+      "candidate": "export const Foo = 1;\n",
+      "callInputsUnchanged": true
+    },
+    "A-ambiguous-refusal": {
+      "planned": false,
+      "changedPaths": [],
+      "patchContent": [],
+      "candidate": null,
+      "callInputsUnchanged": true
+    },
+    "A-missing-refusal": {
+      "planned": false,
+      "changedPaths": [],
+      "patchContent": [],
+      "candidate": "export const Other = 1;\n",
+      "callInputsUnchanged": true
+    }
+  },
+  "B": {
+    "B-comment-only": {
+      "planned": true,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "patchContent": [
+        "import { Foo } from \"../src/candidate.ts\";\nconsole.log(Foo);\n"
+      ],
+      "candidate": "/* export const Foo = 1; */\n",
+      "callInputsUnchanged": true
+    },
+    "B-real-export-positive": {
+      "planned": true,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "patchContent": [
+        "import { Foo } from \"../src/candidate.ts\";\nconsole.log(Foo);\n"
+      ],
+      "candidate": "export const Foo = 1;\n",
+      "callInputsUnchanged": true
+    }
+  },
+  "C": [
+    {
+      "id": "C-parent-only",
+      "helper": "..",
+      "planned": null,
+      "exception": {
+        "type": "ValueError",
+        "message": "target_path must be canonical and traversal-free"
+      },
+      "changedPaths": null,
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-trailing-parent",
+      "helper": "src/..",
+      "planned": null,
+      "exception": {
+        "type": "ValueError",
+        "message": "target_path must be canonical and traversal-free"
+      },
+      "changedPaths": null,
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-absolute",
+      "helper": "",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-parent-traversal",
+      "helper": "",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-embedded-traversal",
+      "helper": "",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-empty",
+      "helper": "",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-nonstring",
+      "helper": "17",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-null",
+      "helper": "",
+      "planned": false,
+      "exception": null,
+      "changedPaths": [],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-lexical-dot",
+      "helper": "tests/current.ts",
+      "planned": true,
+      "exception": null,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "inputsUnchanged": true
+    },
+    {
+      "id": "C-lexical-backslash",
+      "helper": "tests/current.ts",
+      "planned": true,
+      "exception": null,
+      "changedPaths": [
+        "tests/current.ts"
+      ],
+      "inputsUnchanged": true
+    }
+  ],
+  "limitations": [
+    "B-comment probe truncated; B-string full case lost to tool output truncation. Original output retained in first-execution-output.txt. No completed calls replayed.",
+    "Partial drive metadata retained; no model/Bench/effect acceptance"
+  ],
+  "artifactHashes": {
+    "first-retained-public-data.json": "9baa29416bd421eee28a409fdde657c0c394f3e1cb3aeb821ed11cfe8d7171f2",
+    "codegraph-evidence.json": "7355ec15589c47530ec40e8cb585d7145897a3e0884ba1efb7a9b564ce77ba2b",
+    "remaining-C-public-data.json": "e663d10f35b7114dbcb9185137b9a34f4801f4b122aa64093b7956aaacebe167",
+    "drive-probe-public-data.json": "ae303f07d1270c92b2f7720163bb0c5531d962a13be0340db65979ceb6850361"
+  },
+  "processStatus": "succeeded",
+  "deliveryStatus": "accepted bounded audit; productchangesrequired",
+  "namespaceDrained": true,
+  "ownerReleased": true,
+  "environmentLeaseReleased": true,
+  "finalReportHashes": {
+    "preservation-evidence.json": "8c6edd62d872504438f3a5cf9816f22d5960dee1ed6fcf8aa661e3c62f05cc35",
+    "testing.json": "f5ee1ac9c1bbd0b9573c851eb1b5c15970765d365f7673880988865f2b485bed",
+    "REPORT.md": "7e64bfd6baa6631bf841a8519c8323f3335b1a36b501e76f0cf5aae7857efc68"
+  }
+}

@@ -1,0 +1,118 @@
+{
+  "capturedAt": "2026-10-06T10:36:07.572708+00:00",
+  "loadedSourceCommit": "fd35ea3398cab9c21ce0f67b7e1068c1615031ac",
+  "codeCommit": "58a5fb740",
+  "deduplication": {
+    "historicalActions": 5,
+    "uniqueSuccessors": 1,
+    "successor": "3e28aaff-05f5-4d8e-8e98-80c024a13a30",
+    "executionOutcome": "failed preparing; inherited deadline expired; zero execution footprints"
+  },
+  "checks": {
+    "recoveryRelated": 106,
+    "mcpGatewayRelated": 167,
+    "retryScheduling": 113,
+    "serverTypecheck": 0,
+    "serverBuild": 0,
+    "fullRepository": {
+      "exitCode": 1,
+      "passed": 12899,
+      "failed": 2,
+      "skipped": 64,
+      "durationSec": 5991.9,
+      "failedFiles": [
+        "issue-recovery-actions.test.ts (oldworker capture)",
+        "cli-invocation-safety.test.ts (nestedworktreehistory)"
+      ],
+      "currentCompleteRechecks": {
+        "recoveryActions": 84,
+        "cliSafety": 40
+      },
+      "singleFrozenSourceGreen": false
+    },
+    "formalHandbackSuite": 84
+  },
+  "authorizedRemainingWork": [
+    {
+      "id": "3e28aaff-05f5-4d8e-8e98-80c024a13a30",
+      "status": "failed",
+      "errorCode": "setup_failed",
+      "stage": "preparing",
+      "deadline": {
+        "runId": "3e28aaff-05f5-4d8e-8e98-80c024a13a30",
+        "deadlineAt": "2026-10-05T19:25:51.348Z",
+        "maxRunSeconds": 600
+      },
+      "logBytes": null,
+      "pid": null,
+      "retryOf": "791d9437-74df-4abf-ba07-b854cee7e51a"
+    },
+    {
+      "id": "f0f0c63c-a760-4e1c-b71b-a43774168207",
+      "status": "running",
+      "errorCode": null,
+      "stage": "dispatching",
+      "deadline": {
+        "runId": "f0f0c63c-a760-4e1c-b71b-a43774168207",
+        "deadlineAt": "2026-10-06T10:44:32.661Z",
+        "maxRunSeconds": 600
+      },
+      "logBytes": null,
+      "pid": 50199,
+      "retryOf": "3e28aaff-05f5-4d8e-8e98-80c024a13a30"
+    }
+  ],
+  "automaticWakes": false,
+  "goalComplete": false,
+  "remainingWorkRunOutcome": {
+    "runId": "f0f0c63c-a760-4e1c-b71b-a43774168207",
+    "processStatus": "succeeded",
+    "deliveryStatus": "blocked",
+    "reason": "Root instruction referenced wrong interpreter path; A/B/C remainunverified",
+    "actualCommands": 6,
+    "commandExits": [
+      0,
+      0,
+      0,
+      1,
+      0,
+      0
+    ],
+    "governedCodeGraphCalls": 2,
+    "actualInterpreterCorrection": "/home/dains/Documents/polaris/.venv/bin/python CPython3.13.12",
+    "namespaceDrained": true,
+    "ownerState": "released",
+    "environmentLease": "released",
+    "sourceHashesUnchanged": true
+  },
+  "restoredOwnerMisclassification": {
+    "runId": "14d242c6-494b-46f3-ba1e-971c4d1a4085",
+    "outcome": "cancelled afterBoardhandoff",
+    "taskStatus": "in_review",
+    "taskOwner": "local-board",
+    "reason": "resolvedhandedback actionstillprojected asrecovery; actualworkergovernance-only",
+    "namespaceDrained": true,
+    "ownerReleased": true,
+    "environmentLeaseStatus": "expired",
+    "dynamicAcceptance": false,
+    "sourceEdits": false
+  },
+  "restoredOwnerFix": {
+    "commit": "fd35ea339",
+    "review": "approved",
+    "serverTypecheck": 0,
+    "serverBuild": 0,
+    "actualLedgerProjection": {
+      "beforeRecoveryOnly": true,
+      "afterRecoveryOnly": false,
+      "issuePreserved": true
+    },
+    "normalResidualRun": "161b94e3-c0bb-4ff0-b4b7-efc668a1a56a",
+    "recovery": null,
+    "dynamicOutcome": "reported_with_evidence_gaps; Rootaccepted boundedreview",
+    "actualNamespaceDrained": true,
+    "ownerState": "released",
+    "environmentLease": "released",
+    "POL6Status": "in_review"
+  }
+}
