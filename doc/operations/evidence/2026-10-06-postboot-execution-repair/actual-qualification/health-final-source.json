@@ -1,0 +1,53 @@
+{
+  "status": "ok",
+  "version": "2026.916.1+156.git.650b69ff7",
+  "serverVersion": "2026.916.1+156.git.650b69ff7",
+  "commit": "650b69ff72a5077b246aba6e5fbd462c39dbff01",
+  "deploymentMode": "local_trusted",
+  "deploymentExposure": "private",
+  "localAiLoginSupported": true,
+  "authReady": true,
+  "bootstrapStatus": "ready",
+  "bootstrapInviteActive": false,
+  "features": {
+    "companyDeletionEnabled": true
+  },
+  "serverInfo": {
+    "processStartedAt": "2026-10-06T06:49:53.333Z",
+    "git": {
+      "available": true,
+      "fullSha": "650b69ff72a5077b246aba6e5fbd462c39dbff01",
+      "shortSha": "650b69ff7",
+      "branchName": "main",
+      "subject": "fix: confine read tools beside protected writers",
+      "committedAt": "2026-10-06T06:48:53.000Z",
+      "localChanges": {
+        "available": true,
+        "hasLocalChanges": false,
+        "stagedFileCount": 0,
+        "unstagedFileCount": 0,
+        "untrackedFileCount": 0
+      }
+    }
+  },
+  "startupRecovery": {
+    "phase": "ready",
+    "updatedAt": "2026-10-06T06:49:59.264Z"
+  },
+  "nativeRecovery": {},
+  "databaseBackup": {
+    "enabled": true,
+    "status": "ok",
+    "backupDir": "/home/dains/.paperclip/instances/default/data/backups",
+    "maxAgeHours": 26,
+    "latestBackup": {
+      "name": "paperclip-20261006-120042.sql.gz",
+      "path": "/home/dains/.paperclip/instances/default/data/backups/paperclip-20261006-120042.sql.gz",
+      "mtime": "2026-10-06T04:01:39.476Z",
+      "ageHours": 2.8,
+      "sizeBytes": 209267697
+    },
+    "lastFailure": null,
+    "warnings": []
+  }
+}

@@ -1,6 +1,6 @@
 # Paperclip postboot execution repair — 2026-10-06
 
-Status: source review, focused verification, audited full regression coverage, typecheck, production build and token gates passed. Commit/service update are recorded in the deployment addendum. No inference-backed employee retry or Polaris product change has occurred.
+Status: platform execution qualification accepted after actual protected employee read/write/tiny tests, public Stop, real namespace drain, governed MCP invocation and second protected dispatch. Implementation main/remote650b69ff7 is loaded by default3100 service (156.git.650b69ff7). Historical failures and operator interruption remain retained below. Polaris business review is separate.
 
 ## Confirmed defects and fixes
 
@@ -27,7 +27,7 @@ After deployment, fresh authorized employee qualification must use the same orig
 
 ## Limits
 
-Native ARM64 kernel unrun; BPF ABI cases are modeled. No provider/model or Bench call performed. Existing native-binary package-root discovery can select /home/dains because its package.json is an ancestor; its broadRO exposure predates this patch, and tool readability is not private-root isolation proof. That separate hardening issue was recorded, not silently included as resolved.
+Native ARM64 kernel unrun; BPF ABI cases are modeled. Initial pre-deployment verification invoked no model/provider; later employee runs are listed in the final acceptance below. No Polaris Bench call was performed. Existing native-binary package-root discovery can select /home/dains because its package.json is an ancestor; its broadRO exposure predates this patch, and tool readability is not private-root isolation proof. That separate hardening issue was recorded, not silently included as resolved.
 
 Artifacts remain repository/local operator storage per user destination. Sensitive auth/config/raw worker logs are excluded from public evidence.
 
@@ -80,3 +80,17 @@ Actual run184d93b4 still blocked: the first approval projection did not apply to
 After the actual-route fix, employee d6a37886 reached the broker but its read-only CodeGraph call was treated as a separate writable stdio lifetime and rejected against the employee's own protected writer. This is a confirmed gateway execution bug; the run's process exit0 is not acceptance. Read catalog entries now get actual source-read-only filesystem/PID confinement, so they can safely read beside an active writer. Read annotations do not grant write safety: an attempted write is physically denied in the integration test. Writable/destructive/unknown entries retain the existing separate-writer admission. Ordinary runtime network access and normalized deadlines (up to60s) stay as before; audit/basic probes retain denied network and30s ceiling.70 whole-file gateway/governed-process tests pass, including a live guarded parent and source write denial. The first new fixture newline failure is retained and corrected, with no production assertion removed.
 
 Actual public Test-tab CodeGraph call with the saved audit employee succeeded without a model call: invocation8a47c195-d43a-4247-b18a-a950013fea52, allowed decision, real exploration result. This is physical readonly tool execution evidence; the final in-model writer/reader/second-report qualification remains pending.
+
+## Final independent platform acceptance
+
+- Audit employee f8c5d040 ran the real read-only RTK/Python read and assertion successfully. Its then-missing MCP configuration and unfinished business review remain recorded. CodeGraph was subsequently governed/installed for the audit and implementation employees only; both no-model preflights and actual public test calls succeeded. Saved reviewer legacy raw sandbox arguments were converted to typed CLI/read-only/audit settings.
+- Protected employee b629a020 wrote phase1.json and completed its tiny assertion in the original root, then kept an owned descendant alive. Public Stop returned200. Independently checked namespace is drained, complete matching receipt exists, owner/lease released, and the delayed write remains absent well beyond its90-second timer.
+- Final employee1de103f7 actually called the governed local-stdio CodeGraph tool: completed, no error, isError=false, real process spawned. The exact phase2 command exited0 with SECOND_DISPATCH_PASS and wrote phase2.json. Run succeeded; its exact namespace receipt/owner/lease are released. This independently qualifies admission after old-controller reconciliation and after public Stop.
+- Original root device2096/inode244796 retained.8,859 tracked file hashes unchanged; only the two authorized engineering JSON outputs were produced by these qualification commands. No branch, worktree, code copy, sandbox disable, global namespace-limit change or Polaris product rewrite.
+- Both companies/38employees preserve model, effort, roles, reporting, permission and budget settings; config bytes unchanged. Only the two explicitly configured employee MCP/readiness settings and the reviewer's typed audit setting changed. Original disabled timers/wakes restored; no active run or pending/queued wake at final inspection.
+- Six controlled inference-backed qualification runs were needed because successive integration defects were discovered; blocked/failed attempts remain in the ledger. Explicit Board residual budgets were added without erasing spent usage or weakening acceptance. A pre-inference CLI failure and rejected HTTP requests are separately retained. Subscription usage is recorded as unpriced; no fabricated fee estimate.
+- Operator interruption of external queued POL-9 c99 is retained as a failure. Its run/event/lease hash remained unchanged by formal close, its real namespace proof is now recorded, and completed checkpoint outputs are preserved. No automatic business replay was initiated as a repair.
+
+Delivery is repository-only. POL-10's actual typed/raw business code review remains unfinished for Polaris's owner using the restored tools; the platform qualification is not that verdict. Native ARM64 execution and the pre-existing broad read-only package-root exposure remain outside this bounded repair qualification. All earlier REDs, author-fixture limitations and unsuccessful attempts are preserved.
+
+Final frozen implementation verification: full `pnpm -r typecheck` exit0; full `pnpm build` exit0; additional complete generic-MCP, gateway-service and basic-preflight suites109/109; gateway/governed real-process suites70/70; changed controller/ownership closure suites52/52; actual route producer/config suites66/66. Earlier tests and their retained replacement evidence are reported separately; a monolithic current `pnpm test:run` was not rerun. No check deadline, expectation, acceptance gate or assertion was reduced. Final source freeze covers22 changed implementation/test files. Default3100 loaded source650b69ff7, Node24, devUI, --no-repair, same data/config; no final source change after qualification.

@@ -1,0 +1,21 @@
+{
+  "companyCount": 2,
+  "employeeCount": 38,
+  "modelsRolesBudgetsPermissionsPreserved": true,
+  "authorizedSettingChanges": [
+    {
+      "employee": "3af6b2dd-e922-447f-a01e-d130e903b122",
+      "field": "runtimeConfig"
+    },
+    {
+      "employee": "7a8799e2-39ce-4c6a-8f72-1e3a654fccf2",
+      "field": "adapterConfig"
+    },
+    {
+      "employee": "7a8799e2-39ce-4c6a-8f72-1e3a654fccf2",
+      "field": "runtimeConfig"
+    }
+  ],
+  "timersAndWakeSettingsPreserved": true,
+  "configBytesPreserved": true
+}

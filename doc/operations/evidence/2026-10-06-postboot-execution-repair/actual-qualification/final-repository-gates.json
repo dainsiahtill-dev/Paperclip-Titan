@@ -1,0 +1,24 @@
+{
+  "fullTypecheckAndBuild": [
+    {
+      "name": "typecheck",
+      "exitCode": 0,
+      "command": "pnpm -r typecheck"
+    },
+    {
+      "name": "build",
+      "exitCode": 0,
+      "command": "pnpm build"
+    }
+  ],
+  "relatedMcpWholeSuites": {
+    "numPassedTests": 109,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "success": true
+  },
+  "testCoverage": "Prior phase complete audited official partitions retained; changed components verified by complete targeted suites and physical employee acceptance. No current monolithic test:run claim.",
+  "tokenGatesExitCode": 0,
+  "uiChanged": false,
+  "diffCheckExitCode": 0
+}

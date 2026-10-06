@@ -1,0 +1,9 @@
+{
+  "HTTP": 200,
+  "decision": "allowed",
+  "invocationId": "2e335865-c9c1-4144-8a03-d0e64a991f39",
+  "toolIsError": false,
+  "sourceRoot": "/home/dains/Documents/polaris",
+  "selectedEmployee": "3af6b2dd-e922-447f-a01e-d130e903b122",
+  "modelInvoked": false
+}

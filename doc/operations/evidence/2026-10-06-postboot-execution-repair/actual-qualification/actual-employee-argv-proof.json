@@ -1,0 +1,18 @@
+{
+  "command": "/home/dains/.local/bin/codex",
+  "argv": [
+    "exec",
+    "--json",
+    "-c",
+    "sandbox_mode=\"workspace-write\"",
+    "-c",
+    "sandbox_workspace_write.network_access=true",
+    "--model",
+    "gpt-6.1-sol",
+    "-c",
+    "model_reasoning_effort=\"high\"",
+    "-"
+  ],
+  "cwd": "/home/dains/Documents/polaris",
+  "inheritedCredentialsRedacted": true
+}
