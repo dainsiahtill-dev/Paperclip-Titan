@@ -1,11 +1,17 @@
 import { useContext, useState, type CSSProperties } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath } from "@/lib/issue-attachments";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueWorkProduct, WorkspaceFileRef } from "@paperclipai/shared";
 import { workspaceFileRefSchema } from "@paperclipai/shared";
 import { ArtifactFileChip } from "@/components/ArtifactFileChip";
+import { FileContentViewer } from "@/components/FileViewerSheet";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useFileViewer } from "@/context/FileViewerContext";
+import { fileResourcesApi } from "@/api/file-resources";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   ExternalLink,
   Maximize2,
@@ -129,8 +135,36 @@ export interface RichWorkProductCardProps {
   variant?: "card" | "compact";
 }
 
+function WorkProductFilePreview({ workProduct, fileRef, action }: {
+  workProduct: IssueWorkProduct; fileRef: WorkspaceFileRef; action: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = { path: fileRef.relativePath,
+    workspace: fileRef.workspaceKind === "execution_workspace" ? "execution" as const : "project" as const,
+    projectId: fileRef.projectId ?? null, workspaceId: fileRef.projectId ? fileRef.workspaceId : null };
+  const content = useQuery({ queryKey: queryKeys.issues.fileResourceContent(workProduct.issueId, query),
+    queryFn: () => fileResourcesApi.content(workProduct.issueId, query), enabled: open, retry: false });
+  return <>
+    <ArtifactFileChip workspaceFileRef={fileRef} label={action} onOpen={() => setOpen(true)} />
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="flex max-h-(--sz-85vh) flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0">
+          <DialogTitle>{workProduct.title}</DialogTitle>
+          <DialogDescription>{fileRef.displayPath}</DialogDescription>
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        {content.isError ? <p role="alert">{content.error.message || "Unable to open this report."}</p>
+          : content.data ? <FileContentViewer content={content.data} highlightedLine={fileRef.line ?? null} />
+          : <p role="status">Loading report…</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  </>;
+}
+
 export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
   const openIssueGallery = useContext(IssueGalleryContext);
+  const fileViewer = useFileViewer();
   const [galleryOpen, setGalleryOpen] = useState(false);
   const metadata = workProduct.metadata;
   const parsedFileRef = workspaceFileRefSchema.safeParse(metadata?.resourceRef);
@@ -265,7 +299,8 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
         {fileRef ? (
-          <ArtifactFileChip workspaceFileRef={fileRef} label={action} />
+          fileViewer ? <ArtifactFileChip workspaceFileRef={fileRef} label={action} />
+            : <WorkProductFilePreview workProduct={workProduct} fileRef={fileRef} action={action} />
         ) : mediaPath ? (
           <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline">
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
