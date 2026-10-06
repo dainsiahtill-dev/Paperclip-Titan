@@ -1,0 +1,225 @@
+{
+  "purpose": "OriginalPOL7/POL8readonly investigation readiness; no architectureimplementation",
+  "connectionId": "774f58ce-5656-48f6-ba21-f6ced0bf139a",
+  "existingInstallTargetsRetained": true,
+  "newTargets": 2,
+  "newCompanyWideInstall": false,
+  "credentialCopies": false,
+  "employees": [
+    {
+      "issue": "POL-7",
+      "agentId": "10384bec-6322-4318-9863-6f163516402a",
+      "previousSandbox": "workspace-write",
+      "currentProfile": {
+        "source": "saved_agent",
+        "adapterType": "codex_local",
+        "cwd": "/home/dains/Documents/polaris",
+        "projectId": "a502f34a-7e49-4aed-a8e1-8e264916f5db",
+        "target": "local",
+        "sandbox": "read-only",
+        "model": "gpt-6.1-sol",
+        "effort": "high"
+      },
+      "readinessStatus": "pass",
+      "testedAt": "2026-10-06T12:00:37.248Z",
+      "profileDigest": "2dc47dd52244db790d2673b75b466d3584e9e18a614f52c8b3f206343b3b4836",
+      "checks": [
+        {
+          "code": "profile",
+          "status": "configured",
+          "message": "Saved launch configuration inspected. Model/effort matches prove configuration only, not model entitlement or paid-task qualification."
+        },
+        {
+          "code": "home",
+          "status": "configured",
+          "message": "Probes use a disposable private home with no copied credentials. The eventual employee home and authentication were not tested."
+        },
+        {
+          "code": "cwd",
+          "status": "resolved",
+          "message": "Saved workspace exists and resolves on this local target."
+        },
+        {
+          "code": "expected:cwd",
+          "status": "configured",
+          "message": "Saved cwd matches the declared expectation.",
+          "detail": "Expected: /home/dains/Documents/polaris; effective: /home/dains/Documents/polaris"
+        },
+        {
+          "code": "expected:projectId",
+          "status": "configured",
+          "message": "Saved projectId matches the declared expectation.",
+          "detail": "Expected: a502f34a-7e49-4aed-a8e1-8e264916f5db; effective: a502f34a-7e49-4aed-a8e1-8e264916f5db"
+        },
+        {
+          "code": "expected:target",
+          "status": "configured",
+          "message": "Saved target matches the declared expectation.",
+          "detail": "Expected: local; effective: local"
+        },
+        {
+          "code": "expected:sandbox",
+          "status": "configured",
+          "message": "Saved sandbox matches the declared expectation.",
+          "detail": "Expected: read-only; effective: read-only"
+        },
+        {
+          "code": "expected:model",
+          "status": "configured",
+          "message": "Saved model matches the declared expectation.",
+          "detail": "Expected: gpt-6.1-sol; effective: gpt-6.1-sol"
+        },
+        {
+          "code": "expected:effort",
+          "status": "configured",
+          "message": "Saved effort matches the declared expectation.",
+          "detail": "Expected: high; effective: high"
+        },
+        {
+          "code": "interpreter:python3",
+          "status": "resolved",
+          "message": "python3 resolved and answered its fixed version probe.",
+          "detail": "Python 3.12.3"
+        },
+        {
+          "code": "interpreter:git",
+          "status": "resolved",
+          "message": "git resolved and answered its fixed version probe.",
+          "detail": "git version 2.43.0"
+        },
+        {
+          "code": "interpreter:node",
+          "status": "resolved",
+          "message": "node resolved and answered its fixed version probe.",
+          "detail": "v24.21.0"
+        },
+        {
+          "code": "mcp:774f58ce-5656-48f6-ba21-f6ced0bf139a",
+          "status": "connected",
+          "message": "MCP initialized and listed all required tools in the employee workspace under source-read-only confinement.",
+          "detail": "codegraph_explore",
+          "fingerprint": "76aca51923ed8a4a083c40292c957eb3f84d1481ebff103a7dc8abd17e911b85"
+        }
+      ],
+      "modelInvoked": false,
+      "originalHeartbeat": {
+        "enabled": false,
+        "intervalSec": 0,
+        "wakeOnDemand": false,
+        "maxConcurrentRuns": 1,
+        "skipTimerWhenNoActionableWork": true
+      },
+      "modelPreserved": true
+    },
+    {
+      "issue": "POL-8",
+      "agentId": "39ecbcff-bd0c-4291-8d97-6a86a2a39638",
+      "previousSandbox": "workspace-write",
+      "currentProfile": {
+        "source": "saved_agent",
+        "adapterType": "codex_local",
+        "cwd": "/home/dains/Documents/polaris",
+        "projectId": "a502f34a-7e49-4aed-a8e1-8e264916f5db",
+        "target": "local",
+        "sandbox": "read-only",
+        "model": "gpt-6.1-sol",
+        "effort": "high"
+      },
+      "readinessStatus": "pass",
+      "testedAt": "2026-10-06T12:00:37.258Z",
+      "profileDigest": "2dc47dd52244db790d2673b75b466d3584e9e18a614f52c8b3f206343b3b4836",
+      "checks": [
+        {
+          "code": "profile",
+          "status": "configured",
+          "message": "Saved launch configuration inspected. Model/effort matches prove configuration only, not model entitlement or paid-task qualification."
+        },
+        {
+          "code": "home",
+          "status": "configured",
+          "message": "Probes use a disposable private home with no copied credentials. The eventual employee home and authentication were not tested."
+        },
+        {
+          "code": "cwd",
+          "status": "resolved",
+          "message": "Saved workspace exists and resolves on this local target."
+        },
+        {
+          "code": "expected:cwd",
+          "status": "configured",
+          "message": "Saved cwd matches the declared expectation.",
+          "detail": "Expected: /home/dains/Documents/polaris; effective: /home/dains/Documents/polaris"
+        },
+        {
+          "code": "expected:projectId",
+          "status": "configured",
+          "message": "Saved projectId matches the declared expectation.",
+          "detail": "Expected: a502f34a-7e49-4aed-a8e1-8e264916f5db; effective: a502f34a-7e49-4aed-a8e1-8e264916f5db"
+        },
+        {
+          "code": "expected:target",
+          "status": "configured",
+          "message": "Saved target matches the declared expectation.",
+          "detail": "Expected: local; effective: local"
+        },
+        {
+          "code": "expected:sandbox",
+          "status": "configured",
+          "message": "Saved sandbox matches the declared expectation.",
+          "detail": "Expected: read-only; effective: read-only"
+        },
+        {
+          "code": "expected:model",
+          "status": "configured",
+          "message": "Saved model matches the declared expectation.",
+          "detail": "Expected: gpt-6.1-sol; effective: gpt-6.1-sol"
+        },
+        {
+          "code": "expected:effort",
+          "status": "configured",
+          "message": "Saved effort matches the declared expectation.",
+          "detail": "Expected: high; effective: high"
+        },
+        {
+          "code": "interpreter:python3",
+          "status": "resolved",
+          "message": "python3 resolved and answered its fixed version probe.",
+          "detail": "Python 3.12.3"
+        },
+        {
+          "code": "interpreter:git",
+          "status": "resolved",
+          "message": "git resolved and answered its fixed version probe.",
+          "detail": "git version 2.43.0"
+        },
+        {
+          "code": "interpreter:node",
+          "status": "resolved",
+          "message": "node resolved and answered its fixed version probe.",
+          "detail": "v24.21.0"
+        },
+        {
+          "code": "mcp:774f58ce-5656-48f6-ba21-f6ced0bf139a",
+          "status": "connected",
+          "message": "MCP initialized and listed all required tools in the employee workspace under source-read-only confinement.",
+          "detail": "codegraph_explore",
+          "fingerprint": "76aca51923ed8a4a083c40292c957eb3f84d1481ebff103a7dc8abd17e911b85"
+        }
+      ],
+      "modelInvoked": false,
+      "originalHeartbeat": {
+        "enabled": false,
+        "intervalSec": 0,
+        "wakeOnDemand": false,
+        "maxConcurrentRuns": 1,
+        "skipTimerWhenNoActionableWork": true
+      },
+      "modelPreserved": true
+    }
+  ],
+  "basicCheckIsNotTaskAcceptance": true,
+  "modelCallsByPreflight": 0,
+  "POL7InitialRun": "098f98bb-a43d-46fd-b144-c77584b06fd5",
+  "taskOutcome": "both originalreadonly investigation/report scopes accepted; productimplementations remainopen",
+  "POL8InitialRun": "6fdbc413-d1b5-4f3c-a8c9-2ff9e83dd74a"
+}

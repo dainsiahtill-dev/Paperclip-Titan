@@ -1,0 +1,145 @@
+{
+  "issue": "POL-8",
+  "runId": "6fdbc413-d1b5-4f3c-a8c9-2ff9e83dd74a",
+  "scope": "readonly investigation/report accepted; implementation unclosed",
+  "processStatus": "succeeded",
+  "issueStatus": "done",
+  "sourceFilesModified": [],
+  "criticalSourceHashesUnchanged": true,
+  "hashes": {
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/imports_exports.py": "822f9f5ca8fda6fa62faf07b1434924b9ccf3a2d878c0a1ee0be5135007117ac",
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/common/import_text_ops.py": "4ff477b71832060edc5791c74ee014a45353ea912ba5b6f01e36fd2acd7630aa",
+    "src/backend/polaris/cells/director/runtime/tests/test_unique_export_binding_frontier.py": "a4db3f168ab2a24d76907278131d5848af3fc742c395136ce873234d1c719f5d",
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py": "1f4fe0bc1772be82f69b56e3e648cfa0d4397fcb1632960f625970024d4152c2"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "evidence": "factory_materialization_impl.py:415-441",
+      "confirmed": "tsc 和 npm test 使用 subprocess.run，cwd 为真实 executor.workspace；未进入 NativeValidationSession。",
+      "risk": "npm test 可生成 host 产物；取消 asyncio.to_thread 不提供物理取消或 drain 闭环。"
+    },
+    {
+      "id": "F2",
+      "evidence": "factory_materialization_impl.py:423-429、449-462",
+      "confirmed": "tsc 只提取匹配错误行；npm test 保留失败摘要。没有逐命令 exit/output hash/owner-sealed receipt。",
+      "static_risks_not_replayed": [
+        "tsc 非零退出但无匹配错误行可能未形成诊断",
+        "tsc 的 subprocess.TimeoutExpired 不属于当前捕获的 TimeoutError",
+        "dependency preparation 失败后仍可能继续 verifier"
+      ]
+    },
+    {
+      "id": "F3",
+      "evidence": "native_validation_session.py:153-206；native_validation_group.py:656-807",
+      "confirmed": "已有完整源码闭包、依赖封存、候选隔离、共享构建输出、取消控制及 owner-terminal 后清理机制。",
+      "authority_boundary": "***REDACTED***"
+    },
+    {
+      "id": "F4",
+      "evidence": "execution_broker/public/project_verification.py:478-554、674-819；internal/project_verification_authority.py:1318-1542",
+      "confirmed": "真实命令收据由 broker 私有封签，绑定合同、owner、JobToken、policy、capability/attempt、输入 hash、exit、timeout、output hash、proof 和进程身份。",
+      "reuse_limit": "broker 的现有 sandbox 绑定真实 workspace，与 disposable Group 契约不同；不能直接替换后宣称已实现封闭 staging。通用 managed_process receipt 也不能替代项目 verifier receipt。"
+    }
+  ],
+  "redactedFieldNotInferred": "F3.authority_boundary",
+  "dynamicEvidence": [
+    {
+      "probe": "真实 public authorize_project_verification_command",
+      "result": "RuntimeError: project verification execution authority port is not bound",
+      "breakpoint": "public/project_verification.py:882 -> internal/project_verification_authority.py:1270",
+      "interpretation": "独立内存进程未绑定 bootstrap owner，入口正确拒绝；不代表运行中 backend 缺失绑定。"
+    },
+    {
+      "probe": "真实 public run_project_verification(object())",
+      "result": "TypeError: command must be an exact RunProjectVerificationCommandV1",
+      "breakpoint": "internal/project_verification_authority.py:1322"
+    },
+    {
+      "probe": "未提供私有 seal 的真实 RunProjectVerificationCommandV1 构造",
+      "result": "ValueError: project verification command must be owner-authorized by runtime.execution_broker",
+      "breakpoint": "public/project_verification.py:513",
+      "effects": "三个公开边界探针由 Python audit hook 阻断写入、spawn 和连接；未触发这些 effect。"
+    },
+    {
+      "probe": "真实 VerificationGroup 构造",
+      "result": "NativeValidationSandboxError: verification_isolation_binary_untrusted",
+      "breakpoint": "native_validation_group.py:222 -> :162",
+      "environment": "/usr/bin/bwrap，regular file，mode=0755；本 managed 沙箱观察 UID=65534，契约要求 UID=0。",
+      "effects_attempted": [],
+      "interpretation": "当前执行环境的校验阻断；没有放宽校验，也没有证明宿主生产环境异常。"
+    },
+    {
+      "probe": "PAPERCLIP_RUN_SCRATCH_DIR 内创建私有空 fixture",
+      "result": "OSError errno=30，只读文件系统；创建未成功",
+      "physical_execution_verified": false
+    }
+  ],
+  "minimalMigration": {
+    "strategy": "复用 Factory 现有 NativeValidationSession、输入闭包和 KernelOne 进程树 owner；不新增 sandbox。",
+    "sequence": [
+      "从同 run 的 committed CE portfolio 解析身份；先取得依赖准备授权，禁止以 readiness 或普通 Mapping 代替权限。",
+      "执行已有受控准备流程；验证真实退出、readiness、源文件和受保护 lock 未变，再 seal 依赖并创建 Session。",
+      "将物化 collector 改为可 await 的编排，使用 Session.run_command；保留静态扫描及诊断格式。",
+      "禁止把 host node_modules/.bin/tsc 当作可信宿主 executable。编译器通过已准入 Node 和只读依赖路径调用；命令合同无法安全匹配时拒绝。",
+      "同一候选内编译与 npm test 共享 staging 输出；候选、owner 或源码变化时创建新 Group，不复制未知 host dist 产物。",
+      "repair 前冻结历史源码证据；DEO commit 后消费真实 effect receipts 更新候选。保留原 PM/CE、owner、失败任务及停滞保护。",
+      "取消必须传入 ProcessTreeRunControl，并 shield 等待物理 worker；未知 drain 不允许删除 staging 或进入下一轮。",
+      "Group observation 用于诊断；最终验收继续通过 broker 公开 authorize/run/query 获取当前 owner-sealed receipt。缺少授权或 receipt 必须阻塞，不能将 observation 升格。"
+    ],
+    "exact_candidate_files_require_root_authorization": [
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py",
+        "symbols": "_collect_director_stage_materialization_diagnostics 及其 settle 调用点"
+      },
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/internal/factory_stage_executor/_mixin_02.py",
+        "symbols": "collector 转发方法、_ensure_director_stage_materialization_typescript_toolchain"
+      },
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/internal/native_validation_session.py",
+        "symbols": "from_factory、run_command、候选生命周期；仅在现有接口不足时调整"
+      },
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/internal/factory_workspace_quality.py",
+        "symbols": "准备命令的 cancel_control 传递；当前无 Group 分支未消费该控制"
+      },
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/tests/test_native_validation_session.py",
+        "symbols": "物化 caller 复用及 auth/prep/seal 顺序回归"
+      },
+      {
+        "file": "src/backend/polaris/cells/factory/pipeline/tests/test_native_validation_execution.py",
+        "symbols": "物化与准备阶段取消、deadline、drain 回归"
+      }
+    ],
+    "contract_gap": "若要求每个 disposable 诊断命令都有项目级权威收据，需要 broker owner 的独立精确授权及契约评审；现有公开 API 不接收 Group。禁止 Factory 直接 import broker internal 或自行封签。"
+  },
+  "regressionSpecifications": [
+    "真实私有 fixture 中复现失败 TypeScript 编译和 npm test；host 源码、dist 与权限文件不变，输出仅在 staging。",
+    "缺失 CE、JobToken、准备权限、源码收据或可信工具链时，spawn=0；不得 live fallback。",
+    "prep 前授权；prep 失败停止；prep 后 seal；依赖、lock、工具或源码 drift 均拒绝。",
+    "所有非零退出、无匹配错误行及 timeout 均保留失败，不能变成空诊断通过。",
+    "同候选 build/test 共享输出；新候选不继承旧输出或未知 host emitted JS。",
+    "重复取消包含 setsid descendant；单调 deadline 到期执行物理停止并 drain，无 late writer。",
+    "drain error 原样传播且保留 staging；伪造 CompletedProcess、drained=true 或 prepared command 不允许清理。",
+    "真实 broker receipt query 验证完整身份与 hash；失败 receipt 区分于 missing；权限撤销或输入漂移使收据失效。",
+    "最终仍需 Root 授权的 fresh isolated 项目完整交付证据；这些组件测试不能证明 COMPLETED_VERIFIED。"
+  ],
+  "unverified": [
+    "真实 Group staging、bwrap 命令执行及 cancel/drain：隔离二进制校验阻断，私有 fixture 写入亦被只读文件系统拒绝。",
+    "真实 broker command receipt 生成、持久化及当前 query：未取得运行态授权，未执行写 API。",
+    "r11 final provider request、原始 receipts 和目标重放：旧 workspace 已知缺失，仅阅读既有辅助报告。",
+    "pytest、lint/type gate 及 fresh isolated Bench：本次未执行，未声称通过。"
+  ],
+  "closedCodeDefects": [],
+  "namespaceDrained": true,
+  "ownerReleased": true,
+  "environmentLeaseReleased": true,
+  "automaticWakes": false,
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "sandbox": "read-only",
+  "noProductDeliveryClaim": true
+}

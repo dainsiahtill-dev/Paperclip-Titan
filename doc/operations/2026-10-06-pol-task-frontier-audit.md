@@ -102,3 +102,21 @@ static assets through an idle formal restart. Five paired Edge measurements per
 mode passed: cold median 5.078 to 1.620 seconds, reload 4.067 to 0.960 seconds;
 source/Vite traffic disappeared. Config, employees and task state were preserved.
 See [current static deployment acceptance](2026-10-06-static-ui-restoration.md).
+
+## Remaining employee readiness and independent investigations
+
+POL-7/POL-8 employee settings had resolved workspace-write with no readiness
+requirements despite their readonly tasks. Public Board configuration now uses
+the typed audit/CLI/read-only preset, interpreter and approved MCP requirements;
+both no-model preflights pass. Only the existing CodeGraph read tool was installed
+for these employees, retaining old targets and disabled wakes.
+
+Both first actual investigations completed and were independently accepted at
+report scope after exact namespace/owner/lease release. POL-7 dynamically verifies
+local wrong-owner scope rejection, shadow-only correct-owner observation and
+duplicate owner refusal, while actual persisted handoff/receipts remain unverified.
+POL-8 confirms live-cwd verifier calls and real public authority/type/seal refusal;
+physical Group validation is blocked by namespace UID and readonly fixture access,
+with no gate relaxation. POL-7/POL-8 are done only as investigation tasks; POL-3/4
+implementation backlogs and overall product qualification remain open. See
+[current readiness/investigation acceptance](2026-10-06-remaining-audit-employee-readiness.md).

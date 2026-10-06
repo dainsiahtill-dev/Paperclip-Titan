@@ -1,0 +1,160 @@
+{
+  "issue": "POL-7",
+  "runId": "098f98bb-a43d-46fd-b144-c77584b06fd5",
+  "scope": "readonly investigation/report accepted only",
+  "processStatus": "succeeded",
+  "issueStatus": "done",
+  "sourceFilesModified": [],
+  "protectedSourceHashesUnchanged": true,
+  "protectedHashes": {
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/imports_exports.py": "822f9f5ca8fda6fa62faf07b1434924b9ccf3a2d878c0a1ee0be5135007117ac",
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/common/import_text_ops.py": "4ff477b71832060edc5791c74ee014a45353ea912ba5b6f01e36fd2acd7630aa",
+    "src/backend/polaris/cells/director/runtime/tests/test_unique_export_binding_frontier.py": "a4db3f168ab2a24d76907278131d5848af3fc742c395136ce873234d1c719f5d",
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py": "1f4fe0bc1772be82f69b56e3e648cfa0d4397fcb1632960f625970024d4152c2"
+  },
+  "publicEvidence": {
+    "fixture": "纯内存；TASK1 行为 failed，TASK3 行为 completed。没有初始化持久化 TaskRuntime。",
+    "owner_query": {
+      "public_entry": "TaskRuntimeService.resolve_factory_task_row",
+      "input": {
+        "external_task_id": "TASK-3",
+        "factory_run_id": "factory_2eb7554d6699"
+      },
+      "return": {
+        "id": 3,
+        "status": "completed"
+      },
+      "duplicate_owner_return": "RuntimeError: factory_task_binding_ambiguous",
+      "limit": "真实 owner 解析方法已执行；存储读取由内存 fixture 提供。"
+    },
+    "scope_probe": {
+      "public_entries": [
+        "plan_director_repair",
+        "run_director_repair"
+      ],
+      "shared_input": {
+        "source_tool": "deterministic_typescript_unresolved_identifier_repair",
+        "mode": "shadow",
+        "workspace": "/home/dains/Documents/polaris",
+        "base_files": {
+          "tests/verify.test.ts": "export function f(state: number): number {\n  return newState;\n}\n"
+        },
+        "artifact_quality_errors": [
+          "tests/verify.test.ts(2,10): error TS2304: Cannot find name 'newState'."
+        ]
+      },
+      "wrong_owner": {
+        "task_id": "TASK-1",
+        "allowed_paths": [
+          "package.json",
+          "src/domain/moon.ts",
+          "src/garden/index.ts",
+          "tsconfig.json"
+        ],
+        "return": {
+          "ok": false,
+          "error_code": "repair_policy_denied",
+          "plan_policy": {
+            "allowed": false,
+            "reasons": [
+              "path_outside_allowed_scope:tests/verify.test.ts"
+            ]
+          },
+          "receipt_count": 0
+        }
+      },
+      "correct_owner_control": {
+        "task_id": "TASK-3",
+        "allowed_paths": [
+          "tests/verify.test.ts"
+        ],
+        "return": {
+          "ok": true,
+          "error_code": null,
+          "plan_policy": {
+            "allowed": true,
+            "reasons": []
+          },
+          "receipt_status": "shadow_observed",
+          "authoritative_success": false,
+          "requires_revalidation": true
+        }
+      },
+      "writer_calls": 0,
+      "forbidden_effect_attempts": [],
+      "limit": "这是合成 diagnostic 的 scope 对照，不是 r11 原 diagnostic 重放，也不证明 claim 授权。task_id 与 allowed_paths fixture 不是 write grant。"
+    }
+  },
+  "responsibilityPath": {
+    "owner": "TASK-3",
+    "artifact": "tests/verify.test.ts",
+    "orchestrator": "factory.pipeline",
+    "sequence": [
+      "从同 run 的原 CE task_completion_projection.owned_artifacts 确认唯一 owner，并严格验证原 token/envelope。",
+      "Factory 将 foreign candidate 转为 owner 路径信息；不转移旧 plan、plan hash 或写权限。",
+      "关闭当前 owner attempt；保留已完成的有效 effects 和 receipts。",
+      "通过 original_owner_task_id=TASK-3 恢复精确 TaskRuntime 行并 claim 新 attempt；保留依赖门禁。",
+      "TASK3 从当前 bytes 重新规划，通过 Director policy/DEO 执行。",
+      "产出 artifact/verifier receipts，重新验证相关 owner，再进行 settlement/QA。"
+    ],
+    "execution_broker_boundary": "仅负责物理执行、artifact/verifier receipt，不负责选择业务 owner。",
+    "source_refs": [
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py:593",
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py:694",
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py:938",
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py:1029",
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_materialization_impl.py:1053",
+      "src/backend/polaris/cells/factory/pipeline/internal/factory_workspace_quality_impl.py:1435",
+      "src/backend/polaris/cells/runtime/task_runtime/internal/service/_mixin_recovery_reexec.py:1378"
+    ]
+  },
+  "mechanisms": {
+    "existing": [
+      "精确 logical task/run 查询；多个 owner fail-closed，不按最新或 failed 行猜测。",
+      "同 run 冻结 CE owner 恢复、原 token/envelope 校验。",
+      "foreign candidate 路径路由、关闭旧 attempt、精确 owner claim、重新规划与 revalidation。",
+      "TaskMarket RouteOwnerReworkCommandV1/OwnerReworkHandoffV1 持久化交接契约。",
+      "TaskRuntime PrepareOwnerReworkExecutionCommandV1 校验 owner/requester、counterparty 和 claim evidence。",
+      "QA 同任务局部 requeue 与可查询授权契约。"
+    ],
+    "unproven_or_missing": [
+      "精确生产调用搜索未发现 route_owner_rework 或 prepare_owner_rework_execution 的消费方；不能认定该持久化契约已接入当前 Factory continuation。动态调用仍需另行核验。",
+      "Factory 当前 deferred_owner_targets 是函数内状态，其跨重启恢复未在本轮证明。",
+      "r11 原 workspace 已不存在，无法复核最终 provider request、真实 TASK3 claim、effect receipts、verifier 和 settlement。"
+    ],
+    "r11_causal_boundary": "既有 r11 repair-route 报告记录零可规划候选；没有 candidate 时，已有 foreign-owner 路由不会触发。放宽 TASK1 scope 不会修复这一入口问题。Factory materialization 与 public repair service 当前 SHA-256 均与 r11 报告一致。"
+  },
+  "remaining": [
+    "r11 原证据不可读，真实 claim/handoff/receipt/settlement 尚未验证。",
+    "持久化 owner-rework 契约的生产消费与重启恢复需要独立核验。"
+  ],
+  "failedAttempts": [
+    {
+      "operation": "CodeGraph 第一次精确查询",
+      "result": "stdio_timeout，约 10 秒；未获得图谱结果。"
+    },
+    {
+      "operation": "CodeGraph 第二次精确查询 resolve_factory_task_row，maxFiles=3",
+      "result": "成功，定位 Factory 与 TaskRuntime 调用关系；总查询数为 2。"
+    },
+    {
+      "operation": "首次内存 probe 输出",
+      "exit_code": 1,
+      "result": "AttributeError: 'RepairReceiptV1' object has no attribute 'mode'",
+      "resolution": "修正报告投影，完整重跑 exit 0；未修改产品代码。"
+    },
+    {
+      "operation": "部分定向 rg 路径与输出截取",
+      "result": "发生不存在路径的 exit 2，以及 head 截取导致的 Broken pipe；后续使用已定位的实际文件。未将失败结果当证据。"
+    }
+  ],
+  "namespaceDrained": true,
+  "ownerReleased": true,
+  "environmentLeaseReleased": true,
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "sandbox": "read-only",
+  "automaticWakes": false,
+  "noProductDeliveryClaim": true
+}
