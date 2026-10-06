@@ -1,0 +1,12 @@
+{
+  "HTTP": 200,
+  "decision": "allowed",
+  "invocationId": "8a47c195-d43a-4247-b18a-a950013fea52",
+  "selectedEmployee": "7a8799e2-39ce-4c6a-8f72-1e3a654fccf2",
+  "sourceRoot": "/home/dains/Documents/polaris",
+  "tool": "codegraph_explore",
+  "resultReceived": true,
+  "resultSummary": "Exploration returned 5 symbols across 1 file",
+  "modelInvoked": false,
+  "sourceReadOnlyConfinement": true
+}

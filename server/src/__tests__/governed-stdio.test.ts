@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { callGovernedStdio, probeInterpreter } from "../services/governed-stdio.js";
 
 const roots: string[] = [];
@@ -18,6 +18,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 });`;
 
 describe.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))("governed stdio real process", () => {
+  it.each([false, true])("preserves runtime deadlines without enlarging the basic/audit ceiling (runtime: %s)", async preserveRuntimeTimeout => {
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await callGovernedStdio({ command: process.execPath, args: ["-e", fixture()], cwd: await workspace(), method: "tools/list", timeoutMs: 40_000, preserveRuntimeTimeout });
+      expect(timer.mock.calls.some(([, delay]) => delay === (preserveRuntimeTimeout ? 40_000 : 30_000))).toBe(true);
+    } finally { timer.mockRestore(); }
+  });
   it("handshakes in the exact cwd with denied source writes and no ambient auth", async () => {
     const cwd = await workspace(); await fs.writeFile(path.join(cwd, "source.txt"), "original");
     const result = await callGovernedStdio({ command: process.execPath, args: ["-e", fixture()], cwd, method: "tools/list", timeoutMs: 1500 });

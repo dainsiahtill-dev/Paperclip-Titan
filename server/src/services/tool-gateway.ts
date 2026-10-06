@@ -4917,11 +4917,13 @@ export function createToolGatewayService(
       || profile.source !== (savedTest ? "saved_agent" : "frozen_run") || profile.target !== "local" || typeof profile.cwd !== "string" || !profile.cwd.startsWith("/")) {
       throw new ToolGatewayHttpError(422, "Local stdio requires a host-bound local run workspace; this execution is unverified.", "stdio_profile_unverified");
     }
-    if (profile.sandbox === "read-only") {
+    const readOnlyTool = input.entry?.isReadOnly === true && !input.entry.isWrite && !input.entry.isDestructive && input.entry.riskLevel === "read";
+    if (profile.sandbox === "read-only" || readOnlyTool) {
       if (!input.template.command) throw new ToolGatewayHttpError(422, "Approved stdio executable is unavailable.", "stdio_command_unverified");
       try {
         return await callGovernedStdio({ command: input.template.command, args: input.template.args, cwd: profile.cwd, env: input.env,
-          method: input.protocolMethod ?? "tools/call", params: input.protocolParams ?? { name: input.entry?.toolName, arguments: input.parameters ?? {} }, timeoutMs: input.timeoutMs });
+          method: input.protocolMethod ?? "tools/call", params: input.protocolParams ?? { name: input.entry?.toolName, arguments: input.parameters ?? {} }, timeoutMs: input.timeoutMs,
+          allowNetwork: profile.sandbox !== "read-only", preserveRuntimeTimeout: profile.sandbox !== "read-only" });
       } catch (error) { throw new ToolGatewayHttpError(502, error instanceof GovernedProbeError ? error.message : "Confined stdio request failed.", error instanceof GovernedProbeError ? error.code : "stdio_unverified"); }
     }
     if (!input.template.command) {

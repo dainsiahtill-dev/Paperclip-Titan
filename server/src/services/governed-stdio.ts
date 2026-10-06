@@ -26,7 +26,7 @@ export async function resolveProbeCommand(command: string, searchPath: string): 
 }
 
 /** Fresh filesystem/PID namespace. Never loads a user home or provider credentials. */
-async function startConfined(input: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; readPaths?: string[] }) {
+async function startConfined(input: { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; readPaths?: string[]; allowNetwork?: boolean }) {
   const cwd = await existingProbeCwd(input.cwd);
   const searchPath = input.env?.PATH ?? process.env.PATH ?? "/usr/bin:/bin";
   if (["npx", "npm", "pnpm", "yarn", "uv", "uvx", "pip", "pip3"].includes(path.basename(input.command))) throw fail("provisioning_unverified", "Package launchers are not run by basic checks. Approve an already installed executable.");
@@ -36,7 +36,7 @@ async function startConfined(input: { command: string; args: string[]; cwd: stri
   let target: Awaited<ReturnType<typeof buildLocalProcessSandboxSpawnTarget>>;
   try {
     target = await buildLocalProcessSandboxSpawnTarget({ executable: command, args: input.args, cwd,
-      options: { workspaceDir: cwd, workspaceAccess: "ro", filesystemScope: "workspace", networkScope: "deny",
+      options: { workspaceDir: cwd, workspaceAccess: "ro", filesystemScope: "workspace", networkScope: input.allowNetwork ? undefined : "deny",
         managedPaths: [{ path: home, access: "rw" }], extraPaths: (input.readPaths ?? []).map(p => ({ path: p, access: "ro" })), homeDir: home } });
   } catch { await fs.rm(home, { recursive: true, force: true }); throw fail("confinement_unverified", "Read-only process confinement is unavailable on this host."); }
   const env: NodeJS.ProcessEnv = { ...input.env, PATH: searchPath, HOME: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, TMPDIR: "/tmp", ...target.env };
@@ -80,6 +80,12 @@ function boundedOutput(child: ChildProcessWithoutNullStreams, reject: (reason: E
 export async function callGovernedStdio(input: {
   command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv;
   method: string; params?: Record<string, unknown>; timeoutMs: number;
+  /** Runtime callers may preserve their existing network access. Basic
+   * checks and audit-profile calls keep the default network denial. */
+  allowNetwork?: boolean;
+  /** Preserve the gateway's existing normalized (at most 60s) deadline for
+   * ordinary runtime calls. Audit/basic calls retain their 30s ceiling. */
+  preserveRuntimeTimeout?: boolean;
 }): Promise<unknown> {
   const { child, stop } = await startConfined(input);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -100,7 +106,7 @@ export async function callGovernedStdio(input: {
           send({ jsonrpc: "2.0", id: 2, method: input.method, params: input.params ?? {} });
         } else resolve(message.result);
       });
-      timer = setTimeout(() => reject(fail("stdio_timeout", "MCP handshake/request timed out.")), Math.min(Math.max(input.timeoutMs, 50), 30_000));
+      timer = setTimeout(() => reject(fail("stdio_timeout", "MCP handshake/request timed out.")), Math.min(Math.max(input.timeoutMs, 50), input.preserveRuntimeTimeout ? 60_000 : 30_000));
       send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "paperclip-governed-tools", version: "1" } } });
     });
   } finally { if (timer) clearTimeout(timer); await stop(); }

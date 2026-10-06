@@ -1,0 +1,26 @@
+{
+  "retainedRed": {
+    "passed": 63,
+    "failed": 1,
+    "cause": "Read MCP incorrectly attempted another writable lifetime"
+  },
+  "retainedFixtureFailure": "New fixture newline corrected; assertions preserved",
+  "green": {
+    "passed": 70,
+    "failed": 0,
+    "skipped": 0
+  },
+  "serverTypecheckExitCode": 0,
+  "serverBuildExitCode": 0,
+  "liveWriterRemainsActiveDuringReadonlyMcp": true,
+  "SourceWriteAttemptDenied": true,
+  "writableSeparateProcessStillRejected": true,
+  "network": "audit/basic deny preserved; ordinary runtime access preserved",
+  "timeouts": "audit/basic30s; ordinary normalized runtime up to60s",
+  "sourceFreeze": {
+    "server/src/services/tool-gateway.ts": "002ef25836ab4ca51d3fc2b34a19bba357a11f9b110879734a7a44a8c93f0ac1",
+    "server/src/services/governed-stdio.ts": "a874fe0b818af8c9096c2fe17d9a8fe4902f2e6175f73e8a4ecad07ac1a75705",
+    "server/src/__tests__/tool-gateway.test.ts": "087884bd39911e8f7caa3133ae5d3a3a07ceb1e44d3fd50798fd345d8b3f4a43",
+    "server/src/__tests__/governed-stdio.test.ts": "50f03c9abbbdbcaf621d46b96d3943c686f81ee512be6ebe96049fab469f1996"
+  }
+}

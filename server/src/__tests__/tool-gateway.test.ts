@@ -60,6 +60,7 @@ import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool
 import type { ComposioClient } from "../services/composio.js";
 import { secretService } from "../services/secrets.js";
 import { workspaceWriteOwnershipService } from "../services/workspace-write-ownership.js";
+import { withWorkspaceProcessGuard, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -1692,6 +1693,40 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     });
   });
 
+  it("confines a read-only MCP tool while its owning protected writer remains alive", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pc-stdio-read-during-write-"));
+    const controller = new AbortController();
+    let running: Promise<unknown> | undefined;
+    try {
+      await fs.writeFile(path.join(cwd, "source.txt"), "original");
+      const company = await createCompany(db), agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const frozen = run.runnerProfileJson as Record<string, any>;
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...frozen, governedStdioV1: { ...frozen.governedStdioV1, cwd } } }).where(eq(heartbeatRuns.id, run.id));
+      const local = await createLocalStdioMcpTool(db, company.id, { applicationKey: "confined-reader", connectionName: "Confined reader", riskLevel: "read", stdioScript: `
+const fs = require("node:fs");
+require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+ const msg = JSON.parse(line); if (!msg.id) return;
+ if (msg.method === "initialize") { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "reader", version: "1" } } }) + "\\n"); return; }
+ let denied = false; try { fs.writeFileSync("source.txt", "unsafe"); } catch { denied = true; }
+ process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "confined-read" }], structuredContent: { source: fs.readFileSync("source.txt", "utf8"), writeDenied: denied } } }) + "\\n");
+});` });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+      await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: local.catalogEntry.id });
+      const ownership = workspaceWriteOwnershipService(db);
+      const claim = await ownership.claim({ cwd, companyId: company.id, runId: run.id });
+      if (claim.outcome !== "claimed") throw new Error("Expected original writer claim");
+      let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
+      running = withWorkspaceProcessGuard(ownership.guard(claim.owner, controller.signal), () => runChildProcess(run.id, "/bin/sh", ["-c", "printf ready; sleep 10"], { cwd, env: {}, timeoutSec: 15, graceSec: 1, onLog: async () => ready() }));
+      await started;
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: expectedConnectedToolName({ applicationKey: "confined-reader", connectionId: local.connection.id, toolName: "echo" }), parameters: { message: "hello" } })).resolves.toMatchObject({ status: "completed", result: { data: { structuredContent: { source: "original", writeDenied: true } } } });
+      expect(await fs.readFile(path.join(cwd, "source.txt"), "utf8")).toBe("original");
+      expect((await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, claim.owner.id)))[0].state).toBe("active");
+    } finally { controller.abort(); await running?.catch(() => undefined); await fs.rm(cwd, { recursive: true, force: true }); }
+  });
+
   it("refuses a separate HTTP stdio writer before its argv effect when a physical owner holds the root", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pc-stdio-owner-"));
     try {
@@ -1699,7 +1734,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       const { run } = await createIssueAndRun(db, company.id, agent.id);
       const frozen = run.runnerProfileJson as Record<string, any>;
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...frozen, governedStdioV1: { ...frozen.governedStdioV1, cwd } } }).where(eq(heartbeatRuns.id, run.id));
-      const local = await createLocalStdioMcpTool(db, company.id, { applicationKey: "owner-fixture", connectionName: "Owner fixture", toolName: "echo", title: "Fixture",
+      const local = await createLocalStdioMcpTool(db, company.id, { applicationKey: "owner-fixture", connectionName: "Owner fixture", toolName: "echo", title: "Fixture", riskLevel: "write",
         stdioScript: 'require("node:fs").writeFileSync("stdio-effect", "unsafe"); process.exit(0);' });
       const profile = await allowToolsForAgent(db, company.id, agent.id, []);
       await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: local.catalogEntry.id });
