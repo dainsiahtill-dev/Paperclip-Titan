@@ -1,0 +1,107 @@
+{
+  "task_id": "POL-12",
+  "mode": "audit",
+  "status": "review_completed",
+  "verdict": "changes_required",
+  "summary": "只读审查完成。发现 1 个 P1 阻断：命令参数仍可能被解析成伪编译诊断。源码哈希、diff、测试快照与既有报告一致；未重跑测试、修改文件或调用写 API。",
+  "run_id": "f5ba215f-3693-4c59-8186-68a488bc3429",
+  "implementation_run_id": "58c55833-65f2-4cd2-a8b4-98e135fefe7a",
+  "scope": [
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py",
+    "已有 command-provenance 报告、日志及检查点；相关规范与契约仅只读"
+  ],
+  "files_modified": [],
+  "source_sha256": {
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "16a2e993898f5b0ac0f768ac064d766b1cc551fbe1b0646d6dfc3be3986cb436",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py": "f5e33d20e1cc86530e4a5634223cc252981d43bf42fb99b1128ba1de2ed5b508"
+  },
+  "integrity": {
+    "hashes_match_report": true,
+    "current_diff_matches_source_diff": true,
+    "new_test_matches_test_source_snapshot": true,
+    "existing_contract_tests_1_to_4_match_HEAD": true,
+    "tracked_diff": [
+      "diagnostics.py"
+    ],
+    "staged_diff_empty": true,
+    "unrelated_untracked_documents_preserved": true
+  },
+  "findings": [
+    {
+      "id": "POL12-R1",
+      "category": "Blocker",
+      "severity": "P1",
+      "status": "open",
+      "title": "完整 npm 参数重新进入通用诊断解析器",
+      "locations": [
+        "diagnostics.py:399",
+        "diagnostics.py:503",
+        "diagnostics.py:523",
+        "diagnostics.py:1041"
+      ],
+      "source_evidence": "contextual_blob 包含完整 npm_command。missing-target 分支及 EADDRINUSE 分支将它传给 _normalize_one_error；该函数首先用未锚定的 _TS_ERROR_RE 搜索整个文本。",
+      "illustrative_input_not_executed": {
+        "command": "npm test -- \"src/fake.ts(1,1): error TS6133: invented\"",
+        "stdout_stderr": "Could not find './test'"
+      },
+      "static_consequence": "命令满足 balanced、quoted、single-line、1024 字符限制；实际输出不含编译诊断，但重新解析 contextual_blob 会优先匹配命令参数中的 TS6133，覆盖真实 missing-target 诊断并产生伪编译类型和路径。",
+      "test_gap": "现有测试检查真实 compiler output 的优先级及非 npm 程序中的 npm 字符串，未覆盖 npm 参数本身包含诊断文本的 Node fallback 路径。",
+      "recommendation": "仅从实际 stdout/stderr 确定诊断，再附加命令 metadata/raw 供既有消费者使用；不要将完整命令交回通用分类器。授权实现阶段补充公开 normalize/coverage 回归。",
+      "verification_boundary": "源码路径证明；本轮未动态复现，未修复。"
+    }
+  ],
+  "commands_run": [
+    {
+      "command": "rtk proxy git status --short",
+      "exit_code": 0,
+      "purpose": "核对 dirty scope"
+    },
+    {
+      "command": "rtk proxy git diff -- src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py",
+      "exit_code": 0,
+      "purpose": "独立复核 source diff"
+    },
+    {
+      "command": "rtk proxy git rev-parse HEAD",
+      "exit_code": 0,
+      "purpose": "核对当前 HEAD"
+    },
+    {
+      "command": "rtk proxy python3 -",
+      "exit_code": 0,
+      "purpose": "多次 UTF-8 只读脚本读取规范、源码与证据，计算 SHA-256 并比较快照；完整 stdin 见本轮工具记录"
+    },
+    {
+      "command": "rtk proxy rg --files --hidden",
+      "exit_code": 0,
+      "purpose": "有界发现 Cell 与证据文件"
+    },
+    {
+      "command": "rtk proxy rg -n -A 35 -B 3",
+      "exit_code": 2,
+      "purpose": "graph 查询；generated/context.pack.json 不存在。随后只读目标 catalog 段和 subgraph，未生成 pack"
+    }
+  ],
+  "codegraph": {
+    "calls": 3,
+    "status": "MCP 查询成功",
+    "limitation": "部分查询遗漏所需函数体；通过精确 UTF-8 文件区间补读。未重新索引或修改信任配置。"
+  },
+  "declined_claims": [
+    "未重跑测试或探针",
+    "未启动 Bench、服务、provider 或子 Agent",
+    "未验收最终 provider request/context_snapshot_ref",
+    "未执行 repair effect 或生成权威 receipt",
+    "未独立证明 namespace drain",
+    "未批准实现、发布或标记工单 done"
+  ],
+  "risks": [
+    "既有日志与当前快照匹配，不等同本轮 fresh dynamic 验证。",
+    "直接 npm 之外的 shell prefix、alias、其他 package manager 尚未资格验证。",
+    "本报告是外部工程审查，不是 Polaris 产品事实源。"
+  ],
+  "next_action": "Root 接收 R1，指定 director.runtime 唯一实现者，在原两文件范围内授权后续修复与 TDD；修复后独立复核。B1/B6 保留独立契约决策，禁止据此宣布 fresh isolated L1-L12 交付完成。",
+  "sourceRoot": "/home/dains/Documents/polaris",
+  "protectedReviewRunReleased": true
+}

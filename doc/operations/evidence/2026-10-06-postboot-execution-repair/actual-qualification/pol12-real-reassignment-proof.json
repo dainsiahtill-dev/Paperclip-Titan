@@ -1,0 +1,172 @@
+{
+  "runId": "9fafc24d-8765-47bc-afb8-b11b522a6b03",
+  "status": "cancelled",
+  "errorCode": "issue_reassigned",
+  "reassignmentStopConfirmed": true,
+  "controlledChildBeforeTransfer": {
+    "runId": "9fafc24d-8765-47bc-afb8-b11b522a6b03",
+    "ownerId": "4e00d971-7d6c-4241-b4e0-6bf534c03cd2",
+    "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+    "parentChain": [
+      69193,
+      69138,
+      69137,
+      69136,
+      69135,
+      69134,
+      69129,
+      64935
+    ],
+    "children": [
+      {
+        "pid": 69193,
+        "startTime": "2973968",
+        "namespace": "pid:[4026532205]",
+        "argv": [
+          "sleep",
+          "180"
+        ],
+        "state": "S"
+      }
+    ]
+  },
+  "controlledChildAfterTransfer": {
+    "pid": 69193,
+    "startTime": "2973968",
+    "sameControlledChildAlive": false,
+    "pidPathExists": false
+  },
+  "owners": [
+    {
+      "id": "4e00d971-7d6c-4241-b4e0-6bf534c03cd2",
+      "run_id": "9fafc24d-8765-47bc-afb8-b11b522a6b03",
+      "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e",
+      "state": "released",
+      "launch_id": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+      "launch_identity": {
+        "pid": 64933,
+        "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+        "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+        "namespace": "pid:[4026532196]",
+        "startedAt": "2026-10-06T08:11:54.720Z",
+        "payloadPid": 64935,
+        "namespacePid": 64934,
+        "payloadStart": "2968072",
+        "namespaceStart": "2968066",
+        "processGroupId": 64933,
+        "observerNamespace": "pid:[4026532182]",
+        "payloadMountNamespace": "mnt:[4026532193]",
+        "observerMountNamespace": "mnt:[4026532179]"
+      },
+      "stop_receipt": {
+        "pid": 64933,
+        "stop": {
+          "forced": false,
+          "signal": "SIGINT",
+          "requestId": "9fa6dd8e-e721-43a2-b733-000a507d80cd"
+        },
+        "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+        "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+        "namespace": "pid:[4026532196]",
+        "startedAt": "2026-10-06T08:11:54.720Z",
+        "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e",
+        "observedAt": "2026-10-06T08:14:17.913Z",
+        "payloadPid": 64935,
+        "namespacePid": 64934,
+        "payloadStart": "2968072",
+        "namespaceStart": "2968066",
+        "processGroupId": 64933,
+        "observerNamespace": "pid:[4026532182]",
+        "payloadMountNamespace": "mnt:[4026532193]",
+        "observerMountNamespace": "mnt:[4026532179]"
+      },
+      "released_at": "2026-10-06 16:14:18.164+08",
+      "history": [
+        {
+          "at": "2026-10-06T08:11:54.560Z",
+          "event": "claimed"
+        },
+        {
+          "at": "2026-10-06T08:11:54.711Z",
+          "event": "private_roots_reserved",
+          "roots": [
+            {
+              "root": "/tmp/paperclip-run-pol-12-9fafc24d-876-1vCk9X",
+              "inode": "1247969",
+              "realm": "77b7844706ce1a9c0d04d2aad9606f69ead5cb12c0cc2f8f5948b2ddb35ef693",
+              "device": "2096",
+              "resourceKey": "17bd211fdb7061f5e317b38c359913bdfa624698f9a932a173c9111c036c08e7"
+            },
+            {
+              "root": "/tmp/paperclip-ai-6cd06d96-4e84-4247-9f0a-3858c284ea65-62f4b16e-9948-4a3f-ba9f-539b107aacf0-nAuThp/provider",
+              "inode": "1247696",
+              "realm": "77b7844706ce1a9c0d04d2aad9606f69ead5cb12c0cc2f8f5948b2ddb35ef693",
+              "device": "2096",
+              "resourceKey": "50e9980d2a089787c1845f4f53a77e71cb75fddc3a532bedd73555d2f5cbd49c"
+            }
+          ]
+        },
+        {
+          "at": "2026-10-06T08:11:54.716Z",
+          "event": "launch_reserved",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "at": "2026-10-06T08:11:54.769Z",
+          "event": "launch_bound",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "event": "run_process_bound",
+          "binding": {
+            "runId": "9fafc24d-8765-47bc-afb8-b11b522a6b03",
+            "agentId": "3af6b2dd-e922-447f-a01e-d130e903b122",
+            "companyId": "6cd06d96-4e84-4247-9f0a-3858c284ea65",
+            "processPid": 64933,
+            "processGroupId": 64933,
+            "processStartedAt": "2026-10-06T08:11:54.756Z"
+          },
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "at": "2026-10-06T08:11:54.846Z",
+          "event": "payload_bound",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "at": "2026-10-06T08:14:15.757Z",
+          "event": "stopping",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "at": "2026-10-06T08:14:17.913Z",
+          "event": "namespace_drained",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        },
+        {
+          "at": "2026-10-06T08:14:18.164Z",
+          "event": "released",
+          "launchId": "e0e94966-95e0-4c20-ae81-2dcab5f01109",
+          "generation": "e9ff22a4-a24a-4318-bcc7-1ca1bf39b96e"
+        }
+      ],
+      "currentNamespaceDrained": true
+    }
+  ],
+  "leases": [
+    {
+      "id": "70344d17-d298-4640-adea-0a8dfbd6c815",
+      "status": "expired",
+      "released_at": "2026-10-06 16:14:18.13+08",
+      "cleanup_status": null
+    }
+  ],
+  "productFilesModified": [],
+  "limitation": "Controlled handoff phase of the actual POL-12 residual path; prior source implementation and tests were not replayed."
+}

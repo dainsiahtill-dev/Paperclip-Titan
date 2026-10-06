@@ -1,0 +1,74 @@
+{
+  "runId": "cd1aae52-b649-422d-af81-9595f5cedb29",
+  "status": "succeeded",
+  "auditCompleted": true,
+  "productVerdict": "changes_requested",
+  "filesModified": [],
+  "commands": [
+    {
+      "command": "rtk proxy python3 -c",
+      "exit_code": 0
+    },
+    {
+      "command": "rtk proxy python3 -c",
+      "exit_code": 0
+    },
+    {
+      "command": "rtk proxy python3 -c",
+      "exit_code": 0
+    }
+  ],
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/imports_exports.py",
+      "line": 1662,
+      "problem": "唯一候选校验未覆盖混合 default/named import 的全部绑定。",
+      "evidence": "1662-1666 显式排除 default，仅收集在 import span 外被使用的 named symbols；1675 只检查该集合。misc_ops.py:453-454 能解析 default binding。因此含被使用 default 的混合 import 仍可仅凭 named export 被整体改向，而未证明目标提供 default。",
+      "recommended_fix": "授权实现者应校验被改向 import 的完整绑定契约；不能证明时拒绝规划，并添加 public probe 负面用例。",
+      "needs_dynamic_verification": true
+    },
+    {
+      "severity": "medium",
+      "file": "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/common/import_text_ops.py",
+      "line": 353,
+      "problem": "export 证据来自原始文本正则，不能保证候选实际导出符号。",
+      "evidence": "351-361 未过滤注释或字符串。静态推导：仅含 /* export const Foo = 1; */ 的文本也满足 353 的正则；selector:1675 直接消费该布尔结果，可能把伪 export 文本计为唯一候选。",
+      "recommended_fix": "使用能排除注释和字符串的结构化证据；补充伪 export 候选的 public probe 负面用例。",
+      "needs_dynamic_verification": true
+    },
+    {
+      "severity": "medium",
+      "file": "src/backend/polaris/cells/director/runtime/internal/repair_kernel/path_files.py",
+      "line": 49,
+      "problem": "strict normalizer 的拒绝条件未完整覆盖绝对路径和父目录 segment。",
+      "evidence": "46-51 替换分隔符后只拒绝 / 前缀、../ 前缀和 /../ 子串。静态推导：C:/outside.ts、..、src/.. 均不触发这些条件。common/path_ops.py:13-16 直接调用该实现。",
+      "recommended_fix": "授权实现者应按跨平台路径契约拒绝 drive-qualified absolute paths 和任何完整 .. segment，并补充经 public probe 的路径拒绝用例。",
+      "needs_dynamic_verification": true,
+      "limit": "未证明实际文件写入或越界利用；下游 policy/effect 门禁未执行。"
+    },
+    {
+      "severity": "low",
+      "file": "src/backend/polaris/cells/director/runtime/tests/test_materialization_unique_export_routing.py",
+      "line": 132,
+      "problem": "保留此前发现：该测试文件缺少 malformed canonical importer path 的负面覆盖。",
+      "evidence": "run868ee5d5 完整读取该文件后记录：已有非法 specifier 等用例，未包含 absolute、parent traversal、空值或非字符串 canonical path。此次未重读或重跑测试。",
+      "recommended_fix": "授权实现者补充 public probe 负面用例，断言非法 canonical path 不能恢复 stale raw 或产生 patch。",
+      "needs_dynamic_verification": true
+    }
+  ],
+  "staticSpecVerdict": "completed_with_findings；核心 typed/raw 路由证据已核实，完整 source-proven import 与路径安全要求存在缺口",
+  "staticQualityVerdict": "changes_requested",
+  "declinedToJudge": [
+    "本轮测试、lint、build 或动态回归通过",
+    "TS5110 闭环及历史 broad failures 是否已解决",
+    "dirty POL-12 diagnostics 正确性",
+    "final provider request、decoded/dispatch/tools 和实际 effect receipts",
+    "verifier、TaskRuntime、Run Ledger、QA、settlement 闭环",
+    "fresh isolated L1-L12、Bench 或 COMPLETED_VERIFIED 交付",
+    "超出指定静态范围的全部治理和 graph contract 符合性"
+  ],
+  "namespaceDrained": true,
+  "issueStatus": "done",
+  "activeRecoveryActionResolved": true
+}
