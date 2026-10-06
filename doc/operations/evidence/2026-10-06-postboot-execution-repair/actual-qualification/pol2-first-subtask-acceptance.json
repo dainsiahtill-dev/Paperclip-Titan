@@ -1,0 +1,84 @@
+{
+  "issue": "POL-2",
+  "acceptedScope": "originalexplicitfirstsubtask diagnosticidentity andJSONTypeScriptdiagnostics plusmissingreport",
+  "taskStatus": "done",
+  "overallGoalComplete": false,
+  "historicalRun": "3f459cc2-6c16-42e9-9c9a-5aae7ab259a9",
+  "historicalRunStatus": "timed_out preserved",
+  "historicalAcceptance": {
+    "focused_tests": {
+      "passed": 91,
+      "failed": 0,
+      "exit_code": 0
+    },
+    "ruff": {
+      "exit_code": 0
+    },
+    "mypy": {
+      "files": 3,
+      "exit_code": 0
+    },
+    "broad_current": {
+      "passed": 505,
+      "failed": 6,
+      "exit_code": 1
+    },
+    "broad_preimage": {
+      "passed": 489,
+      "failed": 6,
+      "exit_code": 1,
+      "exact_preimage_hashes_verified": true
+    },
+    "new_failure_signatures": 0,
+    "dynamic_normalizer": {
+      "raw_count": 3,
+      "before_normalized_count": 2,
+      "after_normalized_count": 3,
+      "json_ts5110_location_retained": true
+    }
+  },
+  "currentVerification": {
+    "source": "Root final sixsuite183PASS, includesdiagnosticidentity frontier",
+    "scopeDifferentFromHistoricalBroad": true,
+    "noReplayInReportRun": true
+  },
+  "missingOriginalREDLog": "notrecovered/notfabricated",
+  "codeCommit": "9bb5bd1b4eddca9c7d28495cc1de3bf7f4689f32",
+  "laterR1SourcePreserved": true,
+  "reportOnlyRun": "ba7a3296-5109-4858-94e6-6031c1ae8bb6",
+  "reportPath": ".superpowers/sdd/2026-10-05-paperclip-pol2-diagnostics/REPORT.md",
+  "reportSha256": "969e83400fd20e6d141e61edb6c0954031b5608521c317b6aa179247d0efe2ac",
+  "reportBytes": 13569,
+  "sourceVerification": {
+    "sourceHashesUnchanged": true,
+    "sourceHashes": {
+      "src/backend/polaris/cells/director/runtime/internal/repair_kernel/contracts.py": "8eac0a6167320abdb52ca0bd1c9a8b723e62206bd6f983c7df973f49365224ff",
+      "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+      "src/backend/polaris/cells/director/runtime/tests/test_diagnostic_identity_frontier.py": "c22b1cbe67f89169d56609bc451b4e7e9f3aab4ba7c5ecf38bb317a82b8fc665"
+    },
+    "reportBytes": 13569,
+    "reportSha256": "969e83400fd20e6d141e61edb6c0954031b5608521c317b6aa179247d0efe2ac"
+  },
+  "namespaceDrained": true,
+  "ownerReleased": true,
+  "environmentLeaseReleased": true,
+  "neverStartedReconciliation": {
+    "sourceRun": "0efb8fbb-aee2-4f78-8c97-324d61070b77",
+    "outcome": "not_performed",
+    "launchEvents": 0,
+    "owners": 0,
+    "leases": 0,
+    "tools": 0,
+    "operations": 0,
+    "namespaceExitProofInvented": false,
+    "historicalUsagePreserved": true
+  },
+  "remaining": [
+    "POL6planner/lexical defect",
+    "POL3ownerimplementation",
+    "POL4verifiermigration",
+    "TS5110executablecoverage",
+    "oldbroadsignatures/effects/freshBench"
+  ],
+  "automaticWakes": false
+}

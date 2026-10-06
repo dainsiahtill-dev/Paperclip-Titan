@@ -120,3 +120,14 @@ physical Group validation is blocked by namespace UID and readonly fixture acces
 with no gate relaxation. POL-7/POL-8 are done only as investigation tasks; POL-3/4
 implementation backlogs and overall product qualification remain open. See
 [current readiness/investigation acceptance](2026-10-06-remaining-audit-employee-readiness.md).
+
+## POL-2 original subtask/report acceptance
+
+POL-2's explicitly authorized diagnostic identity/JSON TypeScript first subtask
+is now done after independent evidence review and report-only delivery of its
+originally missing REPORT.md. The code/tests were preserved, historical timeout
+and RED-log gaps remain honest, and a never-started old retry was formally
+reconciled without fake namespace proof. Actual report-run namespace/owner/lease
+release passed. See [bounded POL-2 closure](2026-10-06-pol2-report-closure.md).
+This does not close planner, owner/verifier implementation or whole-project
+qualification; the overall goal and two concrete design review questions remain.
