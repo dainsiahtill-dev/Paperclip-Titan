@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceWriteOwners, type Db } from "@paperclipai/db";
+import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, projects, projectWorkspaces, toolInvocations, workspaceOperations, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -17,6 +17,34 @@ import { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
  * reservation with no launch attempt is separate positive pre-launch evidence. */
 async function verifiedNeverLaunchedSource(db: Db, source: typeof heartbeatRuns.$inferSelect, issueId: string) {
   if (source.runtimeMode !== "legacy" || source.processPid || source.processGroupId || source.processStartedAt) return false;
+  // A captured claim in preparing is positive pre-dispatch authority: the
+  // controller commits dispatching before provider handoff. This
+  // is not a namespace exit receipt. Unknown historical claims remain held.
+  const bootstrap = object(source.resultJson?.executionRecovery);
+  const capturedAdapter = object(source.runnerProfileJson?.adapterDispatch).adapterType;
+  if (source.controllerBootId && source.executionStage === "preparing" &&
+      source.controllerLeaseExpiresAt && source.controllerLeaseExpiresAt.getTime() <= Date.now() &&
+      ["codex_local", "claude_local"].includes(String(capturedAdapter)) &&
+      readCapturedExecutionProfile(source.runnerProfileJson) && bootstrap.kind === "bootstrap" &&
+      bootstrap.providerWorkStarted === false) {
+    const events = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, source.companyId), eq(heartbeatRunEvents.runId, source.id),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "legacy.process_identity_recorded"]),
+    )).limit(1);
+    const authorities = await db.select({ id: workspaceWriteOwners.id }).from(workspaceWriteOwners).where(and(
+      eq(workspaceWriteOwners.companyId, source.companyId), eq(workspaceWriteOwners.runId, source.id),
+    )).limit(1);
+    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, source.companyId), eq(environmentLeases.heartbeatRunId, source.id),
+    )).limit(1);
+    const tools = await db.select({ id: toolInvocations.id }).from(toolInvocations).where(and(
+      eq(toolInvocations.companyId, source.companyId), eq(toolInvocations.runId, source.id),
+    )).limit(1);
+    const operations = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.heartbeatRunId, source.id),
+    )).limit(1);
+    if (!events.length && !authorities.length && !leases.length && !tools.length && !operations.length) return true;
+  }
   const cwd = source.contextSnapshot?.paperclipWorkspace && object(source.contextSnapshot.paperclipWorkspace).cwd;
   if (typeof cwd !== "string") return false;
   const identity = await physicalWorkspaceIdentity(cwd).catch(() => null);

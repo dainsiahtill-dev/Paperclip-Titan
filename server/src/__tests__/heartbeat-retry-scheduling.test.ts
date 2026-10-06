@@ -29,6 +29,8 @@ import {
   issues,
   projects,
   workspaceWriteOwners,
+  workspaceOperations,
+  toolInvocations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -225,6 +227,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projects);
     await cleanupHeartbeatRunDependents();
+    await db.delete(workspaceOperations);
+    await db.delete(toolInvocations);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -750,6 +754,58 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     app.use(errorHandler);
     return app;
   }
+
+  it.each(["verified", "missing_controller", "missing_profile", "unknown_adapter", "dispatching", "live_controller", "process_event", "process_pid", "workspace_operation", "tool_invocation"])("authorizes remaining work only from captured pre-dispatch failure evidence (%s)", async mode => {
+    const fixture = await seedMaxTurnFixture({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    const { companyId, agentId, issueId, runId } = fixture;
+    await db.update(agents).set({ adapterType: SUPPRESSED_RETRY_TEST_ADAPTER }).where(eq(agents.id, agentId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { useProjectWorkspace: false },
+      executionPolicy: { resourceLimits: { maxRunSeconds: 600 } },
+    }).where(eq(issues.id, issueId));
+    await captureFixtureProfile(fixture);
+    const capturedProfile = (await heartbeat.getRun(runId))!.runnerProfileJson;
+    await db.update(heartbeatRuns).set({ startedAt: new Date("2026-04-20T11:59:00Z"),
+      status: "failed", errorCode: "setup_failed", error: "This operation was aborted",
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date("2026-04-20T12:00:00Z"),
+      executionStage: "preparing", processPid: null, processGroupId: null, processStartedAt: null,
+      runnerProfileJson: { ...capturedProfile, adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: { conversationContinuation: "continue_conversation_v1",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: { issueId, resourceDeadline: { runId, deadlineAt: "2020-01-01T00:00:00Z", maxRunSeconds: 600 } },
+    }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "missing_controller") await db.update(heartbeatRuns).set({ controllerBootId: null }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "missing_profile") await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "unknown_adapter") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...capturedProfile, adapterDispatch: { adapterType: "custom_unknown" } } }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "dispatching") await db.update(heartbeatRuns).set({ executionStage: "dispatching" }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "live_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "process_event") await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 999, eventType: "adapter.invoke", stream: "system", payload: { command: "fixture" } });
+    if (mode === "process_pid") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, runId));
+    if (mode === "workspace_operation") await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "provision", command: "fixture", status: "running" });
+    if (mode === "tool_invocation") await db.insert(toolInvocations).values({ companyId, agentId, issueId, runId, toolName: "fixture", status: "succeeded" });
+    const { persistRetrySuppression } = await import("../services/execution-retry-disposition.js");
+    await persistRetrySuppression(db, (await heartbeat.getRun(runId))!, "On-demand execution is disabled; preserve this exact failed source.");
+    expect((await heartbeat.getRun(runId))?.resultJson?.retryDisposition).toMatchObject({ state: "blocked" });
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, agentId));
+    const [current] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const source = (await heartbeat.getRun(runId))!;
+    const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send({
+      source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+      retrySupersession: { requestId: randomUUID(), expectedIssueRevision: current.updatedAt.toISOString(),
+        expectedAssigneeAgentId: agentId, residualObjective: "Perform newly authorized remaining validation, preserving the failed source.", maxRunSeconds: 120 },
+    });
+    if (mode !== "verified") {
+      expect(response.status).toBe(409);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+      return;
+    }
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    await waitForRunToFinish(heartbeat, response.body.id);
+    const successor = (await heartbeat.getRun(response.body.id))!;
+    expect(successor.contextSnapshot?.resourceDeadline).toMatchObject({ runId: successor.id, maxRunSeconds: 120 });
+    expect(Date.parse((successor.contextSnapshot!.resourceDeadline as any).deadlineAt)).toBeGreaterThan(Date.now());
+    expect((await heartbeat.getRun(runId))!.contextSnapshot?.resourceDeadline).toEqual(source.contextSnapshot?.resourceDeadline);
+    expect((await heartbeat.getRun(runId))!.errorCode).toBe("setup_failed");
+  });
 
   it.each(["checkpoint", "acquired_environment"])("rejects post-admission profile drift after %s before invoking the adapter", async phase => {
     const { companyId, agentId, runId } = await seedSuppressedRetry();
