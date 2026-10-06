@@ -1,0 +1,10 @@
+{
+  "runId": "aaedbd81-72df-4a70-8766-fe424d838636",
+  "status": "process_succeeded_task_blocked",
+  "model": "gpt-6.1-sol",
+  "realMcpToolExposed": true,
+  "realMcpToolCall": true,
+  "error": "MCP tool call requires approval, but approval policy is never",
+  "phase2ReportWritten": false,
+  "meaning": "No second-dispatch acceptance yet"
+}

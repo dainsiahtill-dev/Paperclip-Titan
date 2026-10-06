@@ -1,0 +1,35 @@
+{
+  "before": {
+    "namespaceLive": true,
+    "ownerState": "active"
+  },
+  "after": {
+    "namespaceDrained": true,
+    "ownerState": "released",
+    "fullReceipt": {
+      "pid": 11958,
+      "stop": {
+        "forced": false,
+        "signal": "SIGINT",
+        "requestId": "a839c689-dbd4-4a68-b3d0-6851b2197390"
+      },
+      "bootId": "9e0a4b6d-cf04-411f-9a5c-854e508bd2ee",
+      "launchId": "1fe4e329-a9b9-46c8-8340-0381775d8738",
+      "namespace": "pid:[4026532196]",
+      "startedAt": "2026-10-06T05:11:01.982Z",
+      "generation": "61673595-c575-4c6f-8a0e-795fbb0e12ce",
+      "observedAt": "2026-10-06T05:11:50.797Z",
+      "payloadPid": 11960,
+      "namespacePid": 11959,
+      "payloadStart": "1882797",
+      "namespaceStart": "1882791",
+      "processGroupId": 11958,
+      "observerNamespace": "pid:[4026532182]",
+      "payloadMountNamespace": "mnt:[4026532193]",
+      "observerMountNamespace": "mnt:[4026532179]"
+    }
+  },
+  "engineeringReportSha256": "9b2f586df194d9cb79e4e1afbb013e3f6dc8184cac1e9804f4f1e08b9a718121",
+  "lateWriteAbsent": true,
+  "observedAt": 1791263549.0386207
+}

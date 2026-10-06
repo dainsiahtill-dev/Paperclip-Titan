@@ -1,0 +1,24 @@
+{
+  "backupRoot": "/home/dains/.paperclip/backups/employee-qualification-20261006T045810Z",
+  "archiveSha256": "65ecba8fa256b947ba36caf22acb8e5167ccc175379b164b4d384494e9b7cc29",
+  "filesVerified": 8467,
+  "bytesVerified": 691607986,
+  "databaseStopped": true,
+  "selection": [
+    "db",
+    "config.json",
+    ".env",
+    "secrets",
+    "ai-local-logins",
+    "runtime",
+    "runtime-context-assets",
+    "logs",
+    "runtime-info.json",
+    "hot-restart-report.json"
+  ],
+  "excludes": [
+    "data/backups",
+    "workspaces",
+    "Polaris source"
+  ]
+}

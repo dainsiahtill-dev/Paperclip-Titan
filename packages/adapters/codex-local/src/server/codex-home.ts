@@ -355,13 +355,21 @@ function buildManagedMcpBlock(input: {
         `Found unmanaged Codex MCP server "${gateway.name}" overlapping a Paperclip-governed gateway; leaving the direct entry in place and adding managed gateway "${managedName}". Paperclip cannot enforce policies for that direct entry.`,
       );
     }
-    const url = new URL(gateway.endpointPath, input.apiBaseUrl).toString();
+    const gatewayUrl = new URL(gateway.endpointPath, input.apiBaseUrl);
+    const governed = gatewayUrl.origin === new URL(input.apiBaseUrl).origin
+      && gatewayUrl.pathname.startsWith("/api/tool-gateway/")
+      && !gatewayUrl.username && !gatewayUrl.password;
+    const url = gatewayUrl.toString();
     lines.push(
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
     );
+    // This broker applies Paperclip's per-tool grants, asks and denials.
+    // Codex's local prompt cannot run under unattended approval_policy=never.
+    // Direct/unmanaged MCP servers keep their existing client approval rules.
+    if (governed) lines.push('default_tools_approval_mode = "approve"');
   });
   lines.push(MANAGED_MCP_BLOCK_END);
   return { block: lines.join("\n"), warnings };

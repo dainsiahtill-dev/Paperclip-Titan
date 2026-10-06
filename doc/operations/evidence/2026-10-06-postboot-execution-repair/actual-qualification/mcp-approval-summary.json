@@ -1,0 +1,30 @@
+{
+  "red": {
+    "passed": 55,
+    "failed": 1
+  },
+  "green": {
+    "passed": 94,
+    "failed": 0,
+    "skipped": 0
+  },
+  "typecheckExitCode": 0,
+  "packageBuildExitCode": 0,
+  "onlyGeneratedSameOriginBrokerApproval": true,
+  "unmanagedExternalNonbrokerUnchanged": true,
+  "sourceFreeze": {
+    "packages/adapters/codex-local/src/server/codex-home.ts": "d35b27ae645a843767d619b7f964dacb72a4a10f2cc6bd3a7186e1f250428671",
+    "packages/adapters/codex-local/src/server/codex-home.test.ts": "c39efc587eb148bc68127b8beee1405ee57e220fab99d09a5ae41692d546ac79"
+  },
+  "liveProof": "pending fourth bounded verification; prior second dispatch retained as blocked",
+  "serverAuthorityRegression": {
+    "passed": 76,
+    "failed": 0,
+    "skipped": 0,
+    "suites": [
+      "tool-gateway",
+      "heartbeat-runtime-mcp-servers",
+      "mcp-http"
+    ]
+  }
+}

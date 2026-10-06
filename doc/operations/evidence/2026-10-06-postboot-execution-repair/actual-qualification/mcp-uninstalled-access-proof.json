@@ -1,0 +1,12 @@
+{
+  "uninstalledEmployee": "10384bec-6322-4318-9863-6f163516402a",
+  "allowed": 0,
+  "off": 1,
+  "decisions": [
+    {
+      "tool": "codegraph_explore",
+      "decision": "off",
+      "reason": "deny_default"
+    }
+  ]
+}

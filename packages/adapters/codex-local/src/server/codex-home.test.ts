@@ -1026,12 +1026,25 @@ describe("evaluateCodexCredentialReadiness", () => {
       expect(alpha).toContain("http_headers = {");
       expect(alpha).not.toContain("\nheaders = {");
       expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(alpha).toContain('default_tools_approval_mode = "approve"');
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
       expect(alphaHome).not.toBe(zeroHome);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.each(["https://other.example/api/tool-gateway/gateways/external/mcp", "/other/mcp"])("retains client approval for a gateway outside Paperclip's governed endpoint: %s", async endpointPath => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-approval-"));
+    try {
+      await fs.writeFile(path.join(root, "config.toml"), 'approval_policy = "never"\n\n[mcp_servers.unmanaged]\nurl = "https://other.example/mcp"\ndefault_tools_approval_mode = "prompt"\n');
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways: [{ name: "external", endpointPath, bearerToken: "test-token" }] });
+      const config = await fs.readFile(path.join(root, "config.toml"), "utf8");
+      expect(config).toContain('approval_policy = "never"');
+      expect(config).toContain('default_tools_approval_mode = "prompt"');
+      expect(config).not.toContain('default_tools_approval_mode = "approve"');
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it("restricts permissions on an existing managed MCP config", async () => {

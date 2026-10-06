@@ -14,7 +14,7 @@ Run `FOR SHARE` protects original events against ordinary appenders, which take 
 
 - P3 coverage — `server/src/__tests__/workspace-namespace-closure.test.ts:101`: metadata test rejects wrong nsfs type, but does not cover descriptor dev/inode mismatch or handle closure on rejection. Add ordinary mocked mismatch cases and verify each opened handle closes.
 - P3 coverage — `packages/adapter-utils/src/workspace-process-guard.test.ts:238`: new drain-wait test covers delayed successful exit only. Add ordinary still-live-at-deadline case asserting false and absence of a drain receipt.
-- P3 semantics/coverage — `server/src/services/workspace-namespace-closure.ts:55`: completed-close replay compares saved input digest and provenance, not current historical run/event digest. Thus later non-binding annotations/events do not invalidate replay. This preserves durable receipt idempotence and performs no new release; document/test this behavior. If changed-evidence rejection is intended to apply after completed closure too, persist a separate immutable evidence digest and compare it on replay.
+- Resolved replay semantics/coverage — `server/src/services/workspace-namespace-closure.ts:55`: follow-up comments explicitly preserve completed receipts after later annotations; replay returns `alreadyClosed: true`, initial close returns false. Positive integration test adds a benign system annotation and proves replay leaves exact owner row unchanged. No new release occurs; original changed-evidence check still applies before initial closure.
 
 ## Verification inspected
 
@@ -22,13 +22,14 @@ Run `FOR SHARE` protects original events against ordinary appenders, which take 
 - `host-and-closure-suites.json`: 23 passed, zero failed; namespace 11, legacy closure 12.
 - `final-scoped-suites.json`: 163 passed, zero failed, two skipped; retry 103, sandbox 18, guard 16, CLI 2, ownership 17, namespace earlier 9.
 - No independent test execution. Parent reports provide test evidence; this review does not claim live qualification or repo-wide completion.
+- Follow-up `current-scoped-suites.json` retains initial 170 passed/one failed/six skipped: annotation fixture omitted mandatory `agentId`. Root corrected that field; `namespace-closure-final.json` confirms all 11 namespace tests pass. Reviewed correction retains assertions and exact-owner replay equality.
 
 ## Declined to judge
 
 - Default-instance deployment, live employee/provider qualification, and actual maintenance execution: reserved to root; explicitly outside this read-only review.
 - Adversarial filesystem/environment experiments: explicitly excluded by review assignment; ordinary code paths and existing tests inspected instead.
 
-## Reviewed source SHA256
+## Initial reviewed source SHA256
 
 ```json
 {
