@@ -1,0 +1,89 @@
+{
+  "goalComplete": false,
+  "issues": [
+    {
+      "issue": "POL-6",
+      "status": "blocked",
+      "assigneeAgentId": "3af6b2dd-e922-447f-a01e-d130e903b122",
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": {
+        "owner": {
+          "agentId": "3af6b2dd-e922-447f-a01e-d130e903b122"
+        },
+        "action": "After POL-9/POL-11/POL-12 review/report disposition, dynamically validate POL-10 static findings through existing public probes: mixed default/named binding, false export text, strict malformed canonical paths. Preserve completed typed/raw routing and diagnostic repairs; implementation only after exact failing reproduction and scoped authorization. No fresh Bench or TS5110 success is implied."
+      },
+      "unresolvedBlockers": []
+    },
+    {
+      "issue": "POL-9",
+      "status": "done",
+      "assigneeAgentId": "3af6b2dd-e922-447f-a01e-d130e903b122",
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": null,
+      "unresolvedBlockers": []
+    },
+    {
+      "issue": "POL-10",
+      "status": "done",
+      "assigneeAgentId": "7a8799e2-39ce-4c6a-8f72-1e3a654fccf2",
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": null,
+      "unresolvedBlockers": []
+    },
+    {
+      "issue": "POL-11",
+      "status": "done",
+      "assigneeAgentId": "3af6b2dd-e922-447f-a01e-d130e903b122",
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": null,
+      "unresolvedBlockers": []
+    },
+    {
+      "issue": "POL-12",
+      "status": "done",
+      "assigneeAgentId": "3af6b2dd-e922-447f-a01e-d130e903b122",
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": null,
+      "unresolvedBlockers": []
+    },
+    {
+      "issue": "POL-13",
+      "status": "done",
+      "assigneeAgentId": null,
+      "executionRunId": null,
+      "activeRecoveryAction": null,
+      "unblockDescriptor": null,
+      "unresolvedBlockers": []
+    }
+  ],
+  "reportRuns": {
+    "POL-11": "5c8f8743-5075-481a-9a7b-a08b4dc42c4f",
+    "POL-9": "545fd096-7c2d-4d90-af1d-d12323637dc6"
+  },
+  "productSourceIdentity": {
+    "HEAD": "9bb5bd1b4eddca9c7d28495cc1de3bf7f4689f32",
+    "source": "accepted uncommitted POL-12/R1 original-checkout source",
+    "diagnosticsSha256": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+    "provenanceTestSha256": "1f4fe0bc1772be82f69b56e3e648cfa0d4397fcb1632960f625970024d4152c2"
+  },
+  "preservation": {
+    "testsProbesReplayedInReportRuns": false,
+    "originalReportsRetainedAndAppended": true,
+    "failedCancelledRunsRetained": true,
+    "providerBenchCalls": false,
+    "newBranchWorktreeCodeCopies": false,
+    "serviceRestart": false
+  },
+  "knownProductResiduals": [
+    "POL10 static binding/export/path findings require dynamic verification",
+    "B1/B6 absent-plan contract failures",
+    "TS5110 unsupported",
+    "effects/revalidation/QA settlement/fresh isolated Bench unqualified"
+  ],
+  "remainingPlatformRisk": "One actual CodeGraph query stdio_timeout at10s; exact confined controls succeed, intermittent cause not yet confirmed"
+}

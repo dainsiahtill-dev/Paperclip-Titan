@@ -1,0 +1,110 @@
+{
+  "task_id": "POL-12",
+  "finding_id": "POL12-R1",
+  "mode": "implementation",
+  "summary": "Dynamic public RED confirmed quoted TS/JS/Rust/Python arguments overwrite actual Node errors. Minimal two-file correction classifies stdout/stderr before attaching bounded invocation provenance. All 15 new regressions and all 31 original provenance cases pass; broad retains the same two baseline failures.",
+  "run_id": "c3086c3c-c139-48a9-9fb4-8c7f3ce20308",
+  "scope": [
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py"
+  ],
+  "source_delta": ".superpowers/sdd/2026-10-06-paperclip-repair-frontier/command-provenance/quote-argument-regression/source-delta.diff",
+  "test_delta": ".superpowers/sdd/2026-10-06-paperclip-repair-frontier/command-provenance/quote-argument-regression/test-delta.diff",
+  "testing_evidence": {
+    "red_confirmed": {
+      "failed": 12,
+      "passed": 3,
+      "deselected": 31,
+      "exit_code": 1,
+      "source_unmodified_sha256": "16a2e993898f5b0ac0f768ac064d766b1cc551fbe1b0646d6dfc3be3986cb436"
+    },
+    "green_new": {
+      "passed": 15,
+      "deselected": 31,
+      "exit_code": 0
+    },
+    "provenance_full_final": {
+      "passed": 46,
+      "exit_code": 0
+    },
+    "focus": {
+      "passed": 107,
+      "exit_code": 0
+    },
+    "related": {
+      "passed": 93,
+      "exit_code": 0,
+      "prior_count": 78,
+      "new_cases": 15
+    },
+    "broad": {
+      "collected": 309,
+      "passed": 307,
+      "failed": 2,
+      "exit_code": 1
+    },
+    "counts_overlap": true,
+    "ruff": {
+      "exit_code": 0,
+      "version": "0.15.16"
+    },
+    "mypy": {
+      "exit_code": 0,
+      "version": "2.1.0",
+      "scope": "two touched files --follow-imports=skip; not strict workspace qualification"
+    },
+    "format": {
+      "exit_code": 1,
+      "baseline_groups": 3,
+      "current_groups": 3,
+      "new_debt": 0
+    },
+    "interpreters": {
+      "tests": "existing .venv/bin/python3.13, Python3.13.12",
+      "lint": "existing /home/dains/.pyenv/versions/3.12.3/bin/python3, Python3.12.3"
+    }
+  },
+  "residuals": [
+    {
+      "id": "B1",
+      "signature": "test_repair_kernel_contract_3.py:631: assert 'repair_not_planned' is None",
+      "owner_action": "Root assigns separate absent-plan contract decision; no old assertion/public projection edits."
+    },
+    {
+      "id": "B6",
+      "signature": "test_repair_kernel_contract_4.py:2059: assert 'repair_not_planned' is None",
+      "owner_action": "Root assigns separate absent-plan contract decision; downstream assertions remain uncertified."
+    },
+    {
+      "id": "TS5110",
+      "status": "unsupported; unchanged, no new qualification"
+    },
+    {
+      "id": "format-baseline",
+      "status": "three existing formatter hunks unchanged; no new format debt"
+    },
+    {
+      "id": "project-delivery",
+      "status": "Real effects/revalidation/QA settlement and fresh isolated L1-L12 completion not qualified."
+    }
+  ],
+  "source_sha256": {
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+    "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py": "1f4fe0bc1772be82f69b56e3e648cfa0d4397fcb1632960f625970024d4152c2"
+  },
+  "declined_claims": [
+    "No fresh Bench/provider/final-request/context_snapshot_ref qualification",
+    "No repair Run/effect/authoritative receipt/revalidation/QA settlement",
+    "No target-project edits, services, branches/worktrees, installation or subagents",
+    "No Paperclip source/auth/security/model changes, status/assignment API or self-approval",
+    "No replay or overwriting of original reports or protected handoff/drain proof"
+  ],
+  "rootAcceptance": {
+    "R1": "accepted",
+    "originalTestAstPreserved": true,
+    "oldArtifactHashChecks": 86,
+    "oldArtifactsUnchanged": true,
+    "namespaceReleased": true,
+    "fullPolarisDelivery": false
+  }
+}

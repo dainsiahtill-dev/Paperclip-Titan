@@ -1,0 +1,35 @@
+{
+  "failedEmployeeCall": {
+    "runId": "5c8f8743-5075-481a-9a7b-a08b4dc42c4f",
+    "invocationId": "7e1ff6d3-02fc-41ad-84f9-034b113815f3",
+    "reason": "stdio_timeout",
+    "elapsedSeconds": 10.183,
+    "limitMs": 10000
+  },
+  "exactQuery": {
+    "projectPath": "/home/dains/Documents/polaris",
+    "query": "director.runtime cell.yaml README.agent.md public contracts repair kernel report scope",
+    "maxFiles": 1
+  },
+  "sameConfinedQueryControl": {
+    "elapsedMs": 8029,
+    "isError": false,
+    "contentChars": 9908
+  },
+  "networkAllowedControl": {
+    "elapsedMs": 7988,
+    "isError": false,
+    "contentChars": 9908
+  },
+  "timingOnlyDiagnostic": {
+    "initializeMs": 243,
+    "requestCompleteSinceSpawnMs": 7725,
+    "totalMs": 7761,
+    "isError": false
+  },
+  "rootCause": "Intermittent cause remains unconfirmed. Failure was the governed invocation total deadline; a successful timing control proves initialization and tool result on the same original project under filesystem/PID confinement.",
+  "productionChanged": false,
+  "timeoutExtended": false,
+  "sandboxDisabled": false,
+  "validEmployeeRunInterrupted": false
+}

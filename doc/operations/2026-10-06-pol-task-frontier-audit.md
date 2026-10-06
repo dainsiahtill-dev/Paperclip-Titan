@@ -26,7 +26,7 @@ Previous partial review attempts are preserved: omitted required query, retrieva
 
 Root independently source-confirmed POL-10 findings: mixed default/named import target contract; raw-text false export evidence; drive-qualified/trailing parent path rejection; missing malformed canonical-path negative tests. These require authorized dynamic validation; no actual exploitation or effect was claimed. The public recovery-actions/resolve route completed the audit and resolved its active recovery action. POL-6 retains the implementation owner and exact followup action, blocked by remaining POL-9 reporting/review.
 
-POL-12 implementation and tests already existed. Residual writer verified both hashes against its completed report, then entered a harmless controlled handoff wait. No source/test replay was performed. Independent review f5ba215f finished source-readonly with changes_required; its owner/lease/namespace released. It found a further static command-provenance risk: quoted npm arguments can be reinterpreted as compiler diagnostics in a contextual parsing branch. That product finding is not a Paperclip tool or namespace failure. Only its exact public-boundary reproduction and, if reproduced, minimal correction in the same existing two-file bucket were authorized for the implementation employee. Earlier work must not be replayed.
+POL-12 implementation and tests already existed. Residual writer verified both hashes against its completed report, then entered a harmless controlled handoff wait. No source/test replay was performed. Independent review f5ba215f finished source-readonly with changes_required; its owner/lease/namespace released. It found a further static command-provenance risk: quoted npm arguments can be reinterpreted as compiler diagnostics in a contextual parsing branch. That product finding was dynamically reproduced under residual writerc3086c3c: 12fail/3pass RED, then15pass GREEN. The minimal two-file correction classifies actual stdout/stderr before attaching bounded command provenance. Final46provenance,107focus and93related cases pass; broad remains307pass/2oldB1B6fail. Scoped Ruff/mypy pass; three old format hunks remain with zero new debt. Root independently inspected the R1 delta, verified original test AST nodes, final two source hashes and86unchanged old artifact hashes. Exact namespace/owner/lease released; POL-12 was formally done through its active recovery resolution. Full product effects/settlement/fresh Bench remain unqualified.
 
 ## Preserved governance
 
@@ -36,9 +36,11 @@ Inherited subtree resource limits also remained active. Readonly ledger audit ob
 
 ## Remaining frontier
 
-- Independently accept POL-12 final review and any precisely scoped remaining product correction; retain the completed implementation/TDD portions.
-- Complete POL-11/POL-9 report/review disposition from saved checkpoints, preserving interrupted c99 run and completed probes/tests.
+POL-11 and POL-9 final reports were independently accepted after exact namespace/owner/lease release. POL-9/10/11/12/13 are done with no active execution or recovery action. Reports preserve old303/6 and later307/2 scopes; newerR1 source is explicitly uncommitted. Zero test/probe replay occurred in report-only runs.
+
+- POL-6 retains the owned product frontier: dynamically validate static binding/export/path findings, with completed typed/raw routing preserved. POL-2 review and POL-7/8 product investigations remain outside the completed qualification/report scope.
 - Keep B1/B6 absent-plan contract failures, TS5110 unsupported planning and static routing risks explicit. These are Polaris product residuals, not platform execution faults.
+- Resolve the newly observed intermittent CodeGraph tool deadline cause: one broad query hit stdio_timeout at10.183seconds; exact confined controls succeeded~8seconds, initialized243ms/requestcomplete7725ms. No deadline/security change was made. Root cause remains unconfirmed.
 - Finish browser/task lifecycle verification and deliver updated repository evidence on main. Do not claim full Polaris delivery, effects/settlement or fresh isolated Bench.
 
 Private original evidence: `/home/dains/.paperclip/diagnostics/postboot-execution-20261006/goal-continuation`. Public sanitized proofs: `doc/operations/evidence/2026-10-06-postboot-execution-repair/actual-qualification/`. User requested final delivery in the repository.
