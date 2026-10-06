@@ -595,6 +595,44 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await tempDb?.cleanup();
   });
 
+  it.each([true, false, undefined])("preserves upstream semantic error state through the MCP tools/call route (%s)", async (isError) => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(async () => ({ body: {
+      jsonrpc: "2.0", id: "test", result: {
+        isError, content: [{ type: "text", text: isError ? "required query missing" : "query complete" }],
+        structuredContent: { queryAccepted: !isError, isError: !isError },
+      },
+    } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "semantic-state-fixture", toolName: "read_note", riskLevel: "read",
+      });
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      const [profile] = await db.insert(toolProfiles).values({ companyId: company.id,
+        profileKey: `semantic-state-${randomUUID()}`, name: "Semantic state fixture", defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile!.id,
+        selectorType: "tool_name", effect: "include", toolName });
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "Semantic state reader", profileId: profile!.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: created.id,
+        body: { name: "Semantic state client" } });
+      const app = createGatewayRouteApp(db, gateway);
+      const result = await request(app).post(created.endpointPath)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 2, method: "tools/call",
+          params: { name: toolName, arguments: { key: "a", value: "b" } } }).expect(200);
+      expect(result.body.result.isError).toBe(isError === true);
+      expect(result.body.result.content).toEqual([{ type: "text", text: isError ? "required query missing" : "query complete" }]);
+      expect(result.body.result.structuredContent).toMatchObject({ isError: isError === true,
+        structuredContent: { queryAccepted: !isError, isError: !isError }, transport: "mcp_http", spawnedLocalProcess: false });
+    } finally {
+      await remote.close();
+    }
+  });
+
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async () => ({

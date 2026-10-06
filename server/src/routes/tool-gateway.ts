@@ -178,13 +178,16 @@ async function handleMcpGatewayProtocol(
       const contentText = typeof resultRecord?.content === "string"
         ? resultRecord.content
         : JSON.stringify(resultRecord?.data ?? result.result ?? null);
+      const resultData = resultRecord?.data && typeof resultRecord.data === "object" && !Array.isArray(resultRecord.data)
+        ? resultRecord.data as Record<string, unknown>
+        : null;
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           content: [{ type: "text", text: contentText }],
           structuredContent: resultRecord?.data ?? null,
-          isError: false,
+          isError: resultData?.isError === true,
         },
       });
       return;
