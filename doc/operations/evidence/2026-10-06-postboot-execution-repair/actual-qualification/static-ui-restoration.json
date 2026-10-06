@@ -1,0 +1,390 @@
+{
+  "scope": "actual default3100 sourceVite to verifiedstaticUI restoration; no provider/productcalls",
+  "modes": {
+    "dev-before": {
+      "browserVersion": "154.0.4258.53",
+      "sampleCount": 5,
+      "coldMedianMs": 5077.655423000004,
+      "warmMedianMs": 4067.163260000001,
+      "samples": [
+        {
+          "label": "cold-1",
+          "usable26Ms": 6025.7346290000005,
+          "responseCount": 600,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 32
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-1",
+          "usable26Ms": 4065.6208290000013,
+          "responseCount": 590,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 22
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-2",
+          "usable26Ms": 4496.472301,
+          "responseCount": 600,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 32
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-2",
+          "usable26Ms": 3782.652801,
+          "responseCount": 590,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 22
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-3",
+          "usable26Ms": 5436.2079269999995,
+          "responseCount": 598,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 30
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-3",
+          "usable26Ms": 4384.182782,
+          "responseCount": 589,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 21
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-4",
+          "usable26Ms": 4587.905521000001,
+          "responseCount": 600,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 32
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-4",
+          "usable26Ms": 4067.163260000001,
+          "responseCount": 590,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 22
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-5",
+          "usable26Ms": 5077.655423000004,
+          "responseCount": 599,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 31
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-5",
+          "usable26Ms": 4460.969793000004,
+          "responseCount": 589,
+          "responseCounts": {
+            "staticOrDocument": 5,
+            "viteOther": 204,
+            "source": 330,
+            "viteDependency": 29,
+            "api": 21
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        }
+      ],
+      "ownedBrowserTeardown": [
+        {
+          "artifact": "pair-1.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-2.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-3.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-4.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-5.edge-teardown.json",
+          "remaining": []
+        }
+      ],
+      "sourceIdentity": {
+        "format": 1,
+        "sourceSha256": "fc79f257123abe871fd2033a64c664ae9da23b4ed19424a81eea74a35b5a750d",
+        "assetsSha256": "35f674c2d957c4686292913832cca2d96adbf038f48b862c485e8e3712af7c0e"
+      }
+    },
+    "static-restored": {
+      "browserVersion": "154.0.4258.53",
+      "sampleCount": 5,
+      "coldMedianMs": 1619.6251679999987,
+      "warmMedianMs": 959.6767099999997,
+      "samples": [
+        {
+          "label": "cold-1",
+          "usable26Ms": 1693.9953710000002,
+          "responseCount": 237,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 29
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-1",
+          "usable26Ms": 1109.1211899999998,
+          "responseCount": 228,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 20
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-2",
+          "usable26Ms": 1635.0683070000005,
+          "responseCount": 239,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 31
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-2",
+          "usable26Ms": 959.6767099999997,
+          "responseCount": 228,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 20
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-3",
+          "usable26Ms": 1610.0227429999995,
+          "responseCount": 238,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 30
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-3",
+          "usable26Ms": 934.9338439999992,
+          "responseCount": 228,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 20
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-4",
+          "usable26Ms": 1554.1204780000007,
+          "responseCount": 238,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 30
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-4",
+          "usable26Ms": 939.4857909999992,
+          "responseCount": 228,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 20
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "cold-5",
+          "usable26Ms": 1619.6251679999987,
+          "responseCount": 238,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 30
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        },
+        {
+          "label": "warm-5",
+          "usable26Ms": 989.2560900000026,
+          "responseCount": 229,
+          "responseCounts": {
+            "staticOrDocument": 3,
+            "builtAsset": 205,
+            "api": 21
+          },
+          "exactNamesCount": 26,
+          "errors": 0
+        }
+      ],
+      "ownedBrowserTeardown": [
+        {
+          "artifact": "pair-1.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-2.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-3.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-4.edge-teardown.json",
+          "remaining": []
+        },
+        {
+          "artifact": "pair-5.edge-teardown.json",
+          "remaining": []
+        }
+      ],
+      "sourceIdentity": {
+        "format": 1,
+        "sourceSha256": "fc79f257123abe871fd2033a64c664ae9da23b4ed19424a81eea74a35b5a750d",
+        "assetsSha256": "35f674c2d957c4686292913832cca2d96adbf038f48b862c485e8e3712af7c0e"
+      }
+    }
+  },
+  "navigationTimeoutMs": 30000,
+  "readyTimeoutMs": 90000,
+  "screenshotTimeoutMs": 15000,
+  "runtimePreservation": {
+    "companiesUnchanged": true,
+    "agentsUnchanged": true,
+    "issuesUnchanged": true,
+    "configUnchanged": true
+  },
+  "staticResponse": {
+    "status": "ok",
+    "startupRecovery": {
+      "phase": "ready",
+      "updatedAt": "2026-10-06T11:37:27.889Z"
+    },
+    "noVite": true,
+    "assets": [
+      {
+        "url": "/assets/index-BowUQU6Q.js",
+        "bytes": 5712,
+        "sha256": "76d232a96c2de5cb8e8cbb68192f31d3155f5a25be00aa90173b3fbc1ab548e7",
+        "matches": true
+      },
+      {
+        "url": "/assets/index-D4nGKOny.css",
+        "bytes": 465846,
+        "sha256": "fe30f19548dbcfb54925efc88ab053742325727485510b7ae2607fc8daac2e24",
+        "matches": true
+      }
+    ]
+  },
+  "noFilesystemColdClaim": true,
+  "privateOriginals": "/home/dains/.paperclip/diagnostics/postboot-execution-20261006/goal-continuation/static-ui-restoration",
+  "interaction": {
+    "steps": [
+      {
+        "step": "employees",
+        "count": 26
+      },
+      {
+        "step": "org",
+        "count": 26
+      },
+      {
+        "step": "POL6-original-task-visible"
+      }
+    ],
+    "errors": [],
+    "blocked": [
+      "POST"
+    ],
+    "passed": true,
+    "browserVersion": "154.0.4258.53",
+    "mutatingRequestsSent": 0
+  }
+}

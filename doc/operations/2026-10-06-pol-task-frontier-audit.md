@@ -51,7 +51,7 @@ POL-6's ordinary residual validation was suppressed by a historical execution-re
 
 Source-level deduplication is repaired and independently reviewed. Actual public reconciliation delivered all five records to one authenticated successor `3e28aaff`, preserving every receipt. That successor failed before model/launcher entry because its inherited deadline had expired. The original deadline and failed source remain intact.
 
-Captured local preparation failures now have a strict never-dispatched proof path for formal remaining-work authorization: expired controller claim, captured profile, `preparing`, known local adapter and zero process/owner/lease/tool/workspace-operation footprints. Unknown or dispatched histories remain held; this does not fabricate namespace exit evidence. The complete retry suite passed 113 tests. A formal new 600-second authorization created `f0f0c63c-a760-4e1c-b71b-a43774168207`, which is executing actual employee commands. Wakes were restored to disabled; report and namespace closure are still pending acceptance.
+Captured local preparation failures now have a strict never-dispatched proof path for formal remaining-work authorization: expired controller claim, captured profile, `preparing`, known local adapter and zero process/owner/lease/tool/workspace-operation footprints. Unknown or dispatched histories remain held; this does not fabricate namespace exit evidence. The complete retry suite passed 113 tests. Formal 600-second authorization created `f0f0c63c-a760-4e1c-b71b-a43774168207`, which executed real employee commands and later returned the preserved interpreter-instruction blocker. Its report, namespace/owner release and subsequent actual public validation are recorded below; it is no longer running. Wakes were restored to disabled.
 
 The MCP JSON-RPC route also preserves upstream semantic `isError` after a real failing regression and 167 passing gateway/connection/authorization tests. No global deadline or sandbox downgrade was introduced. See [reconciliation acceptance](2026-10-06-reconciliation-delivery-dedup-acceptance.md) for the current bounds. Full repository tests finished with 12,899 passed and two failures; the two complete failed-file suites pass on final source (84 recovery-action and 40 CLI-safety cases). This is an aggregate verification with explicit rechecks, not a single frozen-source all-green run.
 
@@ -93,3 +93,12 @@ POL-6 is `in_review` with human Board ownership and disabled wakes. No code or
 historical run was forced to success. Polaris changes remain uncommitted pending
 acceptance. The overall goal is incomplete; POL-2/7/8, malformed-path contracts,
 TS5110/B1/B6 and real effects/fresh Bench remain explicit.
+
+## Current static UI deployment
+
+The later execution-maintenance wrapper had overridden the qualified static UI
+with development mode. On 2026-10-06 it was restored to the verified main-checkout
+static assets through an idle formal restart. Five paired Edge measurements per
+mode passed: cold median 5.078 to 1.620 seconds, reload 4.067 to 0.960 seconds;
+source/Vite traffic disappeared. Config, employees and task state were preserved.
+See [current static deployment acceptance](2026-10-06-static-ui-restoration.md).
