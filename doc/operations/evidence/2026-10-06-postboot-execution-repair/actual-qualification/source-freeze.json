@@ -1,0 +1,12 @@
+{
+  "packages/adapter-utils/src/local-process-sandbox.test.ts": "c66c0b3a85fdf44f3691a1a1c13f61891b7ebce28dff0e16775cb71b5281e7fb",
+  "packages/adapter-utils/src/local-process-sandbox.ts": "4fc37407511a6e24abb21ca22e036db2374c33a18097c5b077e9d030cd67e2b8",
+  "packages/adapter-utils/src/workspace-process-guard.test.ts": "7dd0e9d74a5e0c7adf6e3e86efb2c01b92a198d4f5a44843d08b4faa98d22aed",
+  "packages/adapter-utils/src/workspace-process-guard.ts": "016f19a8e7353faddb862237575e835a870696c3fddccfef39611ff3725d2995",
+  "scripts/workspace-legacy-closure.ts": "aded4862830ab2f4d29e11ee1d741826755d3d94ec779936341843bb95190de7",
+  "server/src/__tests__/heartbeat-retry-scheduling.test.ts": "b81b322799cde9512a3e03dbd7b920c259c48c95b048c4d515d6b8b580fc2094",
+  "server/src/services/execution-retry-disposition.ts": "48a95c8e98400d1f1a44f5b54aae6efa64ab5721116ef7222acc8ce2e4ca4ecd",
+  "server/src/services/legacy-workspace-host.ts": "652a7e84504aa87fef65ee25eb8630218a849c501c8f749ae7d8b7e1b429ec98",
+  "server/src/__tests__/workspace-namespace-closure.test.ts": "0506b0c006aa68a46cb4486bfa2526320b57df13068e4975220a148dd3eb9766",
+  "server/src/services/workspace-namespace-closure.ts": "a38db4ad5875cbb9fd11c75f74e9751bc537334d5632c5609a627711c246643a"
+}

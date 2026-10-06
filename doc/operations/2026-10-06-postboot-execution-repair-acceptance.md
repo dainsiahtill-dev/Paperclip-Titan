@@ -45,3 +45,20 @@ Polaris original root remains device2096/inode244796/HEAD9bb5bd1b4. Its route im
 - Exactoriginal historicalruns/leases/events digests unchanged; genuinepostbootmigration remainsclosed with no fabricated namespace receipt. Noactive/queued/retry/pendingwakes remain.
 - Ordered API/PostgreSQLstop verified before coldbackup;8469files sequentially checked against stoppedinstance. Backuproot /home/dains/.paperclip/backups/postboot-execution-20261006T010107Z. It excludes oldbackupduplicates, workspaces andPolaris source. Initial random-access gzipvalidator was inefficient; only its ownedreadonlyprocess was replaced by streamverification, preserving archive anddata.
 - NoWSLrestart, provider/modelcall, business replay orPolaris product edit performed inthis repair. Actual inference-backed employee qualification remains pending fresh authorization.
+
+## Authorized remaining qualification repair
+
+The operator authorized remaining employee qualification on 2026-10-06. The historical POL-10 failure remains retained. A fresh supersession was refused because its never-launched source lacked a process identity. Admission now accepts only a precise released owner, original physical workspace identity, matching generation/null-launch journal, no process/invoke events, and fully released clean leases. Pending or failed cleanup still blocks admission.
+
+A separate independently dispatched POL-12 executed real commands and tests in the original Polaris directory, then ended after reassignment with an unverified drain. This is execution evidence, not successful Stop acceptance. Its failed run and event ledger remain authoritative and unchanged.
+
+New local operator commands in `scripts/workspace-legacy-closure.ts`:
+
+- `namespace-inspect --config <private config> --company-id <id> --cwd <original root> --owner-id <id> --generation <generation> --launch-id <launch>` is read-only.
+- `namespace-close` uses the same selectors plus `--expected-digest <fresh inspection digest>`. It requires a terminal run, exact trusted process binding, unchanged owner/source, clean released leases, same boot/observer, and actual empty guarded namespace. It appends a genuine drain receipt and release journal with activity audit. It never signals, changes run status, removes history, or wakes work.
+- Actual procfs/nsfs metadata and open namespace descriptor identity are checked against the local embedded database process. Boot/namespace identities cannot be supplied as arguments.
+- Repeating a completed close with its original digest returns `alreadyClosed: true`, performs no mutation, and permits later annotations on the failed run. Initial close requires a fresh unchanged admission digest.
+
+Ordinary Linux alternatives are mounted read-only so tools such as `awk` resolve normally. Namespace shutdown gets a strict, bounded one-second drain observation window; exhausting that window remains unverified. The exact cause of the earlier POL-12 drain failure has not been reproduced.
+
+Current deployment and employee qualification results will be appended after actual execution. No Polaris product implementation is repeated by this repair.

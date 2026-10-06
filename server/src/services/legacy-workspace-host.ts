@@ -15,6 +15,27 @@ function processStat(raw: string) {
   return { pid, parent, startTicks: fields[19]! };
 }
 
+const PROCFS_MAGIC = 0x9fa0;
+const NSFS_MAGIC = 0x6e736673;
+async function requireKernelProcPath(filename: string) {
+  if ((await fs.statfs(filename)).type !== PROCFS_MAGIC) throw legacyClosureError("host_database_unverified");
+}
+async function kernelNamespace(pid: string | number, kind: "pid" | "mnt") {
+  await requireKernelProcPath(`/proc/${pid}`);
+  await requireKernelProcPath(`/proc/${pid}/ns`);
+  await requireKernelProcPath("/proc/self/fd");
+  const handle = await fs.open(`/proc/${pid}/ns/${kind}`, "r");
+  try {
+    const descriptorPath = `/proc/self/fd/${handle.fd}`;
+    const [descriptor, listed, filesystem, link] = await Promise.all([
+      handle.stat(), fs.stat(descriptorPath), fs.statfs(descriptorPath), fs.readlink(descriptorPath),
+    ]);
+    if (filesystem.type !== NSFS_MAGIC || descriptor.dev !== listed.dev || descriptor.ino !== listed.ino ||
+      link !== `${kind}:[${descriptor.ino}]`) throw legacyClosureError("host_database_unverified");
+    return `${kind}:[${descriptor.ino}]`;
+  } finally { await handle.close(); }
+}
+
 /** Operator authority comes from kernel facts witnessed by the actual connected
  * local PostgreSQL transaction. No boot/namespace/actor values are caller inputs. */
 export async function readLegacyWorkspaceHost(db: Pick<Db, "execute">) {
@@ -22,6 +43,8 @@ export async function readLegacyWorkspaceHost(db: Pick<Db, "execute">) {
   if (process.env.PAPERCLIP_RUN_ID || process.env.PAPERCLIP_AGENT_ID || process.env.PAPERCLIP_API_KEY)
     throw legacyClosureError("host_operator_required");
   try {
+    for (const filename of ["/proc", "/proc/self", "/proc/self/stat", "/proc/self/ns", "/proc/self/fd", "/proc/sys/kernel/random/boot_id"])
+      await requireKernelProcPath(filename);
     const rows = await db.execute<{
       pid: number; database: string; cluster: string; directory: string;
       process_stat: string; boot_id: string; postmaster_file: string; backend_start: string;
@@ -41,17 +64,18 @@ export async function readLegacyWorkspaceHost(db: Pick<Db, "execute">) {
     const master = processStat(masterRows[0]?.process_stat ?? "");
     if (master.pid !== postmasterPid) throw legacyClosureError("host_database_unverified");
     const [boot, pidNamespace, mountNamespace, directory] = await Promise.all([
-      fs.readFile("/proc/sys/kernel/random/boot_id", "utf8"), fs.readlink("/proc/self/ns/pid"),
-      fs.readlink("/proc/self/ns/mnt"), fs.realpath(row.directory),
+      fs.readFile("/proc/sys/kernel/random/boot_id", "utf8"), kernelNamespace("self", "pid"),
+      kernelNamespace("self", "mnt"), fs.realpath(row.directory),
     ]);
     const uid = process.getuid();
     if (boot.trim() !== row.boot_id.trim() || !/^[a-f0-9-]{36}$/.test(boot.trim()))
       throw legacyClosureError("host_database_unverified");
     for (const expected of [backend, master]) {
+      await requireKernelProcPath(`/proc/${expected.pid}/stat`);
       const observed = processStat(await fs.readFile(`/proc/${expected.pid}/stat`, "utf8"));
       const [stat, ns, mount, cwd, executable] = await Promise.all([
-        fs.stat(`/proc/${expected.pid}`), fs.readlink(`/proc/${expected.pid}/ns/pid`),
-        fs.readlink(`/proc/${expected.pid}/ns/mnt`), fs.realpath(`/proc/${expected.pid}/cwd`),
+        fs.stat(`/proc/${expected.pid}`), kernelNamespace(expected.pid, "pid"),
+        kernelNamespace(expected.pid, "mnt"), fs.realpath(`/proc/${expected.pid}/cwd`),
         fs.readlink(`/proc/${expected.pid}/exe`),
       ]);
       if (observed.pid !== expected.pid || observed.parent !== expected.parent || observed.startTicks !== expected.startTicks

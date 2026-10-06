@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -25,6 +28,7 @@ import {
   issueRelations,
   issues,
   projects,
+  workspaceWriteOwners,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -990,6 +994,45 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(response.status).toBe(409);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
     expect(suppressedRetryPhysicalInvocations).toBe(0);
+  });
+
+  it.each(["verified", "no_owner", "journal", "generation", "launch", "source", "process_event", "cleanup", "cleanup_pending", "cleanup_failed_released"])("authorizes only a proven never-launched failed source (%s)", async mode => {
+    const fixture = await seedSuppressedRetry({ status: "failed" });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-never-launched-"));
+    const { companyId, agentId, issueId, runId } = fixture;
+    try {
+      await db.update(heartbeatRuns).set({ startedAt: new Date(Date.now() - 1000), finishedAt: new Date(),
+        processPid: null, processGroupId: null, processStartedAt: null,
+        contextSnapshot: { issueId, paperclipWorkspace: { cwd: root } } }).where(eq(heartbeatRuns.id, runId));
+      const { workspaceWriteOwnershipService } = await import("../services/workspace-write-ownership.js");
+      const ownership = workspaceWriteOwnershipService(db);
+      const claim = await ownership.claim({ cwd: root, companyId, issueId, runId });
+      if (claim.outcome !== "claimed") throw new Error("Expected private fixture ownership");
+      await ownership.releaseIfStopped(claim.owner);
+      const [owner] = await db.select().from(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, claim.owner.id));
+      if (mode === "no_owner") await db.delete(workspaceWriteOwners).where(eq(workspaceWriteOwners.id, owner.id));
+      if (mode === "journal") await db.update(workspaceWriteOwners).set({ history: [] }).where(eq(workspaceWriteOwners.id, owner.id));
+      if (mode === "generation") await db.update(workspaceWriteOwners).set({ history: owner.history.map(event => ({ ...event, generation: randomUUID() })) }).where(eq(workspaceWriteOwners.id, owner.id));
+      if (mode === "launch") await db.update(workspaceWriteOwners).set({ history: [...owner.history, { event: "launch_reserved", launchId: randomUUID(), generation: owner.generation }] }).where(eq(workspaceWriteOwners.id, owner.id));
+      if (mode === "source") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, paperclipWorkspace: { cwd: path.dirname(root) } } }).where(eq(heartbeatRuns.id, runId));
+      if (mode === "process_event") await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 999, eventType: "legacy.process_identity_recorded", stream: "system", payload: { localProcess: true, processPid: 123 } });
+      if (mode === "cleanup") await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId, provider: "local", status: "failed", cleanupStatus: "failed" });
+      if (mode === "cleanup_pending" || mode === "cleanup_failed_released") await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId, provider: "local", status: "failed", releasedAt: new Date(), cleanupStatus: mode === "cleanup_pending" ? "pending" : "failed" });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const body = { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run", failedRunId: runId,
+        retrySupersession: { requestId: randomUUID(), expectedIssueRevision: issue.updatedAt.toISOString(), expectedAssigneeAgentId: agentId,
+          residualObjective: "Complete only the authorized remaining read-only verification after a pre-launch rejection.", maxRunSeconds: 120 } };
+      const response = await request(await boardWakeApp(companyId)).post(`/api/agents/${agentId}/wakeup`).send(body);
+      if (mode === "verified") {
+        expect(response.status, JSON.stringify(response.body)).toBe(202);
+        await waitForRunToFinish(heartbeat, response.body.id);
+        expect(suppressedRetryPhysicalInvocations).toBe(1);
+        expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+      } else {
+        expect(response.status, JSON.stringify(response.body)).toBe(409);
+        expect(suppressedRetryPhysicalInvocations).toBe(0);
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it("rechecks current scope before committing the superseding decision", async () => {

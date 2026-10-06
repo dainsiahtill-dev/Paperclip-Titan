@@ -234,3 +234,17 @@ it("pins the exact namespace object until the host durably records its drain", a
   expect(result.exitCode).toBe(0);
   expect(await fs.readlink(`/proc/self/fd/${pinned}`).catch(() => null)).not.toBe(f.drains[0]!.namespace);
 });
+
+it("waits for actual kernel exit instead of treating the first live observation as a failed drain", async () => {
+  const f = await fixture(); let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
+  const pending = processUtils.withWorkspaceProcessGuard(f.guard, () => processUtils.runChildProcess("kernel-exit", "/bin/sh", ["-c", "printf ready; sleep 10"], {
+    cwd: f.root, env: {}, timeoutSec: 3, graceSec: 1, onLog: async (_stream, text) => { if (text.includes("ready")) ready(); },
+  }));
+  await started;
+  const proof = await import("./workspace-process-guard.js");
+  const wait = (proof as any).waitForWorkspaceNamespaceDrain ?? proof.workspaceNamespaceDrained;
+  const stopping = wait(f.launches[0]!, 500);
+  setTimeout(() => f.controller.abort(), 30);
+  try { expect(await stopping).toBe(true); } finally { f.controller.abort(); await pending; }
+  expect(f.drains).toHaveLength(1);
+});

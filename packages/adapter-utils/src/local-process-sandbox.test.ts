@@ -31,6 +31,17 @@ afterEach(async () => {
 });
 
 describe("local process sandbox", () => {
+  it.runIf(process.platform === "linux")("runs distro alternative executables while preserving read-only source mounts", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-alternatives-")); cleanup.push(workspace);
+    await fs.writeFile(path.join(workspace, "source.txt"), "original");
+    const result = await runChildProcess("alternatives", "/bin/sh", ["-c", "printf 'artifact bytes\\n' | /usr/bin/awk '{print $1}'; test -f /etc/alternatives/awk; if printf changed > source.txt; then exit 42; fi"], {
+      cwd: workspace, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+      localProcessSandbox: { workspaceDir: workspace, filesystemScope: "workspace", workspaceAccess: "ro", command: "/usr/bin/bwrap" },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("artifact\n");
+    expect(await fs.readFile(path.join(workspace, "source.txt"), "utf8")).toBe("original");
+  });
   it.runIf(process.platform === "linux")("rejects writable mounts overlapping a read-only source root", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-readonly-overlap-")); cleanup.push(workspace);
     await expect(buildLocalProcessSandboxSpawnTarget({ executable: "/bin/sh", args: [], cwd: workspace, options: { workspaceDir: workspace, workspaceAccess: "ro", filesystemScope: "workspace", managedPaths: [{ path: workspace, access: "rw" }] } })).rejects.toThrow("read-only workspace");

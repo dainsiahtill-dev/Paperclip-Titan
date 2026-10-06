@@ -58,6 +58,8 @@ const SYSTEM_READ_PATHS = [
   "/lib",
   "/lib64",
   "/etc/ca-certificates",
+  // Distro tool aliases (e.g. /usr/bin/awk) resolve through this RO directory.
+  "/etc/alternatives",
   "/etc/ssl",
   "/etc/resolv.conf",
   "/etc/hosts",

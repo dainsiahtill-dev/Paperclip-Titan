@@ -68,6 +68,17 @@ export async function workspaceNamespaceDrained(identity: WorkspaceLaunchIdentit
   return true;
 }
 
+/** SIGKILL and wrapper close do not synchronously finish kernel namespace
+ * teardown. Retry the SAME strict proof briefly; timeout never becomes proof. */
+export async function waitForWorkspaceNamespaceDrain(identity: WorkspaceLaunchIdentity, maxWaitMs = 1000): Promise<boolean> {
+  const deadline = performance.now() + Math.min(1000, Math.max(0, Number.isFinite(maxWaitMs) ? maxWaitMs : 0));
+  for (;;) {
+    if (await workspaceNamespaceDrained(identity)) return true;
+    if (performance.now() >= deadline) return false;
+    await new Promise(resolve => setTimeout(resolve, Math.min(10, Math.max(0, deadline - performance.now()))));
+  }
+}
+
 export async function runGuardedWorkspaceProcess(
   guard: WorkspaceProcessGuard, runId: string, command: string, args: string[], opts: Parameters<typeof runChildProcess>[3],
 ): Promise<RunProcessResult> {
@@ -344,7 +355,7 @@ export async function runGuardedWorkspaceProcess(
     await logChain;
     if (launchError && !(signal?.aborted && launchError === signal.reason && identity && processBound)) throw launchError;
     if (!identity) throw new Error(`Protected process did not establish a namespace identity: ${stderr}`);
-    if (!await workspaceNamespaceDrained(identity)) throw new Error("Protected process namespace drain unverified");
+    if (!await waitForWorkspaceNamespaceDrain(identity)) throw new Error("Protected process namespace drain unverified");
     await guard.recordDrain(identity, stopObservation);
     return { exitCode: result.code, signal: result.signal, timedOut, stdout, stderr, pid: child.pid ?? null, startedAt,
       ...(terminalCleanup ? { terminalResultCleanup: { kind: "terminal_result_cleanup" as const, stopped: true as const,

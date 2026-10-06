@@ -1,24 +1,28 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const help = `Usage: tsx scripts/workspace-legacy-closure.ts inspect|prepare|close
+const help = `Usage: tsx scripts/workspace-legacy-closure.ts inspect|prepare|close|namespace-inspect|namespace-close
   --config <existing local instance config.json> --company-id <uuid> --cwd <original directory>
   prepare: --expected-digest <inspection sha256>
   close: --hold-id <uuid> --generation <uuid>
+  namespace-inspect: --owner-id <uuid> --generation <uuid> --launch-id <uuid>
+  namespace-close: same selectors plus --expected-digest <inspection sha256>
 
 inspect is read-only. prepare creates an audited maintenance hold.
 close requires an actual changed host kernel epoch and unchanged precise identities.
 No command restarts WSL, signals processes, changes run states, deletes records, or wakes tasks.
 Boot/namespace proof cannot be supplied as command-line arguments.
+namespace-close verifies an exact unknown guarded namespace, appends a real drain
+receipt and formally releases it. Old failed runs and their ledgers remain unchanged.
 `;
 
 class ArgumentError extends Error {}
 function argumentsFor(argv: string[]) {
   if (argv.length === 1 && ["--help", "-h"].includes(argv[0]!)) return null;
   const action = argv[0];
-  if (!["inspect", "prepare", "close"].includes(action ?? "")) throw new ArgumentError("Expected inspect|prepare|close");
+  if (!["inspect", "prepare", "close", "namespace-inspect", "namespace-close"].includes(action ?? "")) throw new ArgumentError("Expected inspect|prepare|close|namespace-inspect|namespace-close");
   const values: Record<string, string> = {};
-  const allowed = ["--config", "--company-id", "--cwd", ...(action === "prepare" ? ["--expected-digest"] : []), ...(action === "close" ? ["--hold-id", "--generation"] : [])];
+  const allowed = ["--config", "--company-id", "--cwd", ...(action === "prepare" || action === "namespace-close" ? ["--expected-digest"] : []), ...(action === "close" ? ["--hold-id", "--generation"] : []), ...(action?.startsWith("namespace-") ? ["--owner-id", "--generation", "--launch-id"] : [])];
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i]!;
     if (!allowed.includes(key)) throw new ArgumentError(`Unknown option: ${key}`);
@@ -50,11 +54,16 @@ async function main() {
   const directory = await fs.realpath(database.embeddedPostgresDataDir);
   const { createDb } = await import("../packages/db/src/index.js");
   const { legacyWorkspaceClosureService } = await import("../server/src/services/legacy-workspace-closure.js");
+  const { workspaceNamespaceClosureService } = await import("../server/src/services/workspace-namespace-closure.js");
   const db = createDb(`postgres://paperclip:paperclip@127.0.0.1:${database.embeddedPostgresPort}/paperclip`);
   try {
     const service = legacyWorkspaceClosureService(db, { databaseDirectory: directory });
     const request = { companyId: parsed.values["--company-id"]!, cwd: path.resolve(parsed.values["--cwd"]!) };
-    const result = parsed.action === "inspect" ? await service.inspect(request)
+    const namespace = workspaceNamespaceClosureService(db, { databaseDirectory: directory });
+    const namespaceRequest = { ...request, ownerId: parsed.values["--owner-id"]!, generation: parsed.values["--generation"]!, launchId: parsed.values["--launch-id"]! };
+    const result = parsed.action === "namespace-inspect" ? await namespace.inspect(namespaceRequest)
+      : parsed.action === "namespace-close" ? await namespace.close({ ...namespaceRequest, expectedDigest: parsed.values["--expected-digest"]! })
+      : parsed.action === "inspect" ? await service.inspect(request)
       : parsed.action === "prepare" ? await service.prepare({ ...request, expectedDigest: parsed.values["--expected-digest"]! })
         : await service.close({ ...request, holdId: parsed.values["--hold-id"]!, generation: parsed.values["--generation"]! });
     console.log(JSON.stringify({ action: parsed.action, result }, null, 2));

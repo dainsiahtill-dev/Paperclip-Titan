@@ -1,0 +1,45 @@
+{
+  "typecheck": {
+    "command": "pnpm -r typecheck",
+    "exitCode": 0
+  },
+  "build": {
+    "command": "pnpm build",
+    "exitCode": 0
+  },
+  "diffCheck": {
+    "command": "git diff --check",
+    "exitCode": 0
+  },
+  "targetedTests": {
+    "initial": {
+      "passed": 170,
+      "failed": 1,
+      "skipped": 6,
+      "limitation": "New annotation fixture omitted mandatory agent ID; corrected."
+    },
+    "replacements": {
+      "namespace-closure-final.json": {
+        "numPassedTests": 11,
+        "numFailedTests": 0,
+        "numPendingTests": 0,
+        "success": true
+      },
+      "cli-sandbox-final.json": {
+        "numPassedTests": 14,
+        "numFailedTests": 0,
+        "numPendingTests": 6,
+        "success": true
+      },
+      "bwrap-sandbox-final.json": {
+        "numPassedTests": 16,
+        "numFailedTests": 0,
+        "numPendingTests": 2,
+        "success": true
+      }
+    }
+  },
+  "tokenGates": {
+    "exitCode": 0
+  }
+}

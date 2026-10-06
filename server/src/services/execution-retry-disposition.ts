@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { activityLog, agents, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import type { ExecutionRetryDisposition, RetrySupersessionRequest } from "@paperclipai/shared";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -11,6 +11,27 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { readContinuationMaterials } from "./continuation-materials.js";
 import { readIssueResourcePolicies } from "./issue-resource-limits.js";
+import { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
+
+/** Missing process metadata is not exit proof. A host-owned, released source
+ * reservation with no launch attempt is separate positive pre-launch evidence. */
+async function verifiedNeverLaunchedSource(db: Db, source: typeof heartbeatRuns.$inferSelect, issueId: string) {
+  if (source.runtimeMode !== "legacy" || source.processPid || source.processGroupId || source.processStartedAt) return false;
+  const cwd = source.contextSnapshot?.paperclipWorkspace && object(source.contextSnapshot.paperclipWorkspace).cwd;
+  if (typeof cwd !== "string") return false;
+  const identity = await physicalWorkspaceIdentity(cwd).catch(() => null);
+  if (!identity) return false;
+  const owners = await db.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.companyId, source.companyId), eq(workspaceWriteOwners.runId, source.id))).for("share");
+  if (owners.length !== 1) return false;
+  const owner = owners[0]!;
+  if (owner.issueId !== issueId || owner.state !== "released" || !owner.releasedAt || owner.launchId !== null || owner.launchIdentity !== null || owner.stopReceipt !== null ||
+    owner.canonicalRoot !== identity.root || owner.resourceKey !== identity.resourceKey || owner.realm !== identity.realm || owner.device !== identity.device || owner.inode !== identity.inode ||
+    owner.history[0]?.event !== "claimed" || owner.history.some(event => !["claimed", "private_roots_reserved", "released"].includes(String(event.event))) ||
+    !owner.history.some(event => event.event === "released" && event.generation === owner.generation && event.launchId === null)) return false;
+  const dispatched = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, source.companyId),
+    eq(heartbeatRunEvents.runId, source.id), inArray(heartbeatRunEvents.eventType, ["adapter.invoke", "legacy.process_identity_recorded"]))).limit(1);
+  return dispatched.length === 0;
+}
 
 const dispositionSchema = z.object({
   version: z.literal(1), state: z.enum(["blocked", "resumed", "superseded"]),
@@ -210,8 +231,8 @@ export async function validateSuppressedRetryResume(db: Db, input: {
   if (adapterExecutionControls.has(source.id) || await getConversationOwnershipBlocker(db, input.companyId, input.issueId))
     throw conflict("The previous physical execution has not stopped.", { code: "retry_resume_owner_active" });
   const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, source.id)));
-  if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed") ||
-    (source.startedAt && !source.processPid && !source.processGroupId && disposition.code !== "execution_profile_changed"))
+  if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed" || lease.cleanupStatus === "pending") ||
+    (source.startedAt && !source.processPid && !source.processGroupId && disposition.code !== "execution_profile_changed" && !await verifiedNeverLaunchedSource(db, source, input.issueId)))
     throw conflict("The previous execution requires verified stop and cleanup evidence.", { code: "retry_resume_stop_unverified" });
   const activeAction = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId), inArray(issueRecoveryActions.status, ["active", "escalated"]))).for("update");
