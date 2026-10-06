@@ -60,3 +60,36 @@ The MCP JSON-RPC route also preserves upstream semantic `isError` after a real f
 Run `161b94e3` executed the original-workspace A/B/C validation after the restored-owner classification repair `fd35ea339`. Two governed CodeGraph calls and actual public normalize/coverage/Plan/materialization-probe calls completed. Root inspected retained returns and the evidence limits: mixed default/named rewrite and comment-only export selection are reproduced; string-only and complete comment-probe data are unverified after output truncation. Ten remaining malformed/canonical path cases kept inputs/source unchanged. Drive and terminal-parent paths reject at the public effect contract; no outside effect or stale raw owner revival is demonstrated. All 156 source/report hashes, HEAD/status/diff and accepted diagnostic fix remain preserved.
 
 Exact namespace, owner and environment lease release passed. Root formally resolved the resulting stranded disposition to `in_review`, preserving the original employee and open product corrections. POL-6 is not done; precise proposal/path-contract repair, POL-2 review and POL-7/8 investigation remain. The Paperclip preparation/reconciliation/hand-back faults have deployed fixes and actual execution proof. Automatic wakes remain disabled. Final maintainership evidence stays in this repository as requested.
+
+## POL-6 implementation and final review frontier
+
+Three bounded employee implementation/review iterations kept the original source
+directory and modified only `typescript_syntax/imports_exports.py`,
+`typescript_syntax/common/import_text_ops.py` and the new
+`test_unique_export_binding_frontier.py`. The accepted dirty diagnostic/provenance
+fix and existing tests/reports remain unchanged. Actual TDD, public returns and
+independent checks progressed through 169, 177 and 183 related passing cases.
+Root personally reran the final six suites: 183 passed, source hashes unchanged.
+Scoped actual-import mypy and new-test checks pass; source Ruff retains 148 known
+diagnostics, and source-format/broader product qualification is not blanket green.
+
+Independent review closed missing default bindings, comment/string export text,
+regex/nested-template cases and trailing `Foo` versus `Foo$` matching. Candidates
+now require every retained binding and conservatively refuse all backtick
+templates or unmasked slash forms (including some valid division/JSX). This is a
+documented coverage limitation.
+
+One confirmed unsafe proposal still prevents acceptance: valid JavaScript
+`let $export\nconst Foo = 1;` has no export, yet raw/typed public Plan/probe match
+the keyword inside `$export`. Node syntax validation confirmed the fixture.
+After three failed review iterations, further individual patches are stopped for
+a unified lexical strategy review per systematic-debugging. The concrete proposal
+is in [bounded repair plan](../plans/2026-10-06-pol6-export-routing-residual-repair.md).
+
+Last run `afc326fc` retains `resource_run_deadline`; its full checkpoint/report and
+183 passing tests are preserved. Actual namespace emptiness, stop receipt and
+owner release passed; the environment lease expired/released at the deadline.
+POL-6 is `in_review` with human Board ownership and disabled wakes. No code or
+historical run was forced to success. Polaris changes remain uncommitted pending
+acceptance. The overall goal is incomplete; POL-2/7/8, malformed-path contracts,
+TS5110/B1/B6 and real effects/fresh Bench remain explicit.

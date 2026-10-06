@@ -1,0 +1,50 @@
+{
+  "checkedAt": "2026-10-06T11:32:10.980804+00:00",
+  "implementationRuns": [
+    "6e2ee0d0-be98-44ca-b0bc-ecbadb33211c",
+    "5d0323f3-eaae-4a66-a297-ba3476e6bb2a",
+    "afc326fc-333b-4021-816d-3dae8e487c8c"
+  ],
+  "originalSourceRoot": "/home/dains/Documents/polaris",
+  "sourceFilesModified": [
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/imports_exports.py",
+    "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/common/import_text_ops.py"
+  ],
+  "newTest": "src/backend/polaris/cells/director/runtime/tests/test_unique_export_binding_frontier.py",
+  "independentQA": {
+    "passed": 183,
+    "failed": 0,
+    "exitCode": 0,
+    "sourceHashesUnchanged": true,
+    "hashes": {
+      "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/imports_exports.py": "822f9f5ca8fda6fa62faf07b1434924b9ccf3a2d878c0a1ee0be5135007117ac",
+      "src/backend/polaris/cells/director/runtime/internal/repair_kernel/typescript_syntax/common/import_text_ops.py": "4ff477b71832060edc5791c74ee014a45353ea912ba5b6f01e36fd2acd7630aa",
+      "src/backend/polaris/cells/director/runtime/tests/test_unique_export_binding_frontier.py": "a4db3f168ab2a24d76907278131d5848af3fc742c395136ce873234d1c719f5d",
+      "src/backend/polaris/cells/director/runtime/internal/repair_kernel/diagnostics.py": "a5e2c2fc9576231c4ed9eb9c28c7c6c26375ebc59d38282456d112305880a520",
+      "src/backend/polaris/cells/director/runtime/tests/test_verifier_command_provenance.py": "1f4fe0bc1772be82f69b56e3e648cfa0d4397fcb1632960f625970024d4152c2"
+    }
+  },
+  "reviewStatus": "changes_required; unified lexical strategy review before fourth source attempt",
+  "remainingPublicFailure": {
+    "candidate": "let $export\nconst Foo = 1;\n",
+    "nodeSyntaxValid": true,
+    "rawPlanIncorrectlyPlanned": true,
+    "typedPlanIncorrectlyPlanned": true,
+    "effectExecuted": false
+  },
+  "limitations": [
+    "all backtick templates conservatively refused",
+    "unmasked slash including valid division/someJSX conservatively refused",
+    "source Ruff148 baseline remains",
+    "Polaris code uncommitted",
+    "effects/settlement/TS5110/freshBench unqualified"
+  ],
+  "lastRunStatus": "cancelled resource_run_deadline; checkpoint preserved",
+  "namespaceDrained": true,
+  "ownerReleased": true,
+  "environmentLease": "expired with released_at",
+  "taskStatus": "in_review",
+  "humanOwner": "local-board",
+  "automaticWakes": false,
+  "goalComplete": false
+}

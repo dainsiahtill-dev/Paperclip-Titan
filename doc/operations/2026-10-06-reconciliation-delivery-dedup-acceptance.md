@@ -136,3 +136,20 @@ The scanner now skips only root `.claude/worktrees/` and `.worktrees/`. Main
 `.claude/commands`, normal documentation and nested source guidance remain scanned;
 unsafe command forms are still rejected. No allowlist, command parsing, source
 assertion or security rule was relaxed. The complete CLI suite passed 40 tests.
+
+## Subsequent product correction remains under review
+
+Actual normal-owner/restored-owner source runs implemented and tested the bounded
+POL-6 export-routing delta in the original Polaris directory. Root independently
+reran six final suites: 183 passed with source hashes unchanged. All last-run
+namespace/owner exit receipts were verified; resource-deadline cancellation and
+all spent usage remain. This further demonstrates platform execution and progress
+preservation, not final product acceptance.
+
+Three reviews still exposed a common lexical-authority weakness. The current
+confirmed residual is a false export keyword inside valid `$export` syntax.
+POL-6 now has a human Board review path; further isolated patches await review of
+the [unified lexical strategy](../plans/2026-10-06-pol6-export-routing-residual-repair.md).
+No done/complete claim is made. Conservative template/slash refusal, source lint
+baseline, uncommitted Polaris changes and remaining product frontiers are recorded
+in the [task frontier](2026-10-06-pol-task-frontier-audit.md).
