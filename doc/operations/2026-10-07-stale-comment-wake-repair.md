@@ -80,3 +80,43 @@ fixtures also emit duplicate event-sequence warnings; no assertion is weakened.
 This is bounded server verification. The entire monorepo typecheck/test/build
 and a fresh paid provider/Polaris Bench run were not repeated for this repair.
 Production deployment acceptance is a separate record.
+
+## Production deployment acceptance
+
+Implementation commit `1a5c53eca9832c3709fc01c1ef404c0fe9a65ef9` was merged
+and pushed to main after fetching origin. No remote changes required conflict
+resolution. The main checkout's server build also exited 0.
+
+The exact default3100 service had no active/pending work before maintenance.
+Formal hot-restart intent was recorded, the existing supervisor stopped, and
+the verified default54329 PostgreSQL process stopped cleanly. The cold instance
+copy had 22,945 regular files with no missing/size-mismatched files; config,
+environment and database control hashes matched before restart. Full backup
+hashing finished against the immutable copy after restart: 22,947 files,
+26,418,600,658 bytes, manifest SHA-256
+`53b00d3ef031112147e7688821cc4bb941deed9325e84662561e1e2c2e6768b0`.
+Backup original: `/home/dains/.paperclip/backups/stale-wake-20261006T172910Z`.
+Polaris source/workspaces were excluded from the backup.
+
+The same supervisor, default instance, config and static UI restarted with
+`--no-repair`. Health reports `2026.916.1+175.git.1a5c53eca`, startup recovery
+ready; hot-restart report has no lost/adopted/finalized/skipped runs. A database
+idle check issued during startup initially returned connection refused; after
+ready, the same check confirmed no active/pending runs or wakes. It did not
+trigger a duplicate service launch.
+
+The exact employee's latest failure was still the incident run. The official
+board `clear-error` API restored its status from error to idle, recorded normal
+activity and started no provider. The historical failed run remains unchanged.
+Post-deployment comparison confirms all 26 Polaris employee configurations,
+all 21 tasks and the instance config hash are preserved; no live run exists.
+
+An owned Edge 154 browser opened both POL-16 and POL-21 successfully with no
+page errors. Its read-only guard blocked two POST read-marker requests; it sent
+no task/employee mutations. Browser teardown confirmed no remaining owned
+processes. Original private logs, screenshots, before/after state and backup
+proofs are registered at
+`/home/dains/.paperclip/diagnostics/stale-comment-wake-20261007/`.
+
+This closes the obsolete-comment dispatch incident. It does not close POL-21's
+reported source defects, its resource-policy block, or other project work.
