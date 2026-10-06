@@ -44,3 +44,9 @@ POL-11 and POL-9 final reports were independently accepted after exact namespace
 - Finish browser/task lifecycle verification and deliver updated repository evidence on main. Do not claim full Polaris delivery, effects/settlement or fresh isolated Bench.
 
 Private original evidence: `/home/dains/.paperclip/diagnostics/postboot-execution-20261006/goal-continuation`. Public sanitized proofs: `doc/operations/evidence/2026-10-06-postboot-execution-repair/actual-qualification/`. User requested final delivery in the repository.
+
+## Newly exposed legacy delivery frontier
+
+POL-6's ordinary residual validation was suppressed by a historical execution-reconciliation hold. Exact source791d9437 is a cancelled scheduled retry that never started: no startedAt/PID/PGID/logRef, no adapter invocation, tool invocation, owner or lease. Five historical no-replay recovery records referred to that same source. Each was formally reconciled through the public evidence route as not_performed, preserving the source and all history; the execution blocker is now clear.
+
+Each record still has its own pending reconciliation delivery. Admission is idempotent per recovery action, while source-level deduplication across those historical records is unverified. Employee wakes stay disabled; do not start ordinary work or enable their automatic delivery until that duplication risk is fixed and tested. No product probe or code replay was started. This is a newly exposed Paperclip compatibility frontier, so the overall goal remains active.

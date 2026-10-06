@@ -1,0 +1,24 @@
+{
+  "sourceRunId": "791d9437-74df-4abf-ba07-b854cee7e51a",
+  "historicalSourcePreserved": true,
+  "neverLaunchedEvidence": {
+    "startedAt": null,
+    "processPid": null,
+    "processGroupId": null,
+    "logRef": null,
+    "adapterInvocations": 0,
+    "toolInvocations": 0,
+    "owners": 0,
+    "leases": 0
+  },
+  "reconciledActionIds": [
+    "6e867d9d-5e05-4fbf-a63c-db1f991bdd62",
+    "13e013ef-6b7e-4412-8648-2e6d3d4f7625",
+    "c87bb85e-fcd3-43f2-884d-3f17c0890f13",
+    "fa7e5caa-1f87-47de-8976-b785e97b2c60",
+    "c925c4a0-7646-4f7a-852b-2a7da33e90a7"
+  ],
+  "sourceLevelDeliveryDeduplicationUnverified": true,
+  "wakeOnDemand": false,
+  "goalComplete": false
+}
