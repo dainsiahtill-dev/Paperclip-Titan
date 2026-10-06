@@ -40,7 +40,7 @@ POL-11 and POL-9 final reports were independently accepted after exact namespace
 
 - POL-6 retains the owned product frontier: dynamically validate static binding/export/path findings, with completed typed/raw routing preserved. POL-2 review and POL-7/8 product investigations remain outside the completed qualification/report scope.
 - Keep B1/B6 absent-plan contract failures, TS5110 unsupported planning and static routing risks explicit. These are Polaris product residuals, not platform execution faults.
-- Resolve the newly observed intermittent CodeGraph tool deadline cause: one broad query hit stdio_timeout at10.183seconds; exact confined controls succeeded~8seconds, initialized243ms/requestcomplete7725ms. No deadline/security change was made. Root cause remains unconfirmed.
+- Resolve the CodeGraph query deadline cause: the historical broad request now reproduces through the public Test API at10.350seconds. A same-budget confined control initializes248ms then expires in the query; a distinct exact-symbol public control succeeds1.938seconds. No deadline/security change was made. The dependency performance cause remains unconfirmed; [current boundary evidence](2026-10-06-mcp-query-deadline-boundary.md) does not treat smaller-query success as broad acceptance.
 - Finish browser/task lifecycle verification and deliver updated repository evidence on main. Do not claim full Polaris delivery, effects/settlement or fresh isolated Bench.
 
 Private original evidence: `/home/dains/.paperclip/diagnostics/postboot-execution-20261006/goal-continuation`. Public sanitized proofs: `doc/operations/evidence/2026-10-06-postboot-execution-repair/actual-qualification/`. User requested final delivery in the repository.

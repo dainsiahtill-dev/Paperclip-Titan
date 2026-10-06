@@ -1,0 +1,52 @@
+{
+  "observedAt": "2026-10-06T11:44:28.302835+00:00",
+  "defaultGatewayBudgetMs": 10000,
+  "broadPublicCall": {
+    "elapsedMs": 10350,
+    "httpStatus": 200,
+    "invocationId": "c4f02baf-3ec4-4537-aa1e-4b3c4a365096",
+    "decision": "allowed",
+    "error": {
+      "message": "MCP handshake/request timed out.",
+      "reasonCode": "stdio_timeout"
+    },
+    "query": "director.runtime cell.yaml README.agent.md public contracts repair kernel report scope",
+    "maxFiles": 1
+  },
+  "confinedStageControl": {
+    "initializeMs": 248,
+    "elapsedMs": 10095,
+    "errorCode": "stdio_timeout",
+    "namespacePid": 70888,
+    "processLiveNow": false
+  },
+  "exactPublicCall": {
+    "elapsedMs": 1938,
+    "invocationId": "06438d6d-8597-4bd9-938c-ad90ecb45ca1",
+    "query": "PlanDirectorRepairCommandV1",
+    "isError": false,
+    "contentChars": 9148
+  },
+  "confirmedBoundary": "initialize completes; broad request exceeds total10sec budget",
+  "sourceObservation": {
+    "CodeGraphVersion": "1.5.0",
+    "maxFilesBounds": "output file ranking, after findRelevantContext",
+    "graphSearchParameters": {
+      "searchLimit": 8,
+      "traversalDepth": 3,
+      "maxNodes": 200,
+      "minScore": 0.2
+    },
+    "source": "/home/dains/.codegraph/versions/v1.5.0/lib/dist/mcp/tools.js handleExplore"
+  },
+  "notProven": [
+    "exact slow algorithm or contention cause",
+    "earlier daemon database lock logs are not correlated to this call"
+  ],
+  "remaining": "instrument dependency query phases without touching Polaris source or raising budget",
+  "providerCalls": 0,
+  "productionEdits": false,
+  "deadlineChanges": false,
+  "sandboxChanges": false,
+  "toolUpgrade": false
+}
