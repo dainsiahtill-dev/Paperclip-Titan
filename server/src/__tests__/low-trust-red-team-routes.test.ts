@@ -1057,6 +1057,8 @@ describeEmbeddedPostgres(
 
     it("relays blocked and cancelled stops once without laundering child prose", async () => {
       const fixture = await seedLowTrustFixture(db, { pausedParentReceiver: true });
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
+        principalId: "board-user", status: "active", membershipRole: "operator" });
       const app = createApp(db, boardActor(fixture));
       const unblockDescriptor = {
         owner: "board",
@@ -1118,10 +1120,11 @@ describeEmbeddedPostgres(
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
         .send({ status: "todo" })
         .expect(200);
-      await request(app)
+      const review = await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
         .send({ status: "in_review" })
         .expect(200);
+      expect(review.body).toMatchObject({ assigneeAgentId: null, assigneeUserId: "board-user" });
       await request(app)
         .patch(`/api/issues/${fixture.issues.standardChild.id}`)
         .send({ status: "done" })
