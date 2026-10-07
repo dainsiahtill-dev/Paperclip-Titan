@@ -28,7 +28,8 @@ export async function sealReportDeliveryOutputs(db: Db, input: Input) {
   if (outputs.some((file, i) => file.state !== "present" || !file.nonEmpty || file.sha256 === baseline.outputs[i]?.sha256)) return false;
   await logActivity(db, { companyId: input.companyId, actorType: "system", actorId: "report-delivery-observer", runId: input.runId,
     action: "issue.report_delivery_outputs_sealed", entityType: "issue", entityId: input.issueId,
-    details: { version: 1, contractHash: baseline.contractHash, workspaceId: baseline.workspaceId, outputs } });
+    details: { version: 2, contractHash: baseline.contractHash, workspaceId: baseline.workspaceId,
+      outputsDigest: outputsDigest(outputs), outputs } });
   return true;
 }
 
@@ -66,6 +67,11 @@ type Submission = { state: "submitted" | "not_ready" | "stale" | "not_configured
 const object = (v: unknown): Record<string, any> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, any> : {};
 const sha = (v: string | Buffer) => createHash("sha256").update(v).digest("hex");
 const contractHash = (policy: any) => sha(JSON.stringify({ reportDelivery: policy.reportDelivery, stages: policy.stages }));
+// The canonical verification digest uses original output values before logging.
+// Display fields remain redacted; they are not authority for a version 2 seal.
+const outputsDigest = (outputs: Output[]) => sha(JSON.stringify(outputs.map(output => [
+  output.path, output.state, output.sha256 ?? null, output.byteSize ?? null, output.nonEmpty ?? null,
+])));
 
 async function current(db: Db, input: Input) {
   const [issue] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
@@ -198,8 +204,13 @@ export async function submitReportDelivery(db: Db, input: Input): Promise<Submis
       eq(activityLog.actorType, "system"), eq(activityLog.actorId, "report-delivery-observer"), eq(activityLog.action, "issue.report_delivery_outputs_sealed")))
       .orderBy(desc(activityLog.createdAt)).limit(1);
     const sealed = object(seal?.details);
-    if (sealed.contractHash !== baseline.contractHash || sealed.workspaceId !== workspace.id || !Array.isArray(sealed.outputs) ||
-        JSON.stringify(sealed.outputs) !== JSON.stringify(outputs)) return { state: "not_ready", code: "report_settled_outputs_not_verified" };
+    const outputsVerified = sealed.version === 2
+      ? sealed.outputsDigest === outputsDigest(outputs)
+      // Preserve only exact, undamaged historical seals. A damaged display log
+      // is not permission to invent past verification or bypass a new digest.
+      : sealed.version === 1 && Array.isArray(sealed.outputs) && JSON.stringify(sealed.outputs) === JSON.stringify(outputs);
+    if (sealed.contractHash !== baseline.contractHash || sealed.workspaceId !== workspace.id || !outputsVerified)
+      return { state: "not_ready", code: "report_settled_outputs_not_verified" };
     const workProductIds: string[] = [];
     for (const output of outputs) {
       const product = await workProductService(tx as unknown as Db).createForIssue(issue.id, issue.companyId, {

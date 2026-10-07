@@ -7070,7 +7070,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("hands a report-only successful run to its configured human reviewer without recovery or another model run", async () => {
     const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-report-"));
-    execFileSync("rtk", ["proxy", "git", "init", root], { stdio: "ignore" });
+    execFileSync("git", ["init", root], { stdio: "ignore" });
     const projectId = randomUUID(), projectWorkspaceId = randomUUID();
     try {
       await db.insert(projects).values({ id: projectId, companyId, name: "Report contract" });
@@ -7100,7 +7100,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("lets the active agent reviewer consume reports without creating a production baseline", async () => {
     const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-report-review-"));
-    execFileSync("rtk", ["proxy", "git", "init", root], { stdio: "ignore" });
+    execFileSync("git", ["init", root], { stdio: "ignore" });
     const projectId = randomUUID(), projectWorkspaceId = randomUUID(), stageId = randomUUID(), originalOwnerId = randomUUID();
     try {
       await db.insert(projects).values({ id: projectId, companyId, name: "Existing report review" });

@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaces, heartbeatRuns, issueWorkProducts, issues, nativeRunFinalizations, nativeRunResults, projects, projectWorkspaces, statusDecisions, workAssessments, workspaceOperations, workspaceWriteOwners } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaces, heartbeatRuns, issueWorkProducts, issues, nativeRunFinalizations, nativeRunResults, projects, projectWorkspaces, statusDecisions, workAssessments, workspaceOperations, workspaceWriteOwners } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { captureReportDeliveryBaseline, prepareNativeReportReview, sealReportDeliveryOutputs, submitReportDelivery } from "./report-delivery.js";
 import { issueService } from "./issues.js";
@@ -80,6 +80,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, s.companyId)))).toHaveLength(1);
     expect(await submitReportDelivery(db, s)).toMatchObject({ state: "submitted" });
     expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId))).toHaveLength(2);
+  });
+  it("submits a versioned report filename even when its display log path is redacted", async () => {
+    const s = await seed();
+    const reportPath = "REPORT.v1.md";
+    const issue = (await db.select().from(issues).where(eq(issues.id, s.issueId)))[0];
+    await db.update(issues).set({ executionPolicy: { ...issue.executionPolicy!, reportDelivery: { version: 1, files: [reportPath] } } }).where(eq(issues.id, s.issueId));
+    await prepare(s);
+    await fs.writeFile(path.join(s.root, reportPath), "# Scoped audit\nSource acceptance remains pending.\n");
+    await finish(s);
+    const [seal] = await db.select().from(activityLog).where(and(eq(activityLog.runId, s.runId), eq(activityLog.action, "issue.report_delivery_outputs_sealed")));
+    expect((seal.details?.outputs as Array<{ path: string }>)[0].path).toBe("***REDACTED***");
+    expect(await submitReportDelivery(db, s)).toMatchObject({ state: "submitted" });
+    const products = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId));
+    expect(products).toHaveLength(1);
+    expect(products[0]).toMatchObject({ createdByRunId: s.runId, reviewState: "needs_board_review",
+      metadata: { resourceRef: { relativePath: reportPath } } });
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]).toMatchObject({ status: "in_review", assigneeUserId: "report-board" });
   });
   it("creates a Board review with a real human owner when no reviewer stage was declared", async () => {
     const s = await seed();
@@ -179,6 +196,30 @@ const support = await getEmbeddedPostgresTestSupport();
   it("rejects files changed after the host sealed the source output", async () => {
     const s = await seed(); await prepare(s); await write(s); await finish(s);
     await fs.writeFile(path.join(s.root, "reports/REPORT.md"), "Another writer's later report\n");
+    expect(await submitReportDelivery(db, s)).toMatchObject({ state: "not_ready", code: "report_settled_outputs_not_verified" });
+    expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId))).toHaveLength(0);
+  });
+  it("does not fall back to display outputs when a current seal digest is invalid", async () => {
+    const s = await seed(); await prepare(s); await write(s); await finish(s);
+    const [seal] = await db.select().from(activityLog).where(and(eq(activityLog.runId, s.runId), eq(activityLog.action, "issue.report_delivery_outputs_sealed")));
+    await db.update(activityLog).set({ details: { ...seal.details, version: 2, outputsDigest: "0".repeat(64) } }).where(eq(activityLog.id, seal.id));
+    expect(await submitReportDelivery(db, s)).toMatchObject({ state: "not_ready", code: "report_settled_outputs_not_verified" });
+    expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId))).toHaveLength(0);
+  });
+  it("accepts an exact historical seal without creating another seal or provider run", async () => {
+    const s = await seed(); await prepare(s); await write(s); await finish(s);
+    const [seal] = await db.select().from(activityLog).where(and(eq(activityLog.runId, s.runId), eq(activityLog.action, "issue.report_delivery_outputs_sealed")));
+    await db.update(activityLog).set({ details: { version: 1, contractHash: seal.details!.contractHash,
+      workspaceId: seal.details!.workspaceId, outputs: seal.details!.outputs } }).where(eq(activityLog.id, seal.id));
+    expect(await submitReportDelivery(db, s)).toMatchObject({ state: "submitted" });
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.runId, s.runId), eq(activityLog.action, "issue.report_delivery_outputs_sealed")))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, s.companyId))).toHaveLength(1);
+  });
+  it("does not reconstruct a damaged historical seal from current report files", async () => {
+    const s = await seed(); await prepare(s); await write(s); await finish(s);
+    const [seal] = await db.select().from(activityLog).where(and(eq(activityLog.runId, s.runId), eq(activityLog.action, "issue.report_delivery_outputs_sealed")));
+    await db.update(activityLog).set({ details: { version: 1, contractHash: seal.details!.contractHash, workspaceId: seal.details!.workspaceId,
+      outputs: (seal.details!.outputs as Array<Record<string, unknown>>).map(output => ({ ...output, path: "***REDACTED***" })) } }).where(eq(activityLog.id, seal.id));
     expect(await submitReportDelivery(db, s)).toMatchObject({ state: "not_ready", code: "report_settled_outputs_not_verified" });
     expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId))).toHaveLength(0);
   });
