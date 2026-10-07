@@ -216,9 +216,12 @@ const support = await getEmbeddedPostgresTestSupport();
         request(app).post(path).send({ conversationUserId: "spoof" }),
         request(app).post(path),
       ]);
-      expect(resolved.every((response) => response.status === 200)).toBe(true);
+      expect(resolved.every((response) => response.status === 200),
+        JSON.stringify(resolved.map(response => ({ status: response.status, body: response.body })))).toBe(true);
       expect(resolved[0].body.id).toBe(resolved[1].body.id);
       expect(resolved[0].body.conversationUserId).toBe(owner);
+      expect(resolved[0].body.assigneeAgentId).toBe(agentId);
+      expect(resolved[0].body.assigneeUserId).toBeNull();
       expect(
         (
           await request(appFor(colleague)).get(

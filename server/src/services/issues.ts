@@ -9800,7 +9800,7 @@ export function issueService(db: Db) {
       if (initialReviewPolicy?.reportDelivery && !["backlog", "todo", "in_progress"].includes(issueData.status ?? "backlog")) {
         throw unprocessable("Create report-producing work before entering its review stage", { code: "report_delivery_start_status_invalid" });
       }
-      if (issueData.status === "in_review" && issueData.createdByUserId && !issueData.createdByAgentId &&
+      if (issueData.status === "in_review" && !issueData.conversationAgentId && issueData.createdByUserId && !issueData.createdByAgentId &&
           !issueData.assigneeUserId && !initialReviewPolicy?.stages.length && !initialReviewPolicy?.monitor?.nextCheckAt) {
         // Match a Board status-only handoff: an unconfigured review belongs to
         // the operator creating it, not to an executor with no review path.

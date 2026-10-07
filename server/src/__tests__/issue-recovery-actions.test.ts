@@ -10,6 +10,7 @@ import {
   agentWakeupRequests,
   activityLog,
   companies,
+  companyMemberships,
   createDb,
   environmentLeases,
   environments,
@@ -156,6 +157,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(projects);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
     await db.delete(authUsers);
   });
@@ -3166,6 +3168,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("allows false-positive recovery resolution to restore a blocked source issue in the same request", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const reviewerId = randomUUID();
+    await db.insert(authUsers).values({ id: reviewerId, name: "Recovery reviewer", email: `${reviewerId}@example.test`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: reviewerId,
+      status: "active", membershipRole: "owner" });
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -3180,7 +3187,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Confirm whether the issue is actually stranded.",
       wakePolicy: { type: "manual" },
     });
-    const app = createApp();
+    const app = createApp({ type: "board", source: "local_implicit", userId: reviewerId });
 
     const resolved = await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
@@ -3195,6 +3202,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(resolved.body.issue).toMatchObject({
       id: sourceIssueId,
       status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: reviewerId,
       activeRecoveryAction: null,
     });
     expect(resolved.body.recoveryAction).toMatchObject({
