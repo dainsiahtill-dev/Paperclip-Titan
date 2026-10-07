@@ -51,6 +51,12 @@ The producer must use its own trusted proc/mountinfo view, join each actual FD's
 
 ## Standalone-core security review
 
+### Corrective component result
+
+The corrected standalone core requires an independently admitted immutable consumer, separates kernel credential claims from the referenced process witness, and removes uniform-thread-only admission. The signed statement binds fresh bootstrap/challenge context; ACK waits for host consumption admission and another live-owner/file/expiry check. Held file/mount references remain pinned throughout the signed lifetime and revocation drains pending operations before releasing them.
+
+Root independently reran all 90 tests and both server/adapter-utils typechecks successfully. Independent corrective review found no remaining phase-1 blockers. The original 81-test result and two RED corrections remain in the diagnostic inventory. Tests with synthetic trusted callbacks establish this component contract only. No runtime caller, authenticated issuer store, immutable consumer or protected Group acceptance exists yet; production remains closed. The following paragraphs describe the original finding, which the corrected component contract now addresses.
+
 The first core records 81 passing component tests but remains unintegrated. Independent review found a blocking sender-contract error: namespace-capable senders may supply an alternate existing visible PID in explicit SCM credentials. The host accurately inspects that referenced process, but its stable witness and uniform threads do not prove it sent the message. This does not imply arbitrary invisible ancestor or cross-project access; the current “actual sender” claim is nevertheless unsupported.
 
 For this transport, SCM identity must be labelled a kernel-validated referenced process and immutable consumer self/thread/namespace/root/file comparison becomes mandatory. A host uniform-thread assertion alone cannot admit it; a separate non-substitution/non-transfer guarantee would need independent proof, which does not exist here. Existing outer cap-drop does not establish that guarantee for every descendant. Add explicit credential-substitution and missing-consumer negatives, preserve the earlier test results, and keep default admission closed until the public consumer/trusted bootstrap is implemented. Connection-time peer credentials alone do not close socket-transfer semantics. Offline signatures also require a defined live lifecycle/consumption contract; deleting host state alone cannot revoke an already delivered signature.
