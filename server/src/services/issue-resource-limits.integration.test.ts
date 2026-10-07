@@ -87,6 +87,22 @@ const support = await getEmbeddedPostgresTestSupport();
     else expect(block).toMatchObject({ code: "issue_automatic_run_limit" });
   });
 
+  it.each(["verified", "marker_only", "provider_invoked", "usage_recorded"])("preserves execution allowance when preparation failed before the provider (%s)", async evidence => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10);
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed", executionStage: "preparing",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      usageJson: evidence === "usage_recorded" ? { totalTokens: 1 } : null,
+    }).where(eq(heartbeatRuns.id, id));
+    if (evidence !== "marker_only") await db.insert(heartbeatRunEvents).values({ companyId: s.companyId, agentId: s.agentId, runId: id,
+      seq: 1, eventType: "error", stream: "system", level: "error", message: "Preparation failed before invocation" });
+    if (evidence === "provider_invoked") await db.insert(heartbeatRunEvents).values({ companyId: s.companyId, agentId: s.agentId, runId: id,
+      seq: 2, eventType: "adapter.invoke", stream: "system", level: "info" });
+    const block = await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId });
+    if (evidence === "verified") expect(block).toBeNull();
+    else expect(block).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
   it("does not treat an unproven manual label as an operator exemption", async () => {
     const s = await seed({ maxAutomaticRuns: 1 });
     const id = await run(s, s.childId, 10);

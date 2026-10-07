@@ -213,6 +213,7 @@ import { captureReportDeliveryBaseline, sealReportDeliveryOutputs, submitReportD
 import { verifiedCompletedTaskMention } from "./completed-task-notification.js";
 import { deliveryAuthorityService, resolveDeliveryDefinition } from "./delivery-authority.js";
 import { armIssueRunDeadline, getIssueResourceBlock, readIssueResourcePolicies, readTrustedLegacyUsageCheckpoint } from "./issue-resource-limits.js";
+import { PreProviderDeadlineUnverifiedError, resolvePreProviderAdmissionDeadline } from "./pre-provider-admission-deadline.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -20643,17 +20644,9 @@ export function heartbeatService(
       const maxRunSeconds = authorizedSupersession ? Math.min(policyRunSeconds ?? authorizedSupersession.maxRunSeconds, authorizedSupersession.maxRunSeconds) : policyRunSeconds;
       const maxRunTokens = runTokenCaps.length ? Math.min(...runTokenCaps) : null;
       if (maxRunSeconds) {
-        const prior = parseObject(context.resourceDeadline);
-        const sourceRunId = run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId);
-        const [budgetSource] = sourceRunId ? await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.id, sourceRunId),
-          sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
-        )) : [];
-        const inherited = parseObject(budgetSource?.context?.resourceDeadline);
-        const inheritedDeadline = typeof inherited.deadlineAt === "string" && Number.isFinite(Date.parse(inherited.deadlineAt))
-          ? Date.parse(inherited.deadlineAt) : null;
-        const deadlineAt = prior.runId === run.id && typeof prior.deadlineAt === "string" && Number.isFinite(Date.parse(prior.deadlineAt))
-          ? Date.parse(prior.deadlineAt) : (!authorizedSupersession ? inheritedDeadline : null) ?? (run.startedAt?.getTime() ?? Date.now()) + maxRunSeconds * 1000;
+        const deadlineAt = await resolvePreProviderAdmissionDeadline(db, {
+          run, issueId, context, maxRunSeconds, authorizedSupersession: Boolean(authorizedSupersession),
+        });
         context.resourceDeadline = { runId: run.id, deadlineAt: new Date(deadlineAt).toISOString(), maxRunSeconds };
         resourceDeadline = armIssueRunDeadline({ deadlineAt, stop: async () => {
           if (!executionControl.controller.signal.aborted) {
@@ -26414,6 +26407,8 @@ export function heartbeatService(
           nonRetryablePreflightFailureCode(outerErr);
         const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;
         const setupFailureErrorCode =
+          (outerErr instanceof PreProviderDeadlineUnverifiedError ? outerErr.code : null) ??
+          (resourceStopCode === "resource_run_deadline" ? resourceStopCode : null) ??
           workspaceGitScanFailure?.code ??
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??

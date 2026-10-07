@@ -1563,6 +1563,16 @@ that historical namespace exit remains unproved. It cannot clear active writer
 ownership, modify historical runs, or exempt another company/root. Subsequent
 writers still require genuine protected execution and verified drain/release.
 
+Pre-provider admission failures retain their historical records and bounded
+infrastructure retry history. Server-verified workspace waits, never-started
+cancellations and preparation failures do not consume model execution attempts.
+The verifier requires matching original system evidence and absence of process,
+adapter invocation, usage and cost facts; a result marker alone is insufficient.
+When every ancestor is verified to have performed no provider work, the first
+execution receives the unchanged per-run time allowance from its own start.
+Real or unverified prior work retains its deadline, and unresolved history with
+no trusted clock blocks explicitly instead of silently granting more time.
+
 ## 16. Security Requirements
 
 - store only hashed agent API keys

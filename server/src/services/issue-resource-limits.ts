@@ -1,3 +1,4 @@
+import { verifiedPreProviderAdmissionSql } from "./pre-provider-admission.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { costEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { issueResourceLimitsSchema, type IssueResourceLimits } from "@paperclipai/shared/validators/issue-resources";
@@ -201,33 +202,9 @@ export async function getIssueResourceBlock(db: Db, input: {
       const producer = invokedAcpProducer(row.command, row.adapterType);
       if (producer && !hasCompleteAcpUsage(row, producer)) unqualifiedAcpRuns.add(row.id);
     }
-    // A server-authored workspace admission wait never reached the adapter.
-    // Preserve its row and retry history, but do not spend a model execution
-    // allowance. A provider marker alone cannot establish this exemption.
-    const verifiedWorkspaceWait = sql`(
-      ${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.status} = 'cancelled'
-      and ${heartbeatRuns.errorCode} = 'workspace_busy'
-      and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
-      and ${heartbeatRuns.processStartedAt} is null and ${heartbeatRuns.finishedAt} is not null
-      and ${heartbeatRuns.resultJson}->'executionRecovery'->>'kind' = 'workspace_wait'
-      and ${heartbeatRuns.resultJson}->'executionRecovery'->'providerWorkStarted' = 'false'::jsonb
-      and exists (select 1 from heartbeat_run_events admission
-        where admission.run_id = ${heartbeatRuns.id} and admission.company_id = ${heartbeatRuns.companyId}
-          and admission.agent_id = ${heartbeatRuns.agentId} and admission.event_type = 'lifecycle'
-          and admission.stream = 'system' and admission.source_event_id is null
-          and admission.source_instance_id is null and admission.source_seq is null
-          and jsonb_typeof(admission.payload->'retryScheduled') = 'boolean'
-          and admission.payload->'deferralAttempt' = ${heartbeatRuns.resultJson}->'workspaceBusy'->'deferralAttempt'
-          and admission.payload->'projectWorkspaceId' = ${heartbeatRuns.resultJson}->'workspaceBusy'->'projectWorkspaceId')
-      and not exists (select 1 from heartbeat_run_events invoked
-        where invoked.run_id = ${heartbeatRuns.id} and invoked.company_id = ${heartbeatRuns.companyId}
-          and invoked.event_type = 'adapter.invoke')
-      and not exists (select 1 from cost_events spent
-        where spent.heartbeat_run_id = ${heartbeatRuns.id} and spent.company_id = ${heartbeatRuns.companyId})
-    )`;
     const [runs] = policy.limits.maxAutomaticRuns ? await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), inArray(runIssue, runIds), isNotNull(heartbeatRuns.startedAt),
-        sql`not coalesce(${verifiedWorkspaceWait}, false)`,
+        sql`not coalesce(${verifiedPreProviderAdmissionSql}, false)`,
         // A caller-supplied manual label is not authority. Only an original
         // operator wake receipt bound to this company/Agent/run is exempt;
         // automatic retries and continuations still spend automatic attempts.
