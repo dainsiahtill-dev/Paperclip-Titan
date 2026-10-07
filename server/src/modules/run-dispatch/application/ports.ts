@@ -1,4 +1,5 @@
 import type { GateDecision } from "../domain/policy.js";
+import type { HeartbeatRunExecutionTimeoutPolicySnapshot } from "../../../services/heartbeat-stop-metadata.js";
 import type {
   CancelStaleQueuedRunOutcome,
   PromoteScheduledRetryOutcome,
@@ -46,11 +47,13 @@ export type CancelStaleQueuedRunInput = {
 export type DispatchResolvedInteractionInput<T> = CancelStaleQueuedRunInput & {
   /** Ordinary/non-assignee wakes use the same gate without claiming a continuation lock. */
   enforceExecutionLock?: boolean;
+  /** Server-resolved timer facts for a new execution; omitted for adoption. */
+  executionTimeoutPolicy?: HeartbeatRunExecutionTimeoutPolicySnapshot;
   dispatch: (markDispatchStarted: () => void) => Promise<T>;
 };
 
 export type DispatchResolvedInteractionOutcome<T> =
-  | { dispatched: true; resultPromise: Promise<T> }
+  | { dispatched: true; resultPromise: Promise<T>; executionTimeoutPolicy?: HeartbeatRunExecutionTimeoutPolicySnapshot | null }
   | { dispatched: false; cancellation: CancelStaleQueuedRunOutcome };
 
 /** Semantic database operations; persistence rows and transaction handles stay inside the adapter. */

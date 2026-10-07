@@ -65,6 +65,7 @@ export function createDispatchResolvedInteractionIfCurrent(deps: { writer: RunDi
     expectedStatus: "queued" | "running";
     enforceExecutionLock?: boolean;
     requireTaskAssignee?: boolean;
+    executionTimeoutPolicy?: import("../../../services/heartbeat-stop-metadata.js").HeartbeatRunExecutionTimeoutPolicySnapshot;
     dispatch: (markDispatchStarted: () => void) => Promise<T>;
     now?: Date;
   }) => deps.writer.dispatchResolvedInteractionIfCurrent({

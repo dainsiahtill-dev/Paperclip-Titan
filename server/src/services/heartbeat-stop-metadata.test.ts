@@ -3,9 +3,53 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   resolveHeartbeatRunTimeoutPolicy,
+  resolveHeartbeatRunExecutionTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
 
 describe("heartbeat stop metadata", () => {
+  it("preserves known fractional execution timeout values", () => {
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("process", { timeoutSec: 0.5 })).toEqual({
+      effectiveTimeoutSec: 0.5, timeoutConfigured: true, timeoutSource: "config",
+    });
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("http", { timeoutMs: 1234.5 })).toEqual({
+      effectiveTimeoutSec: 1.2345, effectiveTimeoutMs: 1234.5, timeoutConfigured: true, timeoutSource: "config",
+    });
+  });
+
+  it("uses exact native turn timeout instead of a legacy adapter default", () => {
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("openclaw_gateway", {}, { nativeTurnTimeoutMs: 0 })).toEqual({
+      effectiveTimeoutSec: 0, effectiveTimeoutMs: 0, timeoutConfigured: false, timeoutSource: "default",
+    });
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("codex_local", { timeoutSec: 0.125 }, { nativeTurnTimeoutMs: 125 })).toEqual({
+      effectiveTimeoutSec: 0.125, effectiveTimeoutMs: 125, timeoutConfigured: true, timeoutSource: "config",
+    });
+  });
+
+  it("does not claim an unproved adapter or sandbox default is disabled", () => {
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("fixture_plugin", {})).toBeNull();
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("hermes_local", { timeoutSec: 0 })).toBeNull();
+    expect(resolveHeartbeatRunExecutionTimeoutPolicy("codex_local", { timeoutSec: 0 }, { sandboxTarget: true })).toBeNull();
+  });
+
+  it("uses frozen runtime policy instead of the current saved adapter config", () => {
+    expect(buildHeartbeatRunStopMetadata({
+      adapterType: "codex_local", adapterConfig: { timeoutSec: 600 },
+      timeoutPolicy: { effectiveTimeoutSec: 1800, timeoutConfigured: true, timeoutSource: "config" },
+      outcome: "cancelled",
+    })).toMatchObject({ effectiveTimeoutSec: 1800, timeoutFired: false });
+  });
+
+  it("reports unknown policy when execution evidence is missing", () => {
+    const metadata = buildHeartbeatRunStopMetadata({
+      adapterType: "codex_local", adapterConfig: { timeoutSec: 600 },
+      timeoutPolicy: null, outcome: "failed",
+    });
+    expect(mergeHeartbeatRunStopMetadata({ effectiveTimeoutMs: 9000 }, metadata)).toEqual({
+      effectiveTimeoutSec: null, timeoutConfigured: false, timeoutSource: "unknown",
+      stopReason: "adapter_failed", timeoutFired: false,
+    });
+  });
+
   it("keeps local coding adapters at no timeout by default", () => {
     for (const adapterType of [
       "codex_local",

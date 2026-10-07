@@ -261,6 +261,47 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("blocked");
   });
 
+  it("atomically freezes timeout facts only with an accepted dispatch and never overwrites them", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const snapshot = { version: 1 as const, runId, adapterType: "codex_local", effectiveTimeoutSec: 1800,
+      timeoutConfigured: true, timeoutSource: "config" as const };
+    const adapter = createPostgresRunDispatchAdapter(db);
+    let release!: () => void;
+    const providerWork = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const first = await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId, expectedStatus: "running", now: new Date(),
+        executionTimeoutPolicy: snapshot, dispatch: () => providerWork });
+      expect(first).toMatchObject({ dispatched: true, executionTimeoutPolicy: snapshot });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.runnerProfileJson?.executionTimeoutPolicy).toEqual(snapshot);
+      const second = await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId, expectedStatus: "running", now: new Date(),
+        executionTimeoutPolicy: { ...snapshot, effectiveTimeoutSec: 7 }, dispatch: async () => undefined });
+      expect(second).toMatchObject({ dispatched: true, executionTimeoutPolicy: snapshot });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.runnerProfileJson?.executionTimeoutPolicy).toEqual(snapshot);
+    } finally { release(); }
+  });
+
+  it("does not create timeout execution evidence when the final ownership gate rejects dispatch", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId, wakeReason: "native_safe_replacement" } });
+    const competingRunId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: competingRunId }).where(eq(issues.id, issueId));
+    const dispatch = vi.fn(async () => undefined);
+    const outcome = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId, runId,
+      expectedStatus: "running", now: new Date(), executionTimeoutPolicy: { version: 1, runId, adapterType: "codex_local",
+        effectiveTimeoutSec: 1800, timeoutConfigured: true, timeoutSource: "config" }, dispatch });
+    expect(outcome).toMatchObject({ dispatched: false });
+    expect(dispatch).not.toHaveBeenCalled();
+    const [rejectedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(rejectedRun).toMatchObject({ status: "cancelled" });
+    expect(rejectedRun.runnerProfileJson ?? {}).not.toHaveProperty("executionTimeoutPolicy");
+  });
+
   it.each(["queued", "final", "resolved"] as const)("rechecks late native replacement dependencies at %s dispatch", async mode => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID(), blockerId = randomUUID();

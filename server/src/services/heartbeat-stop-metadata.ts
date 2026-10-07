@@ -24,6 +24,39 @@ export interface HeartbeatRunStopMetadata extends HeartbeatRunTimeoutPolicy {
   timeoutFired: boolean;
 }
 
+export interface HeartbeatRunExecutionTimeoutPolicySnapshot extends HeartbeatRunTimeoutPolicy {
+  version: 1;
+  runId: string;
+  adapterType: string;
+}
+
+// This key lives only in the server-owned runner profile, never wake/result JSON.
+export const HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY = "executionTimeoutPolicy";
+
+export function readHeartbeatRunTimeoutPolicySnapshot(run: {
+  id: string;
+  runnerProfileJson?: Record<string, unknown> | null;
+}): HeartbeatRunTimeoutPolicy | null {
+  const value = run.runnerProfileJson?.[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const snapshot = value as Record<string, unknown>;
+  const seconds = snapshot.effectiveTimeoutSec;
+  const milliseconds = snapshot.effectiveTimeoutMs;
+  if (snapshot.version !== 1 || snapshot.runId !== run.id ||
+    typeof snapshot.adapterType !== "string" || !snapshot.adapterType ||
+    typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0 ||
+    snapshot.timeoutConfigured !== (seconds > 0) ||
+    (snapshot.timeoutSource !== "config" && snapshot.timeoutSource !== "default") ||
+    (milliseconds !== undefined && (typeof milliseconds !== "number" || !Number.isFinite(milliseconds) ||
+      milliseconds < 0 || milliseconds / 1000 !== seconds))) return null;
+  return {
+    effectiveTimeoutSec: seconds,
+    timeoutConfigured: seconds > 0,
+    timeoutSource: snapshot.timeoutSource,
+    ...(typeof milliseconds === "number" ? { effectiveTimeoutMs: milliseconds } : {}),
+  };
+}
+
 function readFiniteNumber(value: unknown): number | null {
   if (typeof value === "number") {
     return Number.isFinite(value) ? value : null;
@@ -79,6 +112,29 @@ export function resolveHeartbeatRunTimeoutPolicy(
   };
 }
 
+/** Resolve only timer semantics proved by core dispatch/adapter source. */
+export function resolveHeartbeatRunExecutionTimeoutPolicy(
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+  options: { nativeTurnTimeoutMs?: number; sandboxTarget?: boolean } = {},
+): HeartbeatRunTimeoutPolicy | null {
+  const timeoutSource = hasOwn(adapterConfig, adapterType === "http" ? "timeoutMs" : "timeoutSec")
+    ? "config" : "default";
+  if (options.nativeTurnTimeoutMs !== undefined || adapterType === "http") {
+    const milliseconds = options.nativeTurnTimeoutMs ?? Math.max(0, readFiniteNumber(adapterConfig.timeoutMs) ?? 0);
+    return { effectiveTimeoutSec: milliseconds / 1000, effectiveTimeoutMs: milliseconds,
+      timeoutConfigured: milliseconds > 0, timeoutSource };
+  }
+  if (adapterType === "openclaw_gateway") return resolveHeartbeatRunTimeoutPolicy(adapterType, adapterConfig);
+  const seconds = readFiniteNumber(adapterConfig.timeoutSec) ?? 0;
+  const knownLocalDefault = ["process", "codex_local", "claude_local", "cursor", "cursor_local",
+    "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"].includes(adapterType);
+  // Plugin/Hermes and sandbox-target fallback timers are adapter-specific.
+  // An absent/zero config does not prove those executions were unlimited.
+  if (seconds <= 0 && (!knownLocalDefault || (options.sandboxTarget && adapterType !== "process" && seconds === 0))) return null;
+  return { effectiveTimeoutSec: Math.max(0, seconds), timeoutConfigured: seconds > 0, timeoutSource };
+}
+
 export function inferHeartbeatRunStopReason(input: {
   outcome: HeartbeatRunOutcome;
   errorCode?: string | null;
@@ -106,8 +162,13 @@ export function buildHeartbeatRunStopMetadata(input: {
   outcome: HeartbeatRunOutcome;
   errorCode?: string | null;
   errorMessage?: string | null;
+  // Explicit null means no durable execution evidence; do not infer from a
+  // mutable saved config. Omission keeps the standalone builder compatible.
+  timeoutPolicy?: HeartbeatRunTimeoutPolicy | null;
 }): HeartbeatRunStopMetadata {
-  const timeoutPolicy = resolveHeartbeatRunTimeoutPolicy(input.adapterType, input.adapterConfig);
+  const timeoutPolicy = input.timeoutPolicy === undefined
+    ? resolveHeartbeatRunTimeoutPolicy(input.adapterType, input.adapterConfig)
+    : input.timeoutPolicy ?? { effectiveTimeoutSec: null, timeoutConfigured: false, timeoutSource: "unknown" as const };
   const stopReason = inferHeartbeatRunStopReason(input);
   return {
     ...timeoutPolicy,
@@ -121,8 +182,12 @@ export function mergeHeartbeatRunStopMetadata(
   metadata: HeartbeatRunStopMetadata,
 ): Record<string, unknown> {
   const existingMaxTurnStopReason = normalizeMaxTurnStopReason(resultJson?.stopReason);
+  const result = { ...(resultJson ?? {}) };
+  // Adapter/caller timeout fields cannot survive without matching server evidence.
+  delete result.effectiveTimeoutMs;
+  delete result[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY];
   return {
-    ...(resultJson ?? {}),
+    ...result,
     stopReason: existingMaxTurnStopReason ?? metadata.stopReason,
     effectiveTimeoutSec: metadata.effectiveTimeoutSec,
     timeoutConfigured: metadata.timeoutConfigured,

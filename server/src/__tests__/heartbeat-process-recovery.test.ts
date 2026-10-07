@@ -2696,6 +2696,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         resultJson: { startupPreparationSettledAt: expect.any(String) },
       });
       expect(factory).not.toHaveBeenCalled();
+      expect((await heartbeat.getRun(runId))?.runnerProfileJson).not.toHaveProperty("executionTimeoutPolicy");
+      expect((await heartbeat.getRun(runId))?.resultJson).toMatchObject({
+        effectiveTimeoutSec: null, timeoutConfigured: false, timeoutSource: "unknown",
+      });
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
       expect(coordinator).toMatchObject({ attempt: 0, leaseOwner: null });
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -8535,7 +8539,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(cancelled?.status).toBe("cancelled");
     expect(cancelled?.resultJson).toMatchObject({
       stopReason: "cancelled",
-      effectiveTimeoutSec: 0,
+      effectiveTimeoutSec: null,
+      timeoutSource: "unknown",
       timeoutConfigured: false,
       timeoutFired: false,
     });
@@ -12661,6 +12666,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     return { source, child };
   }
+
+  it.each(["retained", "missing"] as const)(
+    "preserves native same-run timeout evidence through recovery with mutated config: %s",
+    async policyEvidence => {
+      await withTempPaperclipHome(async () => {
+        await fs.mkdir(resolvePaperclipInstanceRoot(), { recursive: true });
+        const { source, child } = await seedPreparedChatRecovery("historical");
+        const snapshot = { version: 1, runId: child.runId, adapterType: "paperclip_runner",
+          effectiveTimeoutSec: 1800, effectiveTimeoutMs: 1800000, timeoutConfigured: true, timeoutSource: "config" };
+        if (policyEvidence === "retained") await db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) ||
+            ${JSON.stringify({ executionTimeoutPolicy: snapshot })}::jsonb`,
+        }).where(eq(heartbeatRuns.id, child.runId));
+        await db.update(agents).set({ adapterConfig: sql`${agents.adapterConfig} || '{"timeoutSec":7}'::jsonb` })
+          .where(eq(agents.id, source.agentId));
+        const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+        await db.update(issues).set({ assigneeAdapterOverrides: { ...task!.assigneeAdapterOverrides, adapterConfig: { timeoutSec: 7 } } })
+          .where(eq(issues.id, source.issueId));
+        // Keep real recovery classification/preparation/dispatch. Stop only at
+        // the external native backend boundary, before any provider call.
+        const factory = vi.fn(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+        const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: factory });
+        expect((await heartbeat.recoverNativeRunsAfterRestart()).claims).toEqual([
+          expect.objectContaining({ runId: child.runId, kind: "bootstrap_incomplete" }),
+        ]);
+        await heartbeat.drainActiveRunExecutions();
+        expect(factory).toHaveBeenCalledTimes(1);
+        const recovered = await heartbeat.getRun(child.runId);
+        if (policyEvidence === "retained") expect(recovered?.runnerProfileJson?.executionTimeoutPolicy).toEqual(snapshot);
+        else expect(recovered?.runnerProfileJson).not.toHaveProperty("executionTimeoutPolicy");
+      });
+    },
+  );
 
   it.each(["required", "admitted", "historical"] as const)(
     "rechecks only unadmitted native bootstrap recovery after a committed close: %s",

@@ -16,6 +16,8 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON, isUuidLike } from "@paperclipai/shared";
 import { parseObject } from "../../../adapters/utils.js";
+import { HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY, readHeartbeatRunTimeoutPolicySnapshot,
+  type HeartbeatRunExecutionTimeoutPolicySnapshot } from "../../../services/heartbeat-stop-metadata.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { budgetService } from "../../../services/budgets.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
@@ -1083,6 +1085,19 @@ export function createPostgresRunDispatchAdapter(
         return { dispatched: false as const, cancellation };
       }
 
+      let executionTimeoutPolicy: HeartbeatRunExecutionTimeoutPolicySnapshot | null | undefined;
+      if (input.executionTimeoutPolicy) {
+        const profile = { ...parseObject(run.runnerProfileJson) };
+        // Ownership is already locked and accepted. Freeze once, before the
+        // synchronous handoff; adoption never supplies new timer facts.
+        if (!Object.hasOwn(profile, HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY)) {
+          profile[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY] = input.executionTimeoutPolicy;
+          await tx.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, run.id));
+        }
+        executionTimeoutPolicy = readHeartbeatRunTimeoutPolicySnapshot({ id: run.id, runnerProfileJson: profile })
+          ? profile[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY] as HeartbeatRunExecutionTimeoutPolicySnapshot : null;
+      }
+
       // Hand off while ownership is still locked, but do not await the provider
       // promise. Bootstrap and failure finalization can update these same rows;
       // the transaction must commit independently of either callback completing.
@@ -1090,7 +1105,8 @@ export function createPostgresRunDispatchAdapter(
       // A synchronous rejection can precede the commit response. Observe it
       // immediately while preserving the original promise for the caller.
       void resultPromise.catch(() => {});
-      return { dispatched: true as const, resultPromise };
+      return { dispatched: true as const, resultPromise,
+        ...(input.executionTimeoutPolicy ? { executionTimeoutPolicy } : {}) };
     };
 
     return withIssueThenRunLocks(

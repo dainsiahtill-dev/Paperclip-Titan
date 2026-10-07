@@ -351,8 +351,12 @@ import {
 } from "./heartbeat-run-summary.js";
 import {
   buildHeartbeatRunStopMetadata,
+  HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  readHeartbeatRunTimeoutPolicySnapshot,
+  resolveHeartbeatRunExecutionTimeoutPolicy,
+  type HeartbeatRunExecutionTimeoutPolicySnapshot,
 } from "./heartbeat-stop-metadata.js";
 import {
   CHAT_CONTROL_RECOVERY_ADMISSION_KEY,
@@ -7081,6 +7085,8 @@ function enrichWakeContextSnapshot(input: {
   payload: Record<string, unknown> | null;
 }) {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
+  // Execution policy is server-owned runner-profile evidence, never wake input.
+  delete contextSnapshot[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY];
   const issueIdFromPayload =
     readNonEmptyString(payload?.["issueId"]) ??
     readNonEmptyString(payload?.["taskId"]);
@@ -12838,10 +12844,15 @@ export function heartbeatService(
       !previousStatus.startedAt &&
       !previousStatus.processPid
     ) {
+      const previousResult = { ...previousStatus.resultJson };
+      if (patch?.resultJson && Object.hasOwn(patch.resultJson, "timeoutSource")) {
+        delete previousResult.effectiveTimeoutMs;
+        delete previousResult[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY];
+      }
       patch = {
         ...patch,
         resultJson: {
-          ...previousStatus.resultJson,
+          ...previousResult,
           ...patch?.resultJson,
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         },
@@ -12925,10 +12936,15 @@ export function heartbeatService(
       !previousStatus.startedAt &&
       !previousStatus.processPid
     ) {
+      const previousResult = { ...previousStatus.resultJson };
+      if (patch?.resultJson && Object.hasOwn(patch.resultJson, "timeoutSource")) {
+        delete previousResult.effectiveTimeoutMs;
+        delete previousResult[HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY];
+      }
       patch = {
         ...patch,
         resultJson: {
-          ...previousStatus.resultJson,
+          ...previousResult,
           ...patch?.resultJson,
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         },
@@ -15244,6 +15260,7 @@ export function heartbeatService(
           errorCode: "server_shutdown_interrupted",
           signal,
           resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+            run,
             conversationContinuationEligible: await runUsedConversationAdapter(db, run),
             resultJson: persistedCancellationResult,
             errorCode: "server_shutdown_interrupted",
@@ -18366,6 +18383,7 @@ export function heartbeatService(
     agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     options?: {
+      run?: Pick<typeof heartbeatRuns.$inferSelect, "id" | "runnerProfileJson"> | null;
       resultJson?: Record<string, unknown> | null;
       conversationContinuationEligible?: boolean;
       errorCode?: string | null;
@@ -18374,7 +18392,8 @@ export function heartbeatService(
   ) {
     const stopMetadata = buildHeartbeatRunStopMetadata({
       adapterType: agent.adapterType,
-      adapterConfig: parseObject(agent.adapterConfig),
+      adapterConfig: null,
+      timeoutPolicy: options?.run ? readHeartbeatRunTimeoutPolicySnapshot(options.run) : null,
       outcome,
       errorCode: options?.errorCode ?? null,
       errorMessage: options?.errorMessage ?? null,
@@ -19488,6 +19507,7 @@ export function heartbeatService(
               { adapterType, adapterConfig },
               "failed",
               {
+                run,
                 conversationContinuationEligible,
                 resultJson: parseObject(run.resultJson),
                 errorCode: "process_lost",
@@ -21787,6 +21807,16 @@ export function heartbeatService(
         runtimeConfig = { ...runtimeConfig, timeoutSec: configured > 0 ? Math.min(configured, maxRunSeconds) : maxRunSeconds };
       }
       runtimeConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, runtimeConfig);
+      const executionTimeoutPolicyForDispatch = (nativeTurnTimeoutMs?: number): HeartbeatRunExecutionTimeoutPolicySnapshot | undefined => {
+        // Same-run recovery/adoption cannot reconstruct a prior runner's timer
+        // from today's saved config. Preserve its original snapshot or absence.
+        if (runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery) return undefined;
+        const effectivePolicy = resolveHeartbeatRunExecutionTimeoutPolicy(agent.adapterType, runtimeConfig, {
+          nativeTurnTimeoutMs,
+          sandboxTarget: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
+        }) ?? { effectiveTimeoutSec: null, timeoutConfigured: false, timeoutSource: "unknown" as const };
+        return { version: 1, runId: run.id, adapterType: agent.adapterType, ...effectivePolicy };
+      };
       const latestAgentConfigRevision = await getLatestAgentConfigRevision(
         agent.companyId,
         agent.id,
@@ -22736,6 +22766,7 @@ export function heartbeatService(
       }
       const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
         dispatch: (markDispatchStarted: () => void) => Promise<T>,
+        executionTimeoutPolicy?: HeartbeatRunExecutionTimeoutPolicySnapshot,
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
@@ -22758,17 +22789,17 @@ export function heartbeatService(
           run.scheduledRetryReason === "native_safe_replacement";
         // Same-run recovery may still own a live runner. Its existing adoption
         // and physical-stop protocol governs it, not a fresh-dispatch cancel.
-        if (!issueId || (!requiresContinuationLock &&
-            (runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery))) {
+        if (!requiresContinuationLock &&
+            (runOptions.nativeLeaseOwner || runOptions.nativeRestartRecovery)) {
           await assertRetryProfile();
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
-        await options.beforeResolvedInteractionContinuationDispatchCheck?.({
+        if (issueId) await options.beforeResolvedInteractionContinuationDispatchCheck?.({
           runId: run.id,
           issueId,
         });
 
-        await options.afterResolvedInteractionContinuationDispatchCheck?.({
+        if (issueId) await options.afterResolvedInteractionContinuationDispatchCheck?.({
           runId: run.id,
           issueId,
         });
@@ -22779,12 +22810,18 @@ export function heartbeatService(
           expectedStatus: "running",
           enforceExecutionLock: requiresContinuationLock,
           requireTaskAssignee: Boolean(executionContinuation),
+          executionTimeoutPolicy,
           // Synchronous handoff under the ownership lock; the gate commits
           // without awaiting the adapter's asynchronous bootstrap or finalizer.
           dispatch,
         });
 
-        if (gate.dispatched) return gate;
+        if (gate.dispatched) {
+          if (gate.executionTimeoutPolicy) run = { ...run, runnerProfileJson: {
+            ...parseObject(run.runnerProfileJson), [HEARTBEAT_EXECUTION_TIMEOUT_POLICY_KEY]: gate.executionTimeoutPolicy,
+          } };
+          return gate;
+        }
         if (gate.cancellation.outcome === "cancelled") {
           applyRunDispatchPostCommitEffects(
             gate.cancellation.postCommitEffects,
@@ -23233,6 +23270,7 @@ export function heartbeatService(
             ...(agent
               ? {
                   resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+                    run,
                     resultJson: parseObject(run.resultJson),
                     errorCode: "agent_not_invokable",
                     errorMessage: abortReason,
@@ -24679,6 +24717,7 @@ export function heartbeatService(
             }
             try {
               await assertRetryProfile();
+              const nativeTurnTimeoutMs = Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)) * 1_000;
               const guardedDispatch =
                 await dispatchResolvedInteractionContinuationWithAtomicGate(
                   (markDispatchStarted) =>
@@ -24686,7 +24725,7 @@ export function heartbeatService(
                       db,
                       execution: nativeExecution,
                       conversationMode: isConversation(issueContext),
-                      turnTimeoutMs: Math.max(0, asNumber(runtimeConfig.timeoutSec, 0)) * 1_000,
+                      turnTimeoutMs: nativeTurnTimeoutMs,
                       runnerInstanceId: nativeRunnerInstanceId,
                       leaseOwner: runOptions.nativeLeaseOwner,
                       restartRecovery: runOptions.nativeRestartRecovery,
@@ -24803,6 +24842,7 @@ export function heartbeatService(
                         await persistRunProcessMetadata(run.id, meta);
                       },
                     }),
+                  executionTimeoutPolicyForDispatch(nativeTurnTimeoutMs),
                 );
               if (!guardedDispatch.dispatched) return;
               nativeDispatchStarted = true;
@@ -24903,6 +24943,7 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            runtimeConfig = enforceAgentSafetyPreset(agent.adapterType, agent.runtimeConfig, runtimeConfig);
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
@@ -25025,6 +25066,7 @@ export function heartbeatService(
                   });
                   return workspaceProcessGuard ? withWorkspaceProcessGuard(workspaceProcessGuard, executeAdapter) : executeAdapter();
                 },
+                executionTimeoutPolicyForDispatch(),
               );
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
@@ -25531,6 +25573,7 @@ export function heartbeatService(
 
         const persistedResultJson = mergeHeartbeatRunResultJson(
           mergeRunStopMetadataForAgent(agent, outcome, {
+            run,
             resultJson: mergeAdapterRecoveryMetadata({
               resultJson: {
                 ...(adapterResult.nativeFinalization || outcome === "cancelled"
@@ -26188,6 +26231,7 @@ export function heartbeatService(
           errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
           finishedAt: new Date(),
           resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
+            run,
             errorCode: failureErrorCode,
             errorMessage: message,
             resultJson: {
@@ -26463,6 +26507,7 @@ export function heartbeatService(
                   setupFailureAgent,
                   "failed",
                   {
+                    run: await getRun(runId),
                     errorCode: setupFailureErrorCode,
                     errorMessage: message,
                     resultJson: setupFailureResultJson,
@@ -29696,14 +29741,12 @@ export function heartbeatService(
       run = fenced;
     }
     const resultJson = agent
-      ? {
-          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
-            resultJson: parseObject(run.resultJson),
-            errorCode,
-            errorMessage: reason,
-          }),
-          ...(options.resultJson ?? {}),
-        }
+      ? mergeRunStopMetadataForAgent(agent, "cancelled", {
+          run,
+          resultJson: { ...parseObject(run.resultJson), ...(options.resultJson ?? {}) },
+          errorCode,
+          errorMessage: reason,
+        })
       : options.resultJson;
 
     try {
@@ -29840,6 +29883,7 @@ export function heartbeatService(
                         (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
                       )
                         ? mergeRunStopMetadataForAgent(agent, "cancelled", {
+                            run,
                             resultJson: {
                               ...resultJson,
                               executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
@@ -29972,6 +30016,7 @@ export function heartbeatService(
           ...(agent
             ? {
                 resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+                  run,
                   resultJson: persistedCancellationResult,
                   errorCode,
                   errorMessage: reason,
