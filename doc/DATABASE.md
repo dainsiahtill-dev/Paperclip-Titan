@@ -416,6 +416,29 @@ ID membership. No new table or schema migration is needed. See
 `operations/2026-10-06-legacy-workspace-upgrade-governance.md` for the maintenance
 entry and outstanding real-host acceptance.
 
+Unavailable historical source directories use the separate
+`legacy_workspace_epoch_closures` table (migration
+`0288_far_charles_xavier.sql`). These are instance-local host governance records,
+not company writer capabilities. A manifest records the exact affected companies,
+runs, leases, source pointers and event digests without inventing source inodes or
+old namespace identities. Audit summaries remain scoped to each affected company.
+An open record fences physical claims and local service observations under the
+same realm advisory lock. Only an authenticated changed kernel boot with unchanged
+database identity and captured history permits a distinct host-epoch closure.
+Historical run status and namespace receipts remain unchanged. No cascading
+foreign key or TTL can remove the fence. See
+`operations/2026-10-07-deleted-workspace-epoch-runbook.md` for the local operator
+workflow and the separate real-host acceptance boundary.
+
+An explicitly authorized local operator can instead record a distinct
+`operator_reconciled` disposition for an exact beneficiary company and physical
+source identity. It preserves the inspected cohort and forensic evidence digest,
+records `operator_decision` with `namespaceDrained: false`, and never satisfies
+the automatic host-epoch proof reader. Other companies, other physical roots,
+changed history and active writers retain their protection. This is a manual
+governance choice acknowledging missing historical exit evidence, not a fabricated
+exit receipt or a global protection override.
+
 Legacy run claims atomically record `controller_boot_id`, a database-clock
 `controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
 The lease renews independently of output. A different container must not infer

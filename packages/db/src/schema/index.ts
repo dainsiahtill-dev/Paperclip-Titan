@@ -212,3 +212,4 @@ export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
 export { issueCommentDeliveries } from "./issue_comment_deliveries.js";
 export { issueDeliveryDecisions } from "./issue_delivery_decisions.js";
+export { legacyWorkspaceEpochClosures } from "./legacy_workspace_epoch_closures.js";

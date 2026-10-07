@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, projectWorkspaces, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, legacyWorkspaceEpochClosures, projectWorkspaces, workspaceRuntimeServices, workspaceWriteOwners, type Db } from "@paperclipai/db";
 import { workspaceNamespaceDrained, type WorkspaceLaunchIdentity, type WorkspaceProcessGuard, type WorkspaceStopObservation } from "@paperclipai/adapter-utils/workspace-process-guard";
 import { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
 import { legacyWorkspaceCandidateClosed } from "./legacy-workspace-closure.js";
+import { legacyWorkspaceEpochClosedRunIds } from "./legacy-workspace-epoch-closure.js";
+import { legacyWorkspaceOperatorReconciledRunIds } from "./legacy-workspace-operator-reconciliation.js";
 import { workspaceRunHasTrackedOwner, validWorkspaceNamespaceIdentity } from "./workspace-owner-provenance.js";
 export { physicalWorkspaceIdentity } from "./workspace-physical-identity.js";
 
@@ -24,6 +26,11 @@ export function workspaceWriteOwnershipService(db: Db) {
   type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
   type Identity = Awaited<ReturnType<typeof physicalWorkspaceIdentity>>;
   const selector = (handle: WorkspaceOwnerHandle) => and(eq(workspaceWriteOwners.id, handle.id), eq(workspaceWriteOwners.companyId, handle.companyId), eq(workspaceWriteOwners.runId, handle.runId), eq(workspaceWriteOwners.generation, handle.generation), isNull(workspaceWriteOwners.releasedAt));
+  async function epochFenceHeld(tx: Tx, realm: string) {
+    const [hold] = await tx.select({ id: legacyWorkspaceEpochClosures.id }).from(legacyWorkspaceEpochClosures)
+      .where(and(eq(legacyWorkspaceEpochClosures.realm, realm), isNull(legacyWorkspaceEpochClosures.closedAt))).limit(1);
+    return Boolean(hold);
+  }
   async function observeServiceInTx(tx: Tx, input: { companyId: string; serviceId: string; serviceKey: string; roots: Identity[] }) {
     const identity = input.roots[0]!;
     const held = await tx.select().from(workspaceWriteOwners).where(and(eq(workspaceWriteOwners.realm, identity.realm), isNull(workspaceWriteOwners.releasedAt))).for("update");
@@ -66,6 +73,7 @@ export function workspaceWriteOwnershipService(db: Db) {
         // Realm-wide short transaction lock also prevents parent/subdirectory
         // claims from creating separate writing lanes over the same files.
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity.realm}, 0))`);
+        if (await epochFenceHeld(tx, identity.realm)) return { outcome: "busy" as const };
         if (!input.observeUnprotected) {
           // Pre-PC06/Board services may have no initiating run or environment
           // lease. Preserve their uncertain lifetime before deciding admission.
@@ -114,8 +122,11 @@ export function workspaceWriteOwnershipService(db: Db) {
             .where(and(eq(environmentLeases.provider, "local"), ne(heartbeatRuns.id, input.runId)));
           const proven = await tx.select().from(workspaceWriteOwners)
             .where(eq(workspaceWriteOwners.realm, identity.realm));
+          const epochClosed = await legacyWorkspaceEpochClosedRunIds(tx as unknown as Db, identity.realm);
+          const operatorReconciled = await legacyWorkspaceOperatorReconciledRunIds(tx as unknown as Db, { companyId: input.companyId, source: identity });
           for (const candidate of local) {
             if (!candidate.run.processPid && !candidate.run.processGroupId && !candidate.run.processStartedAt && candidate.run.runtimeMode !== "native") continue;
+            if (epochClosed.has(candidate.run.id) || operatorReconciled.has(candidate.run.id)) continue;
             const snapshot = candidate.run.contextSnapshot as Record<string, unknown> | null;
             const workspace = snapshot?.paperclipWorkspace as Record<string, unknown> | undefined;
             const raw = candidate.cwd ?? (typeof workspace?.cwd === "string" ? workspace.cwd : null);
@@ -142,6 +153,7 @@ export function workspaceWriteOwnershipService(db: Db) {
       if (!overlaps(source.root, actual.root)) throw new Error("workspace_write_service_cwd_outside_workspace: configure service cwd inside the selected workspace");
       return db.transaction(async tx => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${source.realm}, 0))`);
+        if (await epochFenceHeld(tx, source.realm)) return false;
         return observeServiceInTx(tx, { ...input, roots: [source, actual] });
       });
     },

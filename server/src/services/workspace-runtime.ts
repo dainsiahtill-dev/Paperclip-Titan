@@ -12,7 +12,8 @@ import type { Db } from "@paperclipai/db";
 import { currentWorkspaceProcessGuard, withWorkspaceProcessGuard } from "@paperclipai/adapter-utils/workspace-process-guard";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { workspaceWriteOwnershipService } from "./workspace-write-ownership.js";
-import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { localWorkspaceRealm } from "./workspace-physical-identity.js";
+import { executionWorkspaces, issueComments, issues, legacyWorkspaceEpochClosures, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
   deriveViteHmrPort,
@@ -36,7 +37,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
@@ -5539,7 +5540,7 @@ function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeo
 async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeServiceRecord) {
   if (!db) return;
   const values = toPersistedWorkspaceRuntimeService(record);
-  await db
+  const persist = (database: Db) => database
     .insert(workspaceRuntimeServices)
     .values(values)
     .onConflictDoUpdate({
@@ -5574,6 +5575,28 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         updatedAt: values.updatedAt,
       },
     });
+  if (record.provider !== "local_process" || process.platform !== "linux") {
+    await persist(db);
+    return;
+  }
+  // Serialize new registration with epoch preparation. Provisioning and HTTPS
+  // reservations persist before spawning, so reject here without creating a
+  // failed row that would permanently poison the held cohort's quiescence.
+  const realm = await localWorkspaceRealm();
+  await db.transaction(async transaction => {
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${realm}, 0))`);
+    const [existing] = await transaction.select({ id: workspaceRuntimeServices.id }).from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, record.id)).for("update");
+    if (!existing) {
+      const [prepared] = await transaction.select({ id: legacyWorkspaceEpochClosures.id }).from(legacyWorkspaceEpochClosures)
+        .where(and(eq(legacyWorkspaceEpochClosures.realm, realm), isNull(legacyWorkspaceEpochClosures.closedAt))).limit(1);
+      if (prepared) throw conflict("Local runtime registration is fenced by prepared legacy epoch maintenance", {
+        code: "workspace_legacy_epoch_prepared",
+      });
+    }
+    // Existing rows retain their cleanup/history updates while the fence is held.
+    await persist(transaction as unknown as Db);
+  });
 }
 
 async function findStoppedRuntimeServiceReuseCandidate(input: {
@@ -7714,6 +7737,13 @@ async function lockWorkspaceRuntimeStartParents(
   db: Db,
   input: StartRuntimeServicesForWorkspaceControlInput,
 ) {
+  if (process.platform === "linux") {
+    // Protected claims verify closed cohorts under realm then parent SHARE
+    // locks. Board starts and their port retries must use that same order on
+    // this transaction before taking parent UPDATE locks or registering locally.
+    const realm = await localWorkspaceRealm();
+    await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${realm}, 0))`);
+  }
   let allowFixedPortFallback = false;
   if (input.executionWorkspaceId) {
     const [lockedExecutionWorkspace] = await db

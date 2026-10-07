@@ -66,6 +66,27 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId })).toMatchObject({ code: "issue_automatic_run_limit" });
   });
 
+  it.each(["verified", "marker_only", "imported_event", "provider_invoked", "cost_recorded"])("counts workspace admission waits from server execution evidence (%s)", async evidence => {
+    const s = await seed({ maxAutomaticRuns: 1 });
+    const id = await run(s, s.childId, 10), projectWorkspaceId = randomUUID();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "workspace_busy",
+      resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        workspaceBusy: { projectWorkspaceId, holderRunId: null, holderIssueId: null, deferralAttempt: 0 } },
+    }).where(eq(heartbeatRuns.id, id));
+    if (evidence !== "marker_only") await db.insert(heartbeatRunEvents).values({ companyId: s.companyId, agentId: s.agentId, runId: id,
+      seq: 1, eventType: "lifecycle", stream: "system", level: "info", message: "Workspace admission deferred",
+      sourceEventId: evidence === "imported_event" ? "external-fixture" : null,
+      payload: { projectWorkspaceId, holderRunId: null, holderIssueId: null, deferralAttempt: 0, retryScheduled: true },
+    });
+    if (evidence === "provider_invoked") await db.insert(heartbeatRunEvents).values({ companyId: s.companyId, agentId: s.agentId, runId: id,
+      seq: 2, eventType: "adapter.invoke", stream: "system", level: "info", payload: { adapterType: "codex_local" } });
+    if (evidence === "cost_recorded") await db.insert(costEvents).values({ companyId: s.companyId, agentId: s.agentId,
+      heartbeatRunId: id, issueId: s.childId, provider: "openai", model: "fixture", costCents: 0, totalTokens: 1, occurredAt: new Date() });
+    const block = await getIssueResourceBlock(db, { companyId: s.companyId, issueId: s.childId });
+    if (evidence === "verified") expect(block).toBeNull();
+    else expect(block).toMatchObject({ code: "issue_automatic_run_limit" });
+  });
+
   it("does not treat an unproven manual label as an operator exemption", async () => {
     const s = await seed({ maxAutomaticRuns: 1 });
     const id = await run(s, s.childId, 10);

@@ -1542,6 +1542,27 @@ Required UX behaviors:
 - heartbeat invoke acknowledgement under 2 s for process adapter
 - no lost approval decisions (transactional writes)
 
+### Legacy local execution lifetime governance
+
+An unavailable historical source directory must not silently remove its local
+execution hazard or prevent an operator from preparing an auditable recovery.
+The operator may capture exact historical run/lease/event identities and a trusted
+current local database/kernel observation, then fence physical admission while
+the captured cohort is unresolved. Closure requires a different authenticated
+kernel boot on the same instance and unchanged captured history. Admission may
+discount only the exact verified cohort. This instance host fact is recorded
+separately from company-scoped task outcomes and namespace drain receipts; each
+affected company retains an audit entry. No status override, PID absence, deleted
+lock, caller-supplied boot identity or source-directory replacement is proof.
+
+When the owner explicitly authorizes manual reconciliation, a local instance
+operator may record that decision separately from exit proof. Such a disposition
+must bind the reviewed immutable historical cohort, forensic evidence digest,
+beneficiary company and full current physical source identity; it must state
+that historical namespace exit remains unproved. It cannot clear active writer
+ownership, modify historical runs, or exempt another company/root. Subsequent
+writers still require genuine protected execution and verified drain/release.
+
 ## 16. Security Requirements
 
 - store only hashed agent API keys
