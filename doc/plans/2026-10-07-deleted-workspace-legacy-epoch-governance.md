@@ -1,6 +1,6 @@
 # Deleted legacy workspace governance — 2026-10-07
 
-Status: diagnosed and proposed; not implemented or activated. No historical execution has been declared stopped by this document.
+Original proposal status: diagnosed on 2026-10-07. Implementation and current disposition are recorded in [the takeover report](../operations/2026-10-07-polaris-takeover-and-admission-repair.md). The authenticated future-epoch capability is implemented; no fresh host transition was activated. The owner's later explicit manual authorization produced a separate scoped operator decision, not historical namespace exit proof. No historical execution has been declared stopped by this proposal.
 
 ## Proven boundary
 
