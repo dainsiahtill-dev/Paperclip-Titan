@@ -4647,7 +4647,9 @@ export function issueRoutes(
       id: string;
       companyId: string;
       status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
+      executionPolicy?: unknown;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
     };
@@ -4664,8 +4666,8 @@ export function issueRoutes(
     // Conversations wait for the next message; successful run finalization owns
     // the waiting state. They do not need an execution-task review assignment.
     if (isConversation(input.existing) && !input.reviewInteractionId) return null;
-    if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
-    if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
+    if (nextStatus !== "in_review" || (input.existing.status === "in_review" &&
+        input.updateFields.status !== "in_review" && !input.reviewInteractionId)) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(
       input.existing.id,
@@ -4707,8 +4709,6 @@ export function issueRoutes(
       return designatedReviewConfirmation.id;
     }
 
-    if (input.actorType !== "agent") return null;
-
     const nextAssigneeUserId =
       input.updateFields.assigneeUserId === undefined
         ? input.existing.assigneeUserId
@@ -4724,6 +4724,12 @@ export function issueRoutes(
         ? input.existing.executionState
         : input.updateFields.executionState;
     if (hasExecutionParticipant(nextExecutionState)) return null;
+
+    // Recovery resolution applies the configured stage after this validation.
+    // Preserve an explicit reviewer instead of replacing it with the operator.
+    if (normalizeIssueExecutionPolicy(
+      input.updateFields.executionPolicy === undefined ? input.existing.executionPolicy : input.updateFields.executionPolicy,
+    )?.stages.length) return null;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (
@@ -4746,6 +4752,16 @@ export function issueRoutes(
       )
     )
       return null;
+
+    // A Board status-only handoff means that operator owns the review. Bind
+    // the real human rather than leaving the original executor in_review with
+    // no reviewer. The normal assignment/stop transaction below owns the move.
+    if (input.actorType === "user" && input.actorId.trim() &&
+        (input.updateFields.assigneeAgentId === undefined || input.updateFields.assigneeAgentId === input.existing.assigneeAgentId)) {
+      input.updateFields.assigneeAgentId = null;
+      input.updateFields.assigneeUserId = input.actorId;
+      return null;
+    }
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
@@ -13489,7 +13505,10 @@ export function issueRoutes(
       const enteringReviewRequested =
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
-        enteringReviewRequested || Boolean(reviewInteractionId);
+        enteringReviewRequested || Boolean(reviewInteractionId) ||
+        (existing.status === "in_review" && updateFields.status === "in_review" &&
+          ((updateFields.assigneeAgentId !== undefined && updateFields.assigneeAgentId !== existing.assigneeAgentId) ||
+           (updateFields.assigneeUserId !== undefined && updateFields.assigneeUserId !== existing.assigneeUserId)));
 
       const nextAssigneeAgentId =
         updateFields.assigneeAgentId === undefined
@@ -13531,6 +13550,17 @@ export function issueRoutes(
             assigneeAgentId: nextAssigneeAgentId,
             assigneeUserId: nextAssigneeUserId,
           });
+        }
+      }
+
+      if (assigneeWillChange) {
+        const reportPolicy = normalizeIssueExecutionPolicy(
+          updateFields.executionPolicy === undefined ? existing.executionPolicy : updateFields.executionPolicy,
+        );
+        if (reportPolicy?.reportDelivery) {
+          // Reject deterministic report ownership errors before cancelling valid
+          // work. The issue service repeats this check under its update lock.
+          await svc.assertReportReassignmentAdmission(existing, updateFields);
         }
       }
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaces, heartbeatRuns, issueWorkProducts, issues, nativeRunFinalizations, nativeRunResults, projects, statusDecisions, workAssessments, workspaceOperations, workspaceWriteOwners } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaces, heartbeatRuns, issueWorkProducts, issues, nativeRunFinalizations, nativeRunResults, projects, projectWorkspaces, statusDecisions, workAssessments, workspaceOperations, workspaceWriteOwners } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { captureReportDeliveryBaseline, prepareNativeReportReview, sealReportDeliveryOutputs, submitReportDelivery } from "./report-delivery.js";
 import { issueService } from "./issues.js";
@@ -80,6 +80,62 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, s.companyId)))).toHaveLength(1);
     expect(await submitReportDelivery(db, s)).toMatchObject({ state: "submitted" });
     expect(await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, s.issueId))).toHaveLength(2);
+  });
+  it("creates a Board review with a real human owner when no reviewer stage was declared", async () => {
+    const s = await seed();
+    const created = await issueService(db).create(s.companyId, { title: "Board review creation", status: "in_review", projectId: s.projectId,
+      assigneeAgentId: s.agentId, createdByUserId: "report-board", responsibleUserId: "report-board",
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], resourceLimits: { maxAutomaticRuns: 1 } } });
+    expect(created).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: "report-board" });
+    expect(created.executionPolicy?.resourceLimits).toEqual({ maxAutomaticRuns: 1 });
+  });
+  it.each(["missing_project", "missing_workspace", "self_review", "review_before_production"] as const)("rejects an unusable declared report task before creation: %s", async kind => {
+    const s = await seed();
+    if (kind === "self_review" || kind === "review_before_production") await db.insert(projectWorkspaces).values({ companyId: s.companyId, projectId: s.projectId, name: "Local reports", cwd: s.root, isPrimary: true });
+    const policy = { mode: "normal" as const, commentRequired: true, resourceLimits: { maxAutomaticRuns: 1 }, reportDelivery: { version: 1 as const, files: ["reports/REPORT.md"] },
+      stages: [{ id: randomUUID(), type: "review" as const, approvalsNeeded: 1 as const, participants: [kind === "self_review" ? { id: randomUUID(), type: "agent" as const, agentId: s.agentId } : { id: randomUUID(), type: "user" as const, userId: "report-board" }] }] };
+    await expect(issueService(db).create(s.companyId, { title: "Invalid declaration", status: kind === "review_before_production" ? "in_review" : "backlog", projectId: kind === "missing_project" ? null : s.projectId,
+      assigneeAgentId: s.agentId, createdByUserId: "report-board", executionPolicy: policy })).rejects.toMatchObject({ status: 422,
+        details: { code: kind === "self_review" ? "report_review_participant_required" : kind === "review_before_production" ? "report_delivery_start_status_invalid" : "report_workspace_required" } });
+    expect(await db.select().from(issues).where(eq(issues.companyId, s.companyId))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, s.companyId))).toHaveLength(1);
+  });
+  it("rejects editing an existing report contract into a producer-only review", async () => {
+    const s = await seed();
+    const before = (await db.select().from(issues).where(eq(issues.id, s.issueId)))[0];
+    const policy = { ...before.executionPolicy!, stages: [{ id: randomUUID(), type: "review" as const, approvalsNeeded: 1 as const,
+      participants: [{ id: randomUUID(), type: "agent" as const, agentId: s.agentId }] }] };
+    await expect(issueService(db).update(s.issueId, { executionPolicy: policy, actorUserId: "report-board" })).rejects.toMatchObject({ status: 422,
+      details: { code: "report_review_participant_required" } });
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0].executionPolicy).toEqual(before.executionPolicy);
+  });
+  it("preflights an invalid report producer before mutation and repeats rejection under the update lock", async () => {
+    const s = await seed();
+    const before = (await db.select().from(issues).where(eq(issues.id, s.issueId)))[0];
+    const svc = issueService(db);
+    const policy = { ...before.executionPolicy!, stages: [{ id: randomUUID(), type: "review" as const, approvalsNeeded: 1 as const,
+      participants: [{ id: randomUUID(), type: "agent" as const, agentId: s.agentId }] }] };
+    await expect(svc.assertReportReviewers(s.companyId, { ...policy, mode: "normal", commentRequired: true }, s.agentId)).rejects.toMatchObject({ status: 422,
+      details: { code: "report_review_participant_required" } });
+    await expect(svc.assertReportReassignmentAdmission(before, { executionPolicy: policy, assigneeAgentId: s.agentId })).rejects.toMatchObject({ status: 422,
+      details: { code: "report_review_participant_required" } });
+    await expect(svc.assertReportReassignmentAdmission(before, { projectId: randomUUID() })).rejects.toMatchObject({ status: 422,
+      details: { code: "report_workspace_required" } });
+    await expect(svc.update(s.issueId, { executionPolicy: policy, assigneeAgentId: s.agentId, actorUserId: "report-board" })).rejects.toMatchObject({ status: 422 });
+    expect((await db.select().from(issues).where(eq(issues.id, s.issueId)))[0]).toEqual(before);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, s.runId)))[0].status).toBe("running");
+  });
+  it("keeps the original producer when a first agent review transition includes its report policy", async () => {
+    const s = await seed();
+    const reviewerId = randomUUID();
+    await db.insert(agents).values({ id: reviewerId, companyId: s.companyId, name: "Report reviewer", role: "qa", adapterType: "codex_local", status: "idle" });
+    const issue = (await db.select().from(issues).where(eq(issues.id, s.issueId)))[0];
+    const policy = normalizeIssueExecutionPolicy({ ...issue.executionPolicy!, stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: reviewerId }] }] })!;
+    const transition = applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "in_review", requestedAssigneePatch: {}, actor: { userId: "report-board" }, allowBoardOverride: true });
+    await expect(issueService(db).assertReportReassignmentAdmission(issue, { ...transition.patch, executionPolicy: { ...policy } })).resolves.toBeUndefined();
+    const updated = await issueService(db).update(s.issueId, { ...transition.patch, executionPolicy: { ...policy }, actorUserId: "report-board" });
+    expect(updated).toMatchObject({ status: "in_review", assigneeAgentId: reviewerId,
+      executionState: { returnAssignee: { type: "agent", agentId: s.agentId }, currentParticipant: { type: "agent", agentId: reviewerId } } });
   });
   it("recovers a terminal run's pending report without another provider attempt", async () => {
     const s = await seed(); await prepare(s); await write(s); await finish(s);

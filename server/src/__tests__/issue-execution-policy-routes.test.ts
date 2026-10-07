@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  assertReportReassignmentAdmission: vi.fn(async () => undefined),
   createChild: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -200,6 +201,7 @@ describe("issue execution policy routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockIssueService.assertReportReassignmentAdmission.mockResolvedValue(undefined);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -260,6 +262,29 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+  });
+
+  it.each(["producer", "workspace"])("rejects an invalid report %s reassignment before stopping its active executor", async kind => {
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+      executionRunId: "66666666-6666-4666-8666-666666666666", executionState: null,
+      executionPolicy: { mode: "normal", commentRequired: true,
+        reportDelivery: { version: 1, files: ["reports/REPORT.md"] },
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: "55555555-5555-4555-8555-555555555555" }] }] } };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: issue.executionRunId, status: "running", agentId: issue.assigneeAgentId } as never);
+    const app = await createApp();
+    const { unprocessable } = await import("../errors.js");
+    mockIssueService.assertReportReassignmentAdmission.mockRejectedValue(unprocessable("Invalid report reassignment", {
+      code: kind === "producer" ? "report_review_participant_required" : "report_workspace_required",
+    }));
+    const res = await request(app).patch(`/api/issues/${issue.id}`)
+      .send({ assigneeAgentId: "55555555-5555-4555-8555-555555555555" });
+    expect(res.status).toBe(422);
+    expect(mockIssueService.assertReportReassignmentAdmission).toHaveBeenCalled();
+    expect(mockRunnerGoalService.act).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {
@@ -708,11 +733,11 @@ describe("issue execution policy routes", () => {
     );
   });
 
-  it("allows board-authored in_review repair updates without a review path", async () => {
+  it.each(["todo", "in_review"])("binds a board-authored legacy review from %s to the operator instead of leaving the executor stranded", async status => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
-      status: "todo",
+      status,
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       assigneeUserId: null,
       createdByUserId: "local-board",
@@ -733,6 +758,7 @@ describe("issue execution policy routes", () => {
       .send({ status: "in_review" });
 
     expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: "local-board" });
     expect(mockDb.transaction).toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -745,8 +771,8 @@ describe("issue execution policy routes", () => {
       expect.any(Array),
     );
     expect(mockLogActivity.mock.calls[0]?.[0]).toBe(mockIssueService.update.mock.calls[0]?.[2]);
-    expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
-    expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(issue.id,
+      expect.objectContaining({ assigneeAgentId: null, assigneeUserId: "local-board" }), expect.anything());
   });
 
   it("allows a board user to cancel an active agent review task", async () => {

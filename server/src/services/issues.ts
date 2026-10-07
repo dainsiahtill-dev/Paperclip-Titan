@@ -133,6 +133,7 @@ import {
 import {
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -7069,8 +7070,8 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
-    const membership = await db
+  async function assertAssignableUser(companyId: string, userId: string, reader: DbReader = db) {
+    const membership = await reader
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -7085,6 +7086,46 @@ export function issueService(db: Db) {
     if (!membership) {
       throw notFound("Assignee user not found");
     }
+  }
+
+  async function assertReportReviewers(companyId: string, policy: ReturnType<typeof normalizeIssueExecutionPolicy>, producerAgentId: string | null | undefined, reader: DbReader = db) {
+    if (!policy?.reportDelivery) return;
+    const reviewers = policy.stages[0].participants.filter(participant => participant.type !== "agent" || participant.agentId !== producerAgentId);
+    if (!reviewers.length) throw unprocessable("Report handoff requires a reviewer different from its producer", { code: "report_review_participant_required" });
+    for (const reviewer of reviewers) {
+      if (reviewer.type === "agent") await assertAssignableAgent(reader as Db, companyId, reviewer.agentId, { kind: "work" });
+      else if (reviewer.userId) await assertAssignableUser(companyId, reviewer.userId, reader);
+    }
+  }
+
+  async function assertReportWorkspace(companyId: string, projectId: string | null | undefined, projectWorkspaceId: string | null | undefined, executionWorkspaceId: string | null | undefined, reader: DbReader) {
+    const workspace = projectId && executionWorkspaceId
+      ? await reader.select({ cwd: executionWorkspaces.cwd, local: sql<boolean>`${executionWorkspaces.providerType} in ('local_fs', 'git_worktree')` })
+        .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.projectId, projectId))).then(rows => rows[0])
+      : projectId && projectWorkspaceId ? await reader.select({ cwd: projectWorkspaces.cwd, local: sql<boolean>`${projectWorkspaces.remoteProvider} is null` })
+        .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId))).then(rows => rows[0]) : null;
+    if (!workspace?.cwd || !workspace.local) throw unprocessable("Report handoff requires a project with a configured local workspace", { code: "report_workspace_required" });
+  }
+
+  async function assertReportReassignmentAdmission(existing: typeof issues.$inferSelect, update: Partial<typeof issues.$inferInsert>) {
+    const candidate = { ...existing, ...update };
+    const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
+    if (!policy?.reportDelivery) return;
+    // Public updates ignore execution-workspace overrides while the feature is
+    // disabled; preflight must validate the same effective binding as update.
+    if (!(await instanceSettings.getExperimental()).enableIsolatedWorkspaces) {
+      candidate.executionWorkspaceId = existing.executionWorkspaceId;
+    }
+    if (!candidate.projectId && candidate.projectWorkspaceId) {
+      candidate.projectId = (await assertValidProjectWorkspace(existing.companyId, null, candidate.projectWorkspaceId)).projectId;
+    }
+    if (!candidate.projectId && candidate.executionWorkspaceId) {
+      candidate.projectId = (await assertValidExecutionWorkspace(existing.companyId, null, candidate.executionWorkspaceId)).projectId;
+    }
+    const returnOwner = parseIssueExecutionState(candidate.executionState)?.returnAssignee;
+    await assertReportReviewers(existing.companyId, policy,
+      candidate.status === "in_review" && returnOwner?.type === "agent" ? returnOwner.agentId : candidate.assigneeAgentId);
+    await assertReportWorkspace(existing.companyId, candidate.projectId, candidate.projectWorkspaceId, candidate.executionWorkspaceId, db);
   }
 
   async function assertValidProjectWorkspace(
@@ -7802,6 +7843,8 @@ export function issueService(db: Db) {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
+    assertReportReviewers,
+    assertReportReassignmentAdmission,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.sortField === "id" && filters.attention) {
@@ -9750,6 +9793,20 @@ export function issueService(db: Db) {
           (issueData.executionPolicy as Record<string, unknown>).reportDelivery) {
         throw forbidden("Controller-observed report contracts must be declared by the board");
       }
+      const initialReviewPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+      if (issueData.executionPolicy?.reportDelivery && !initialReviewPolicy?.reportDelivery) {
+        throw unprocessable("Report handoff requires valid report paths and a named first reviewer", { code: "report_delivery_invalid" });
+      }
+      if (initialReviewPolicy?.reportDelivery && !["backlog", "todo", "in_progress"].includes(issueData.status ?? "backlog")) {
+        throw unprocessable("Create report-producing work before entering its review stage", { code: "report_delivery_start_status_invalid" });
+      }
+      if (issueData.status === "in_review" && issueData.createdByUserId && !issueData.createdByAgentId &&
+          !issueData.assigneeUserId && !initialReviewPolicy?.stages.length && !initialReviewPolicy?.monitor?.nextCheckAt) {
+        // Match a Board status-only handoff: an unconfigured review belongs to
+        // the operator creating it, not to an executor with no review path.
+        issueData.assigneeAgentId = null;
+        issueData.assigneeUserId = issueData.createdByUserId;
+      }
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
@@ -9761,14 +9818,15 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (data.assigneeAgentId) {
-        await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
+      if (issueData.assigneeAgentId) {
+        await assertAssignableAgent(db, companyId, issueData.assigneeAgentId, {
           kind: "work",
         });
       }
-      if (data.assigneeUserId) {
-        await assertAssignableUser(companyId, data.assigneeUserId);
+      if (issueData.assigneeUserId) {
+        await assertAssignableUser(companyId, issueData.assigneeUserId);
       }
+      await assertReportReviewers(companyId, initialReviewPolicy, issueData.assigneeAgentId);
       if (
         data.status === "in_progress" &&
         !data.assigneeAgentId &&
@@ -10072,6 +10130,9 @@ export function issueService(db: Db) {
             executionWorkspaceId,
             tx,
           );
+        }
+        if (initialReviewPolicy?.reportDelivery) {
+          await assertReportWorkspace(companyId, issueData.projectId, projectWorkspaceId, executionWorkspaceId, tx);
         }
         if (
           isolatedWorkspacesEnabled &&
@@ -10923,6 +10984,18 @@ export function issueService(db: Db) {
           if (JSON.stringify(resources(receiptExisting.executionPolicy)) !== JSON.stringify(resources(issueData.executionPolicy))) {
             throw forbidden("Task resource limits are board-managed and cannot be changed by an agent");
           }
+        }
+        if (issueData.executionPolicy !== undefined || issueData.projectId !== undefined || issueData.projectWorkspaceId !== undefined ||
+            issueData.executionWorkspaceId !== undefined || (issueData.assigneeAgentId !== undefined && deliveryCandidate.status !== "in_review")) {
+          const policy = normalizeIssueExecutionPolicy(deliveryCandidate.executionPolicy ?? null);
+          if (deliveryCandidate.executionPolicy?.reportDelivery && !policy?.reportDelivery) {
+            throw unprocessable("Report handoff requires valid report paths and a named first reviewer", { code: "report_delivery_invalid" });
+          }
+          const returnOwner = parseIssueExecutionState(deliveryCandidate.executionState)?.returnAssignee;
+          await assertReportReviewers(receiptExisting.companyId, policy,
+            deliveryCandidate.status === "in_review" && returnOwner?.type === "agent" ? returnOwner.agentId : deliveryCandidate.assigneeAgentId, tx);
+          if (policy?.reportDelivery) await assertReportWorkspace(receiptExisting.companyId, deliveryCandidate.projectId,
+            deliveryCandidate.projectWorkspaceId, deliveryCandidate.executionWorkspaceId, tx);
         }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);

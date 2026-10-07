@@ -4430,7 +4430,13 @@ export function recoveryService(
           continue;
         }
       }
-      const invocationBudgetBlock = await getInvocationBudgetBlock(issue, agentId);
+      // Review waiting is not an automatic invocation. A human participant or
+      // legacy review without a typed agent participant must reach its own
+      // disposition path, not become a quota failure of the old executor.
+      // Accepted interaction continuations retain their budget gate below.
+      const invocationBudgetBlock = issue.status === "in_review" && !participantAgentId
+        ? null
+        : await getInvocationBudgetBlock(issue, agentId);
       if (invocationBudgetBlock) {
         const classification = classifyContinuationFailure(latestRun);
         if (

@@ -1625,3 +1625,35 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+
+**File-only work with controller-managed report handoff**
+
+For Board-created work whose employee must only write local reports and exit,
+declare the report paths and next reviewer in `executionPolicy` at creation.
+Text such as "do not write status; Root handles handoff" is not that contract.
+Use a project with a configured local workspace, an employee assignee, and a
+reviewer different from that employee. Start in `backlog` or `todo`.
+
+```json
+{
+  "reportDelivery": { "version": 1, "files": ["reports/REPORT.md", "reports/REPORT.json"] },
+  "mode": "normal",
+  "commentRequired": true,
+  "stages": [{ "type": "review", "participants": [{ "type": "user", "userId": "local-board" }] }]
+}
+```
+
+Use a real eligible company user instead of `local-board` in authenticated
+instances. Protected shared Codex tasks require the task-scoped
+`assigneeAdapterOverrides.adapterConfig.engine: "cli"`; preserve their model
+and sandbox settings. The controller observes baseline/final hashes and enters
+the declared review after execution cleanup. It does not approve inspected
+code, reset resource usage, or grant filesystem access. Agent-authored tasks
+retain normal artifact publication; they cannot grant this Board-managed
+contract to themselves.
+
+For an already-finished legacy run without the declaration, Board must verify
+real exit and current source/report bindings, manually register the original
+reports as unapproved work products, and use the exact recovery action's
+official resolution to enter named human review. Do not fabricate a historical
+baseline/seal or repeat the provider work to fix missing status bookkeeping.

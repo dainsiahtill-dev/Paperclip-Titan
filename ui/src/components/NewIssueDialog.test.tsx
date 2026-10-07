@@ -229,12 +229,6 @@ vi.mock("@/components/ui/button", () => ({
   ),
 }));
 
-vi.mock("@/components/ui/toggle-switch", () => ({
-  ToggleSwitch: ({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) => (
-    <button type="button" aria-pressed={checked} onClick={onCheckedChange}>toggle</button>
-  ),
-}));
-
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -381,6 +375,61 @@ describe("NewIssueDialog", () => {
       Reflect.deleteProperty(window, "innerHeight");
     }
     document.body.innerHTML = "";
+  });
+
+  it("creates an explicitly declared report handoff with the current human reviewer and safe CLI transport", async () => {
+    const agentId = "00000000-0000-4000-8000-000000000001";
+    mockAgentsApi.list.mockResolvedValue([{ id: agentId, companyId: "company-1", name: "Reporter", status: "idle", role: "engineer", adapterType: "codex_local",
+      adapterConfig: { model: "gpt-6.1-sol", dangerouslyBypassApprovalsAndSandbox: false }, runtimeConfig: {}, permissions: {} }]);
+    dialogState.newIssueDefaults = { title: "Report handoff", status: "backlog", assigneeAgentId: agentId, projectId: "project-1" };
+    const { root } = renderDialog(container);
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>("[data-testid='new-issue-report-handoff-toggle']");
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle!.click(); });
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"));
+    await act(async () => { submit!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      status: "backlog", assigneeAgentId: agentId,
+      assigneeAdapterOverrides: { adapterConfig: { engine: "cli" } },
+      executionPolicy: expect.objectContaining({ reportDelivery: { version: 1, files: ["reports/REPORT.md", "reports/REPORT.json"] },
+        stages: [expect.objectContaining({ type: "review", participants: [expect.objectContaining({ type: "user", userId: "user-1" })] })] }),
+    }));
+    act(() => root.unmount());
+  });
+
+  it("keeps an invalid report declaration visible without creating or dispatching a task", async () => {
+    dialogState.newIssueDefaults = { title: "Missing report outputs", status: "backlog", projectId: "project-1", assigneeAgentId: "00000000-0000-4000-8000-000000000001" };
+    const { root } = renderDialog(container);
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>("[data-testid='new-issue-report-handoff-toggle']");
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle!.click(); });
+    const input = container.querySelector<HTMLTextAreaElement>("[data-testid='new-issue-report-paths']");
+    expect(input).not.toBeNull();
+    await typeTextareaValue(input!, "");
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"));
+    await act(async () => { submit!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect(container.querySelector("[role='alert']")?.textContent?.length).toBeGreaterThan(0);
+    act(() => root.unmount());
+  });
+
+  it("does not create a report handoff without a project workspace binding", async () => {
+    dialogState.newIssueDefaults = { title: "No report workspace", status: "backlog", assigneeAgentId: "00000000-0000-4000-8000-000000000001" };
+    const { root } = renderDialog(container);
+    await flush();
+    const toggle = container.querySelector<HTMLButtonElement>("[data-testid='new-issue-report-handoff-toggle']");
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle!.click(); });
+    const submit = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create Task"));
+    await act(async () => { submit!.click(); });
+    await flush();
+    expect(mockIssuesApi.create).not.toHaveBeenCalled();
+    expect(container.querySelector("[role='alert']")?.textContent?.length).toBeGreaterThan(0);
+    act(() => root.unmount());
   });
 
   it("shows sub-issue context only when opened from a sub-issue action", async () => {

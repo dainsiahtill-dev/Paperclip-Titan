@@ -147,6 +147,8 @@ interface IssueDraft {
   priority: string;
   assigneeValue: string;
   reviewerValue: string;
+  reportHandoffEnabled?: boolean;
+  reportPaths?: string;
   approverValue: string;
   watchdogAgentId?: string;
   watchdogInstructions?: string;
@@ -480,6 +482,9 @@ export function NewIssueDialog() {
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
   const [reviewerValue, setReviewerValue] = useState("");
+  const [reportHandoffEnabled, setReportHandoffEnabled] = useState(false);
+  const [reportPaths, setReportPaths] = useState("reports/REPORT.md\nreports/REPORT.json");
+  const [reportError, setReportError] = useState<string | null>(null);
   const [approverValue, setApproverValue] = useState("");
   const [showReviewerRow, setShowReviewerRow] = useState(false);
   const [showApproverRow, setShowApproverRow] = useState(false);
@@ -712,6 +717,8 @@ export function NewIssueDialog() {
       priority,
       assigneeValue,
       reviewerValue,
+      reportHandoffEnabled,
+      reportPaths,
       approverValue,
       watchdogAgentId,
       watchdogInstructions,
@@ -732,6 +739,8 @@ export function NewIssueDialog() {
     priority,
     assigneeValue,
     reviewerValue,
+    reportHandoffEnabled,
+    reportPaths,
     approverValue,
     watchdogAgentId,
     watchdogInstructions,
@@ -770,6 +779,8 @@ export function NewIssueDialog() {
     priority,
     assigneeValue,
     reviewerValue,
+    reportHandoffEnabled,
+    reportPaths,
     approverValue,
     watchdogAgentId,
     watchdogInstructions,
@@ -799,6 +810,9 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
+    setReportHandoffEnabled(false);
+    setReportPaths("reports/REPORT.md\nreports/REPORT.json");
+    setReportError(null);
     if (newIssueDefaults.parentId) {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
       const defaultProjectId = newIssueDefaults.projectId ?? "";
@@ -866,6 +880,8 @@ export function NewIssueDialog() {
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
       setReviewerValue(draft.reviewerValue ?? "");
+      setReportHandoffEnabled(draft.reportHandoffEnabled ?? false);
+      setReportPaths(draft.reportPaths ?? "reports/REPORT.md\nreports/REPORT.json");
       setApproverValue(draft.approverValue ?? "");
       setShowReviewerRow(!!(draft.reviewerValue));
       setShowApproverRow(!!(draft.approverValue));
@@ -966,6 +982,9 @@ export function NewIssueDialog() {
     setPriority("");
     setAssigneeValue("");
     setReviewerValue("");
+    setReportHandoffEnabled(false);
+    setReportPaths("reports/REPORT.md\nreports/REPORT.json");
+    setReportError(null);
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
@@ -997,6 +1016,9 @@ export function NewIssueDialog() {
     setDialogCompanyId(companyId);
     setAssigneeValue("");
     setReviewerValue("");
+    setReportHandoffEnabled(false);
+    setReportPaths("reports/REPORT.md\nreports/REPORT.json");
+    setReportError(null);
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
@@ -1024,7 +1046,7 @@ export function NewIssueDialog() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
     if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
-    const assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
+    let assigneeAdapterOverrides = buildAssigneeAdapterOverrides({
       adapterType: assigneeAdapterType,
       lane: assigneeModelLane,
       modelOverride: assigneeModelOverride,
@@ -1046,10 +1068,25 @@ export function NewIssueDialog() {
     const executionWorkspaceSettings = executionWorkspacePolicy?.enabled
       ? { mode: requestedExecutionWorkspaceMode }
       : null;
-    const executionPolicy = buildExecutionPolicy({
-      reviewerValues: reviewerValue ? [reviewerValue] : [],
-      approverValues: approverValue ? [approverValue] : [],
-    });
+    let executionPolicy: ReturnType<typeof buildExecutionPolicy>;
+    try {
+      if (reportHandoffEnabled && !selectedAssigneeAgentId) throw new Error(v3t("newIssue.reportAssigneeRequired"));
+      if (reportHandoffEnabled && !projectId) throw new Error(v3t("newIssue.reportProjectRequired"));
+      if (reportHandoffEnabled && !["backlog", "todo", "in_progress"].includes(status)) throw new Error(v3t("newIssue.reportStartStatusRequired"));
+      executionPolicy = buildExecutionPolicy({
+        reviewerValues: reviewerValue ? [reviewerValue] : [],
+        approverValues: approverValue ? [approverValue] : [],
+        ...(reportHandoffEnabled ? { reportPaths, reporterAgentId: selectedAssigneeAgentId } : {}),
+      });
+    } catch (error) {
+      setReportError(error instanceof Error && error.message !== "report_delivery_invalid" ? error.message : v3t("newIssue.reportInvalid"));
+      return;
+    }
+    if (reportHandoffEnabled && assigneeAdapterType === "codex_local" && requestedExecutionWorkspaceMode === "shared_workspace") {
+      const previousConfig = assigneeAdapterOverrides?.adapterConfig;
+      assigneeAdapterOverrides = { ...assigneeAdapterOverrides,
+        adapterConfig: { ...(previousConfig && typeof previousConfig === "object" && !Array.isArray(previousConfig) ? previousConfig : {}), engine: "cli" } };
+    }
     createIssue.mutate({
       companyId: effectiveCompanyId,
       stagedFiles,
@@ -1689,6 +1726,29 @@ export function NewIssueDialog() {
                 />
               </div>
             )}
+
+            <div className="mt-2 space-y-2 rounded-md border border-border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm">{v3t("newIssue.reportHandoff")}</span>
+                <ToggleSwitch data-testid="new-issue-report-handoff-toggle" aria-label={v3t("newIssue.reportHandoff")}
+                  checked={reportHandoffEnabled} disabled={createIssue.isPending}
+                  onCheckedChange={value => {
+                    setReportHandoffEnabled(value);
+                    setReportError(null);
+                    if (value) {
+                      setShowReviewerRow(true);
+                      if (!reviewerValue && currentUserId) setReviewerValue(`user:${currentUserId}`);
+                    }
+                  }} />
+              </div>
+              {reportHandoffEnabled ? <>
+                <p className="text-xs text-muted-foreground">{v3t("newIssue.reportHandoffDescription")}</p>
+                <Textarea data-testid="new-issue-report-paths" aria-label={v3t("newIssue.reportPaths")}
+                  value={reportPaths} rows={3} disabled={createIssue.isPending}
+                  onChange={event => { setReportPaths(event.target.value); setReportError(null); }} />
+              </> : null}
+              {reportError ? <p role="alert" className="text-sm text-destructive">{reportError}</p> : null}
+            </div>
 
             {/* Approver row */}
             {showApproverRow && (

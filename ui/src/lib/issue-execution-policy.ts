@@ -1,4 +1,5 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
+import { issueExecutionPolicySchema } from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees";
 
 type StageType = "review" | "approval";
@@ -80,6 +81,9 @@ export function buildExecutionPolicy(input: {
   existingPolicy?: IssueExecutionPolicy | null;
   reviewerValues: string[];
   approverValues: string[];
+  /** Defined only when the creator requests controller-managed report handoff. */
+  reportPaths?: string;
+  reporterAgentId?: string | null;
 }): IssueExecutionPolicy | null {
   const mode = input.existingPolicy?.mode ?? "normal";
   const stages: IssueExecutionPolicy["stages"] = [];
@@ -108,13 +112,20 @@ export function buildExecutionPolicy(input: {
   }
 
   const additional = Object.keys(input.existingPolicy ?? {}).some(key => !["mode", "commentRequired", "stages", "monitor"].includes(key));
-  if (stages.length === 0 && !monitor && !additional) return null;
+  if (stages.length === 0 && !monitor && !additional && input.reportPaths === undefined) return null;
 
-  return {
+  const policy: IssueExecutionPolicy = {
     ...input.existingPolicy,
     mode,
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
+    ...(input.reportPaths !== undefined ? { reportDelivery: { version: 1,
+      files: input.reportPaths.split(/\r?\n/).map(value => value.trim()).filter(Boolean) } } : {}),
   };
+  if (input.reportPaths !== undefined && (!issueExecutionPolicySchema.safeParse(policy).success ||
+      (input.reporterAgentId && policy.stages[0]?.participants.every(participant => participant.type === "agent" && participant.agentId === input.reporterAgentId)))) {
+    throw new Error("report_delivery_invalid");
+  }
+  return policy;
 }
