@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Maximize2, Pause, Play, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
+import { Building2, Maximize2, MessageCircle, Pause, Play, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
 import { AGENT_STATUSES } from "@paperclipai/shared";
 import { v3t } from "@/i18n";
 import { Link } from "@/lib/router";
@@ -13,7 +13,9 @@ import { useCompanyLiveEvent } from "../context/LiveUpdatesProvider";
 import { usePageVisibility } from "../lib/page-visibility";
 import { agentUrl } from "../lib/utils";
 import { buildOfficeDepartments, deriveOfficePresence, officeEventNeedsRefresh } from "../lib/pixel-office";
-import { fetchOfficeSnapshot, selectOfficeTask } from "../lib/pixel-office-snapshot";
+import { fetchOfficeSnapshot } from "../lib/pixel-office-snapshot";
+import { deriveOfficeActivity } from "../lib/phaser-office-activity";
+import { useOfficeProgress } from "../components/pixel-office/use-office-progress";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "../components/ui/button";
@@ -45,11 +47,21 @@ export function PixelOffice() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [department, setDepartment] = useState("all");
   const [paused, setPaused] = useState(false);
+  const [showActivities, setShowActivities] = useState(true);
   const [reduce, setReduce] = useState(false);
   const [motionOverride, setMotionOverride] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const [themeRevision, setThemeRevision] = useState(0);
   const renderer = useRef<PhaserOfficeHandle>(null);
-  const config = useMemo(readPhaserOfficeConfig, []);
+  const config = useMemo(readPhaserOfficeConfig, [themeRevision]);
+  useEffect(() => {
+    const hot = import.meta.hot; if (!hot) return;
+    // CSS hot updates must refresh both model dimensions and the Phaser theme,
+    // rather than leaving the already-created scene with old token snapshots.
+    const refreshTheme = () => setThemeRevision(revision => revision + 1);
+    hot.on("vite:afterUpdate", refreshTheme);
+    return () => hot.off("vite:afterUpdate", refreshTheme);
+  }, []);
   const slots = useRef<{ companyId: string | null; value: PhaserOfficeSlots }>({ companyId: null, value: { rooms: {}, seats: {} } });
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryKey = useMemo(() => ["pixel-office", selectedCompanyId, "snapshot"] as const, [selectedCompanyId]);
@@ -86,15 +98,18 @@ export function PixelOffice() {
     try { localStorage.setItem("paperclip.office.phaser.slots." + selectedCompanyId, JSON.stringify(layout.slots)); } catch { /* Private browsing can disable storage. */ }
   }, [layout.slots, selectedCompanyId, data.data]);
   const presences = useMemo(() => new Map(staff.map(a => [a.id, deriveOfficePresence(a, data.data?.runs ?? [], data.data?.executions ?? [])])), [staff, data.data]);
+  const activities = useMemo(() => new Map(staff.map(agent => [agent.id, deriveOfficeActivity(agent, presences.get(agent.id)!, data.data?.issues ?? [])])), [staff, presences, data.data?.issues]);
+  const refreshProgressProjection = useCallback(() => { void client.invalidateQueries({ queryKey }, { cancelRefetch: false }); }, [client, queryKey]);
+  const workProgress = useOfficeProgress(selectedCompanyId, presences, data.data, refreshProgressProjection);
   const broken = !!data.error || !!assets.error;
   const selected = staff.find(a => a.id === selectedId) ?? null;
   const presence = selected ? presences.get(selected.id) : null;
   const selectedRoom = selected ? layout.rooms.find(r => r.department.agents.some(a => a.id === selected.id)) : null;
-  const currentIssue = selected ? selectOfficeTask(data.data?.issues ?? [], selected.id, presence?.issueId) : undefined;
+  const currentIssue = selected ? activities.get(selected.id)?.task : undefined;
   const refresh = () => { renderer.current?.retry(); void data.refetch(); void assets.refetch(); };
   const animationPaused = paused || reduce && !motionOverride;
   const toggleAnimation = () => { if (reduce && !motionOverride) { setMotionOverride(true); setPaused(false); } else setPaused(p => !p); };
-  const sceneState = useMemo(() => ({ model: layout, presences, selectedId, department, paused: animationPaused || !visibility.visible || broken }), [layout, presences, selectedId, department, animationPaused, visibility.visible, broken]);
+  const sceneState = useMemo(() => ({ model: layout, presences, workOutputs: workProgress.outputs, workRunIds: workProgress.bindings, showActivities, selectedId, department, paused: animationPaused || !visibility.visible || broken }), [layout, presences, workProgress.outputs, workProgress.bindings, showActivities, selectedId, department, animationPaused, visibility.visible, broken]);
   if (!selectedCompanyId) return <EmptyState icon={Building2} message={v3t("office.selectCompany")} />;
   if (data.isPending || assets.isPending) return <PageSkeleton variant="list" />;
   if (!data.data || !assets.data) return <div className="po-error-state"><p>{v3t("office.loadError")}</p><p>{data.error?.message ?? assets.error?.message}</p><Button onClick={refresh}>{v3t("office.retry")}</Button></div>;
@@ -107,6 +122,7 @@ export function PixelOffice() {
         <Button variant="outline" size="icon" onClick={() => renderer.current?.zoomBy(-officeNumber("zoom-step"))} aria-label={v3t("office.zoomOut")}><ZoomOut /></Button>
         <Button variant="outline" size="icon" onClick={() => renderer.current?.fit()} aria-label={v3t("office.fit")}><Maximize2 /></Button>
         <Button variant="outline" size="icon" onClick={toggleAnimation} aria-label={animationPaused ? v3t("office.playAnimations") : v3t("office.pauseAnimations")} aria-pressed={animationPaused}>{animationPaused ? <Play /> : <Pause />}</Button>
+        <Button variant={showActivities ? "secondary" : "outline"} size="icon" onClick={() => setShowActivities(show => !show)} aria-label={v3t(showActivities ? "office.hideActivities" : "office.showActivities")} aria-pressed={showActivities}><MessageCircle /></Button>
         <Button variant="outline" size="icon" onClick={refresh} aria-label={v3t("office.refresh")} disabled={data.isFetching}><RefreshCw /></Button>
       </div>
     </header>
@@ -116,7 +132,7 @@ export function PixelOffice() {
     {!staff.length ? <EmptyState icon={Building2} message={v3t("office.noStaff")} /> : <div className="po-content">
       <div className="po-view-shell">
         <div className="po-view-caption"><span><span className="po-live-dot" />{v3t("office.live")}</span><span>{Math.round(zoom * 100)}% · {v3t("office.southDoors")}</span></div>
-        <PhaserOffice key={selectedCompanyId} ref={renderer} assets={assets.data} state={sceneState} onSelect={setSelectedId} onZoom={setZoom} />
+        <PhaserOffice key={selectedCompanyId + ":" + themeRevision} ref={renderer} assets={assets.data} state={sceneState} onSelect={setSelectedId} onZoom={setZoom} />
         <div className="po-legend">{AGENT_STATUSES.map(status => <div key={status}><AgentStatusBadge status={status} label={v3t("office.status." + status)} /><strong>{staff.filter(a => a.status === status).length}</strong></div>)}</div>
       </div>
       <aside className="po-inspector">
@@ -126,7 +142,7 @@ export function PixelOffice() {
           <div className="po-profile-picture"><OfficeNpc assets={assets.data} agentId={selected.id} action={presence.action === "working" ? "typing_seated" : "loaf_coffee"} elapsed={0} hold direction="south" /></div>
           <h3>{selected.name}</h3><AgentStatusBadge status={selected.status} label={v3t("office.status." + selected.status)} />
           <p className="po-activity">{v3t("office.action." + presence.action)}</p>
-          <dl><dt>{v3t("office.department")}</dt><dd>{selectedRoom ? phaserDepartmentName(selectedRoom.department) : "—"}</dd><dt>{v3t("office.role")}</dt><dd>{selected.title ?? selected.role}</dd><dt>{v3t("office.currentTask")}</dt><dd>{currentIssue ? <Link to={"/issues/" + currentIssue.id}>{currentIssue.identifier} · {currentIssue.title}</Link> : v3t("office.noCurrentTask")}</dd>{presence.phase && <><dt>{v3t("office.executionPhase")}</dt><dd>{v3t("office.phase." + presence.phase)}</dd></>}</dl>
+          <dl><dt>{v3t("office.department")}</dt><dd>{selectedRoom ? phaserDepartmentName(selectedRoom.department) : "—"}</dd><dt>{v3t("office.role")}</dt><dd>{selected.title ?? selected.role}</dd><dt>{v3t("office.currentTask")}</dt><dd>{currentIssue ? <Link to={"/issues/" + currentIssue.id}>{currentIssue.identifier ? currentIssue.identifier + " · " : ""}{currentIssue.title}</Link> : v3t("office.noCurrentTask")}</dd>{presence.phase && <><dt>{v3t("office.executionPhase")}</dt><dd>{v3t("office.phase." + presence.phase)}</dd></>}</dl>
           <Button asChild variant="outline"><Link to={agentUrl(selected)}>{v3t("office.openEmployee")}</Link></Button>
         </> : <div className="po-inspector-empty"><Building2 /><p>{v3t("office.clickEmployee")}</p></div>}
         <div className="po-inspector-note"><h3>{v3t("office.dynamicLayout")}</h3><p>{v3t("office.layoutNote")}</p><p>{v3t("office.statusNote")}</p></div>

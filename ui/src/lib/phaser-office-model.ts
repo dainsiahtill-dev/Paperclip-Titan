@@ -104,10 +104,6 @@ export function buildPhaserOffice(departments: OfficeDepartment[], previous: Pha
   addProp("water_cooler", lounge.x + decor.sofa / 2 + decor.padding, corridors[0].y + c.margin / 2 - c.wall * 2, decor.plant, "water-cooler");
   addProp("reception_desk", entrance.x + c.grid * 5, foyerY + c.grid * 3, decor.reception, "reception");
   for (const px of [c.wall + decor.padding, width - c.wall - decor.padding - decor.plant]) for (const corridor of corridors) addProp("plant_large", px, corridor.y + decor.padding, decor.plant);
-  for (let px = c.wall + decor.padding; px < width - c.grid * 12; px += c.grid * 12) {
-    if (Math.abs(px - entrance.x) < c.grid * 16 || px > entrance.x && px < entrance.x + decor.reception + c.grid * 10) continue;
-    addProp("hedge", px, outsideY + c.wall, c.grid * 12);
-  }
   const opening = c.doorWidth - c.wall * 2;
   for (const r of rooms) {
     blocked.push(rect(r.x, r.y, r.width, c.wall, "wall"), rect(r.x, r.y, c.wall, r.height, "wall"), rect(r.x + r.width - c.wall, r.y, c.wall, r.height, "wall"));

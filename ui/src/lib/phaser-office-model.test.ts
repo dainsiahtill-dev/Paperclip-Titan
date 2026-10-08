@@ -59,11 +59,11 @@ describe("Phaser office compact modules", () => {
       expect(walls.some(r => px + config.radius > r.x && px - config.radius < r.x + r.width && py + config.radius > r.y && py - config.radius < r.y + r.height)).toBe(false);
     }
   });
-  it("registers every rendered solid decoration and keeps outside employees clear of hedges", () => {
+  it("keeps the frontage free of hedge walls and outside employees reachable around remaining decoration", () => {
     const people = [...staff(4), ...Array.from({ length: 6 }, (_, i) => ({ ...agent("away" + i, "root"), status: "paused" as const }))];
     const model = buildPhaserOffice(buildOfficeDepartments(people, "a"), {}, config);
     expect(model.props.some(p => p.id === "bookcase")).toBe(true);
-    expect(model.props.some(p => p.id === "hedge")).toBe(true);
+    expect(model.props.some(p => p.id === "hedge")).toBe(false);
     expect(model.props.filter(p => p.blocks).every(p => model.blocked.includes(p.ground))).toBe(true);
     for (const point of Object.values(model.outsideSlots)) {
       expect(point.y).toBeGreaterThan(model.outsideY);

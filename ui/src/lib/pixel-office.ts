@@ -4,7 +4,7 @@ export type OfficeAgent = Pick<Agent, "id" | "companyId" | "name" | "title" | "r
 export type OfficeAction = "working" | "waiting" | "resting" | "walking" | "away" | "error" | "applicant" | "departed";
 export type OfficeScreen = "off" | "working" | "waiting" | "error";
 export type OfficePhase = ExecutionProjection["phase"];
-export interface OfficeRun { id: string; agentId: string; status: string; issueId?: string | null; currentTask?: boolean; execution?: { phase: OfficePhase } | null }
+export interface OfficeRun { id: string; agentId: string; status: string; issueId?: string | null; currentTask?: boolean; execution?: { phase: OfficePhase } | null; currentStatusMessage?: string | null; currentStatusUpdatedAt?: string | Date | null; currentToolName?: string | null; lastAssistantSnippet?: string | null; lastEventAt?: string | Date | null }
 export interface OfficeExecution { agentId: string; phase: OfficePhase; issueId?: string; runId?: string; currentRun?: boolean }
 export interface OfficePresence { action: OfficeAction; screen: OfficeScreen; phase?: OfficePhase; run?: OfficeRun; issueId?: string | null }
 export interface OfficeDepartment { id: string; manager: OfficeAgent | null; agents: OfficeAgent[] }
